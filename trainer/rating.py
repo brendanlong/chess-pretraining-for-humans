@@ -21,6 +21,27 @@ SELECTION_JITTER = 75  # rating points of noise around the target difficulty
 RATING_MIN = 600
 RATING_MAX = 2500
 
+# New users start as "knows the rules but is terrible" and calibrate upward,
+# rather than starting mid-scale and asking. Plain Elo can't climb fast from
+# a too-low start (a strong player beating easy items gains almost nothing
+# per win), so new users get a staircase: big jumps while they keep winning,
+# step halves on each miss, hand off to Elo once the step is small.
+USER_START = 700
+CALIB_START_STEP = 250
+CALIB_END_STEP = 40  # below this, calibration is over
+USER_MIN = 400
+USER_MAX = 2600
+
+
+def calibrate(user_rating: float, step: float, correct: bool) -> tuple[float, float]:
+    """One staircase move; returns (new_rating, new_step)."""
+    if correct:
+        new = user_rating + step
+    else:
+        new = user_rating - step
+        step /= 2
+    return max(USER_MIN, min(USER_MAX, new)), step
+
 
 def expected_score(user_rating: float, item_rating: float) -> float:
     return 1 / (1 + 10 ** ((item_rating - user_rating) / 400))

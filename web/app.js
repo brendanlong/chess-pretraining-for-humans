@@ -18,6 +18,11 @@ function arrow(uci, brush) {
   return { orig: uci.slice(0, 2), dest: uci.slice(2, 4), brush };
 }
 
+// "~" marks a still-calibrating rating (new users start low and climb fast)
+function ratingLabel(value, calibrating) {
+  return (calibrating ? "~" : "") + value;
+}
+
 function setBoard(fen, orientation, shapes) {
   const config = {
     fen,
@@ -60,7 +65,7 @@ async function loadTrial() {
   trial.moves.forEach((m, i) => {
     choiceEls[i].querySelector(".san").textContent = m.san;
   });
-  el("stat-rating").textContent = trial.user_rating;
+  el("stat-rating").textContent = ratingLabel(trial.user_rating, trial.calibrating);
   el("stat-trial").textContent = trial.trial_number;
   el("stat-remaining").textContent = trial.items_remaining;
   if (trial.repeat) el("repeat-note").hidden = false;
@@ -81,7 +86,7 @@ async function choose(i) {
     user: USER,
   });
 
-  el("stat-rating").textContent = result.user_rating;
+  el("stat-rating").textContent = ratingLabel(result.user_rating, result.calibrating);
 
   streak = result.correct ? streak + 1 : 0;
   if (!result.repeat) {

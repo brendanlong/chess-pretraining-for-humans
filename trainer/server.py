@@ -43,10 +43,17 @@ def locked(fn):
 def get_user(name: str) -> dict:
     row = conn.execute("SELECT * FROM users WHERE name = ?", (name,)).fetchone()
     if row is None:
-        conn.execute("INSERT INTO users (name) VALUES (?)", (name,))
+        conn.execute(
+            "INSERT INTO users (name, rating, calib_step) VALUES (?, ?, ?)",
+            (name, rating.USER_START, rating.CALIB_START_STEP),
+        )
         conn.commit()
         row = conn.execute("SELECT * FROM users WHERE name = ?", (name,)).fetchone()
     return dict(row)
+
+
+def is_calibrating(user: dict) -> bool:
+    return user["calib_step"] >= rating.CALIB_END_STEP
 
 
 def san(fen: str, uci: str) -> str:
@@ -111,6 +118,7 @@ def next_item(user: str = "default"):
         "items_remaining": unseen_count(u),
         "trial_number": u["attempts"] + 1,
         "user_rating": round(u["rating"]),
+        "calibrating": is_calibrating(u),
     }
 
 
@@ -142,8 +150,13 @@ def answer(a: Answer):
     )
     # Repeats only happen when the bank is exhausted; they get feedback like
     # any trial but don't move ratings — a remembered answer isn't skill.
+    new_step = u["calib_step"]
     if is_repeat:
         new_user_r, new_item_r = u["rating"], item["rating"]
+    elif is_calibrating(u):
+        # Item ratings are frozen while the user's rating is unreliable.
+        new_user_r, new_step = rating.calibrate(u["rating"], u["calib_step"], correct)
+        new_item_r = item["rating"]
     else:
         new_user_r, new_item_r = rating.update(u["rating"], item["rating"], correct)
 
@@ -156,8 +169,8 @@ def answer(a: Answer):
          u["rating"], new_user_r, item["rating"], new_item_r),
     )
     conn.execute(
-        "UPDATE users SET rating = ?, attempts = attempts + 1 WHERE id = ?",
-        (new_user_r, u["id"]),
+        "UPDATE users SET rating = ?, calib_step = ?, attempts = attempts + 1 WHERE id = ?",
+        (new_user_r, new_step, u["id"]),
     )
     conn.execute(
         "UPDATE items SET rating = ?, attempts = attempts + 1, correct = correct + ? WHERE id = ?",
@@ -169,6 +182,7 @@ def answer(a: Answer):
         "repeat": is_repeat,
         "user_rating": round(new_user_r),
         "rating_delta": round(new_user_r - u["rating"], 1),
+        "calibrating": new_step >= rating.CALIB_END_STEP,
         "correct": correct,
         "best": {
             "uci": item["best_uci"],

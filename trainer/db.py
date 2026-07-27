@@ -34,7 +34,8 @@ CREATE TABLE IF NOT EXISTS items (
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY,
     name TEXT UNIQUE NOT NULL,
-    rating REAL NOT NULL DEFAULT 1500,
+    rating REAL NOT NULL DEFAULT 700,
+    calib_step REAL NOT NULL DEFAULT 250,  -- staircase step; < ~40 means calibrated
     attempts INTEGER NOT NULL DEFAULT 0
 );
 
@@ -64,4 +65,7 @@ def connect(path: Path = DEFAULT_DB, check_same_thread: bool = True) -> sqlite3.
     conn.executescript(SCHEMA)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=10000")
+    user_cols = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
+    if "calib_step" not in user_cols:
+        conn.execute("ALTER TABLE users ADD COLUMN calib_step REAL NOT NULL DEFAULT 250")
     return conn

@@ -24,6 +24,12 @@ mechanism.
   gap at 0.00 is enormous; at +6.00 it's noise). Evals are converted with
   Lichess's logistic model, and the wp-gap seeds a per-item Elo rating that
   real responses then correct — gap alone can't hold a target accuracy.
+- **Everyone starts as a beginner.** New users begin at rating 700 ("knows
+  the rules, terrible at chess") rather than being asked their strength.
+  A calibration staircase makes that cheap: the rating jumps by a large
+  step on each correct answer, the step halves on each miss, and once the
+  step is small normal Elo takes over — beginners settle in a few trials,
+  experienced players climb to their level within ~10.
 - **Learnability filter**: both moves are re-evaluated at shallow depth. If
   shallow and deep search disagree about which move is better, the answer
   hinges on deep calculation rather than anything perceivable, so the item is

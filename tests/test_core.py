@@ -1,9 +1,15 @@
 import math
 
 from trainer.rating import (
+    CALIB_END_STEP,
+    CALIB_START_STEP,
     RATING_MAX,
     RATING_MIN,
     TARGET_ACCURACY,
+    USER_MAX,
+    USER_MIN,
+    USER_START,
+    calibrate,
     expected_score,
     target_item_rating,
     update,
@@ -48,3 +54,29 @@ def test_target_rating_hits_target_accuracy():
 def test_expected_score_bounds():
     assert expected_score(2000, 1000) > 0.95
     assert expected_score(1000, 2000) < 0.05
+
+
+def test_calibration_climbs_fast_for_strong_players():
+    r, step = USER_START, CALIB_START_STEP
+    trials = 0
+    while r < 2200:
+        r, step = calibrate(r, step, correct=True)
+        trials += 1
+    assert trials <= 10  # an expert reaches expert territory within ~10 trials
+
+
+def test_calibration_settles_fast_for_beginners():
+    r, step = USER_START, CALIB_START_STEP
+    misses = 0
+    while step >= CALIB_END_STEP:
+        r, step = calibrate(r, step, correct=False)
+        misses += 1
+    assert misses <= 3  # a few misses and calibration hands off to Elo
+    assert USER_MIN <= r <= USER_START
+
+
+def test_calibration_respects_bounds():
+    r, _ = calibrate(USER_MAX, CALIB_START_STEP, correct=True)
+    assert r == USER_MAX
+    r, _ = calibrate(USER_MIN, CALIB_START_STEP, correct=False)
+    assert r == USER_MIN
