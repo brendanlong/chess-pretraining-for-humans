@@ -9,10 +9,17 @@ const choiceEls = [el("choice-1"), el("choice-2")];
 
 let cg = null;
 let trial = null; // current /api/next payload
-let phase = "loading"; // loading | choosing | revealed | probe-done
+let phase = "loading"; // loading | choosing | submitting | revealed
 let shownAt = 0;
 let streak = 0;
 let accWindow = []; // local last-50 correctness (feedback trials only)
+
+// Reveal replay state: two engine lines, one active, stepped through on the
+// main board. lines[i] = {label, cls, steps: [{uci, san, fen}]}
+let lines = [];
+let activeLine = 0;
+let stepIdx = -1; // -1 = at the decision position, before any line move
+let autoplayTimer = null;
 
 function arrow(uci, brush) {
   return { orig: uci.slice(0, 2), dest: uci.slice(2, 4), brush };
@@ -23,17 +30,81 @@ function ratingLabel(value, calibrating) {
   return (calibrating ? "~" : "") + value;
 }
 
-function setBoard(fen, orientation, shapes) {
+function setBoard(fen, orientation, shapes, opts = {}) {
   const config = {
     fen,
     orientation,
     viewOnly: true,
     coordinates: true,
-    animation: { enabled: false },
+    animation: { enabled: opts.animate ?? false, duration: 250 },
+    lastMove: opts.lastMove,
     drawable: { autoShapes: shapes },
   };
   if (!cg) cg = Chessground(boardEl, config);
   else cg.set(config);
+}
+
+// --- reveal replay ------------------------------------------------------
+
+function stopAutoplay() {
+  if (autoplayTimer) clearTimeout(autoplayTimer);
+  autoplayTimer = null;
+}
+
+function renderStep() {
+  const line = lines[activeLine];
+  if (stepIdx < 0) {
+    // back at the decision point: show both candidate arrows again
+    setBoard(trial.fen, trial.side_to_move, [
+      arrow(lines[0].steps[0].uci, lines[0].brush),
+      arrow(lines[1].steps[0].uci, lines[1].brush),
+    ]);
+  } else {
+    const step = line.steps[stepIdx];
+    setBoard(step.fen, trial.side_to_move, [], {
+      animate: true,
+      lastMove: [step.uci.slice(0, 2), step.uci.slice(2, 4)],
+    });
+  }
+  el("line-sans").innerHTML = line.steps
+    .map((s, i) => {
+      const cur = i === stepIdx ? " current" : "";
+      return `<span class="ply${cur}">${s.san}</span>`;
+    })
+    .join(" ");
+  lines.forEach((l, i) => {
+    el(`tab-${i}`).classList.toggle("active", i === activeLine);
+  });
+}
+
+function stepLine(delta) {
+  if (phase !== "revealed") return;
+  stopAutoplay();
+  const max = lines[activeLine].steps.length - 1;
+  stepIdx = Math.max(-1, Math.min(max, stepIdx + delta));
+  renderStep();
+}
+
+function switchLine(i, autoplay) {
+  if (phase !== "revealed" || !lines[i]) return;
+  stopAutoplay();
+  activeLine = i;
+  stepIdx = -1;
+  renderStep();
+  if (autoplay) autoplayFrom(0);
+}
+
+function autoplayFrom(idx) {
+  stopAutoplay();
+  const play = () => {
+    if (phase !== "revealed") return;
+    if (stepIdx >= lines[activeLine].steps.length - 1) return;
+    stepIdx += 1;
+    renderStep();
+    autoplayTimer = setTimeout(play, 750);
+  };
+  stepIdx = idx - 1;
+  autoplayTimer = setTimeout(play, 650);
 }
 
 async function api(path, body) {
@@ -48,6 +119,9 @@ async function api(path, body) {
 
 async function loadTrial() {
   phase = "loading";
+  stopAutoplay();
+  lines = [];
+  stepIdx = -1;
   el("feedback").hidden = true;
   el("repeat-note").hidden = true;
   choiceEls.forEach((b) => {
@@ -99,10 +173,22 @@ async function choose(i) {
       Math.round((100 * accWindow.reduce((a, b) => a + b, 0)) / accWindow.length) + "%";
 
   choiceEls[i].classList.add(result.correct ? "picked-good" : "picked-bad");
-  setBoard(trial.fen, trial.side_to_move, [
-    arrow(result.best.uci, "green"),
-    arrow(result.distractor.uci, "red"),
-  ]);
+
+  // Replay lines: your pick first (it auto-plays), the other switchable.
+  const mkLine = (mv, isBest, tag) => ({
+    steps: mv.line,
+    brush: isBest ? "green" : "red",
+    cls: isBest ? "good" : "bad",
+    label: `${mv.san} · ${tag}`,
+  });
+  lines = result.correct
+    ? [mkLine(result.best, true, "your pick"), mkLine(result.distractor, false, "alternative")]
+    : [mkLine(result.distractor, false, "your pick"), mkLine(result.best, true, "best move")];
+  lines.forEach((l, idx) => {
+    const tab = el(`tab-${idx}`);
+    tab.textContent = "▶ " + l.label;
+    tab.className = `line-tab ${l.cls}`;
+  });
 
   const verdict = el("verdict");
   verdict.textContent = result.correct ? "Correct" : "Wrong";
@@ -120,6 +206,10 @@ async function choose(i) {
 
   el("feedback").hidden = false;
   phase = "revealed";
+  activeLine = 0;
+  stepIdx = -1;
+  renderStep();
+  autoplayFrom(0);
 }
 
 function fillRow(rowId, move) {
@@ -140,14 +230,27 @@ async function initStats() {
 }
 
 document.addEventListener("keydown", (e) => {
-  if (e.key === "1" || e.key === "ArrowLeft") choose(0);
-  else if (e.key === "2" || e.key === "ArrowRight") choose(1);
-  else if ((e.key === " " || e.key === "Enter") && phase === "revealed") {
-    e.preventDefault();
-    loadTrial();
+  if (phase === "choosing") {
+    if (e.key === "1" || e.key === "ArrowLeft") choose(0);
+    else if (e.key === "2" || e.key === "ArrowRight") choose(1);
+  } else if (phase === "revealed") {
+    if (e.key === "ArrowLeft") {
+      e.preventDefault();
+      stepLine(-1);
+    } else if (e.key === "ArrowRight") {
+      e.preventDefault();
+      stepLine(1);
+    } else if (e.key === "1") switchLine(0, true);
+    else if (e.key === "2") switchLine(1, true);
+    else if (e.key === " " || e.key === "Enter") {
+      e.preventDefault();
+      loadTrial();
+    }
   }
 });
 choiceEls.forEach((b, i) => b.addEventListener("click", () => choose(i)));
+el("tab-0").addEventListener("click", () => switchLine(0, true));
+el("tab-1").addEventListener("click", () => switchLine(1, true));
 el("next").addEventListener("click", loadTrial);
 
 initStats();

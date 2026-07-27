@@ -64,6 +64,13 @@ uv run uvicorn trainer.server:app --host 0.0.0.0 --port 8000
 Open the page, press <kbd>1</kbd>/<kbd>2</kbd> to answer,
 <kbd>space</kbd> for the next trial. `?user=name` keeps separate profiles.
 
+After each answer the engine line for the move you picked auto-plays on the
+board (the "why": your move's consequences, or the best move's follow-up).
+Press <kbd>1</kbd>/<kbd>2</kbd> or click the tabs to switch between the two
+lines, <kbd>&larr;</kbd>/<kbd>&rarr;</kbd> to step manually. Items labeled
+before PV storage existed can be backfilled with
+`uv run python -m trainer.backfill_pvs`.
+
 ## Layout
 
 | path | what |

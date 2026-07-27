@@ -67,6 +67,21 @@ def eval_display(cp: int | None, mate: int | None) -> str:
     return f"{cp / 100:+.2f}"
 
 
+def line_steps(fen: str, pv: str | None, fallback_uci: str) -> list[dict]:
+    """Engine line as replayable steps; each step's fen is the position after
+    that ply, so the client can animate without any chess logic."""
+    board = chess.Board(fen)
+    steps = []
+    for uci in (pv or fallback_uci).split():
+        move = chess.Move.from_uci(uci)
+        if move not in board.legal_moves:
+            break
+        move_san = board.san(move)
+        board.push(move)
+        steps.append({"uci": uci, "san": move_san, "fen": board.fen()})
+    return steps
+
+
 def unseen_count(user: dict) -> int:
     return conn.execute(
         """SELECT COUNT(*) FROM items
@@ -189,12 +204,14 @@ def answer(a: Answer):
             "san": san(item["fen"], item["best_uci"]),
             "eval": eval_display(item["cp_best"], item["mate_best"]),
             "wp": round(item["wp_best"] * 100, 1),
+            "line": line_steps(item["fen"], item["pv_best"], item["best_uci"]),
         },
         "distractor": {
             "uci": item["distractor_uci"],
             "san": san(item["fen"], item["distractor_uci"]),
             "eval": eval_display(item["cp_distractor"], item["mate_distractor"]),
             "wp": round(item["wp_distractor"] * 100, 1),
+            "line": line_steps(item["fen"], item["pv_distractor"], item["distractor_uci"]),
         },
         "gap_wp": round(item["gap_wp"] * 100, 1),
         "distractor_source": item["distractor_source"],

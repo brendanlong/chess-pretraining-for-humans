@@ -19,6 +19,8 @@ CREATE TABLE IF NOT EXISTS items (
     wp_best REAL NOT NULL,
     wp_distractor REAL NOT NULL,
     gap_wp REAL NOT NULL,
+    pv_best TEXT,        -- space-separated UCI line starting with best_uci
+    pv_distractor TEXT,  -- space-separated UCI line starting with distractor_uci
     learnable INTEGER NOT NULL,       -- shallow search agrees which move is better
     depth_deep INTEGER NOT NULL,
     depth_shallow INTEGER NOT NULL,
@@ -68,4 +70,8 @@ def connect(path: Path = DEFAULT_DB, check_same_thread: bool = True) -> sqlite3.
     user_cols = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
     if "calib_step" not in user_cols:
         conn.execute("ALTER TABLE users ADD COLUMN calib_step REAL NOT NULL DEFAULT 250")
+    item_cols = {row[1] for row in conn.execute("PRAGMA table_info(items)")}
+    for col in ("pv_best", "pv_distractor"):
+        if col not in item_cols:
+            conn.execute(f"ALTER TABLE items ADD COLUMN {col} TEXT")
     return conn

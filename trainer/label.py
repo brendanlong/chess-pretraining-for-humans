@@ -36,6 +36,7 @@ from .winprob import score_to_winprob
 
 DEPTH_DEEP = 18
 DEPTH_SHALLOW = 8
+PV_PLIES = 8  # how much of each line to keep for the reveal replay
 MIN_GAP_WP = 0.015
 MAX_GAP_WP = 0.40
 ENGINE_WORKERS = 8
@@ -65,6 +66,10 @@ def pov_parts(score: chess.engine.PovScore, turn: chess.Color) -> tuple[int | No
     return pov.score(), pov.mate()
 
 
+def pv_text(info: chess.engine.InfoDict) -> str:
+    return " ".join(m.uci() for m in info.get("pv", [])[:PV_PLIES])
+
+
 def label_candidate(cand: dict) -> dict | None:
     engine = get_engine()
     board = chess.Board(cand["fen"])
@@ -77,16 +82,19 @@ def label_candidate(cand: dict) -> dict | None:
         return None
     best = deep[0]["pv"][0]
     cp_best, mate_best = pov_parts(deep[0]["score"], board.turn)
+    pv_best = pv_text(deep[0])
 
     if best != played:
         distractor, source = played, "game"
         if deep[1].get("pv") and deep[1]["pv"][0] == played:
             cp_d, mate_d = pov_parts(deep[1]["score"], board.turn)
+            pv_d = pv_text(deep[1])
         else:
             info = engine.analyse(
                 board, chess.engine.Limit(depth=DEPTH_DEEP), root_moves=[played]
             )
             cp_d, mate_d = pov_parts(info["score"], board.turn)
+            pv_d = pv_text(info) or played.uci()
     else:
         # Deep search says the game move was actually best (the server evals
         # that flagged this position were shallower). Fall back to multipv 2.
@@ -94,6 +102,7 @@ def label_candidate(cand: dict) -> dict | None:
             return None
         distractor, source = deep[1]["pv"][0], "multipv"
         cp_d, mate_d = pov_parts(deep[1]["score"], board.turn)
+        pv_d = pv_text(deep[1])
 
     wp_best = score_to_winprob(cp_best, mate_best)
     wp_d = score_to_winprob(cp_d, mate_d)
@@ -123,6 +132,8 @@ def label_candidate(cand: dict) -> dict | None:
         "wp_best": round(wp_best, 4),
         "wp_distractor": round(wp_d, 4),
         "gap_wp": round(gap_wp, 4),
+        "pv_best": pv_best,
+        "pv_distractor": pv_d,
         "learnable": learnable,
         "depth_deep": DEPTH_DEEP,
         "depth_shallow": DEPTH_SHALLOW,
@@ -173,13 +184,13 @@ def main() -> None:
                 """INSERT OR IGNORE INTO items
                    (fen, best_uci, distractor_uci, distractor_source,
                     cp_best, mate_best, cp_distractor, mate_distractor,
-                    wp_best, wp_distractor, gap_wp, learnable,
-                    depth_deep, depth_shallow, rating,
+                    wp_best, wp_distractor, gap_wp, pv_best, pv_distractor,
+                    learnable, depth_deep, depth_shallow, rating,
                     ply, game_url, mover_elo, time_control)
                    VALUES (:fen, :best_uci, :distractor_uci, :distractor_source,
                     :cp_best, :mate_best, :cp_distractor, :mate_distractor,
-                    :wp_best, :wp_distractor, :gap_wp, :learnable,
-                    :depth_deep, :depth_shallow, :rating,
+                    :wp_best, :wp_distractor, :gap_wp, :pv_best, :pv_distractor,
+                    :learnable, :depth_deep, :depth_shallow, :rating,
                     :ply, :game_url, :mover_elo, :time_control)""",
                 item,
             )
