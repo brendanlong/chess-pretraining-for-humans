@@ -44,7 +44,7 @@ async function api(path, body) {
 async function loadTrial() {
   phase = "loading";
   el("feedback").hidden = true;
-  el("probe-note").hidden = true;
+  el("repeat-note").hidden = true;
   choiceEls.forEach((b) => {
     b.disabled = false;
     b.classList.remove("picked-good", "picked-bad");
@@ -62,6 +62,8 @@ async function loadTrial() {
   });
   el("stat-rating").textContent = trial.user_rating;
   el("stat-trial").textContent = trial.trial_number;
+  el("stat-remaining").textContent = trial.items_remaining;
+  if (trial.repeat) el("repeat-note").hidden = false;
   phase = "choosing";
   shownAt = performance.now();
 }
@@ -79,22 +81,17 @@ async function choose(i) {
     user: USER,
   });
 
-  if (result.probe) {
-    // No feedback of any kind — not even the rating delta.
-    phase = "probe-done";
-    el("probe-note").hidden = false;
-    setTimeout(loadTrial, 900);
-    return;
-  }
-
   el("stat-rating").textContent = result.user_rating;
 
   streak = result.correct ? streak + 1 : 0;
-  accWindow.push(result.correct ? 1 : 0);
-  if (accWindow.length > 50) accWindow.shift();
+  if (!result.repeat) {
+    accWindow.push(result.correct ? 1 : 0);
+    if (accWindow.length > 50) accWindow.shift();
+  }
   el("stat-streak").textContent = streak;
-  el("stat-acc").textContent =
-    Math.round((100 * accWindow.reduce((a, b) => a + b, 0)) / accWindow.length) + "%";
+  if (accWindow.length)
+    el("stat-acc").textContent =
+      Math.round((100 * accWindow.reduce((a, b) => a + b, 0)) / accWindow.length) + "%";
 
   choiceEls[i].classList.add(result.correct ? "picked-good" : "picked-bad");
   setBoard(trial.fen, trial.side_to_move, [

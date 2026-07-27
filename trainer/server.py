@@ -18,8 +18,10 @@ from . import rating
 from .db import DEFAULT_DB, connect
 from .winprob import score_to_winprob
 
-PROBE_EVERY = 8  # every Nth trial gives no feedback; those are the real metric
-RECENT_EXCLUDE = 30  # don't re-serve an item seen in the last N trials
+# Items are never repeated for a user: every trial is a first exposure, so
+# the answer (recorded before feedback arrives) is an uncontaminated
+# measurement AND the reveal can train on every trial. When the bank runs
+# out, mine more games rather than recycling.
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
 app = FastAPI(title="chess-pretraining")
@@ -47,10 +49,6 @@ def get_user(name: str) -> dict:
     return dict(row)
 
 
-def is_probe(attempts: int) -> bool:
-    return attempts % PROBE_EVERY == PROBE_EVERY - 1
-
-
 def san(fen: str, uci: str) -> str:
     board = chess.Board(fen)
     return board.san(chess.Move.from_uci(uci))
@@ -62,35 +60,44 @@ def eval_display(cp: int | None, mate: int | None) -> str:
     return f"{cp / 100:+.2f}"
 
 
-def pick_item(user: dict) -> dict | None:
+def unseen_count(user: dict) -> int:
+    return conn.execute(
+        """SELECT COUNT(*) FROM items
+           WHERE learnable = 1
+             AND id NOT IN (SELECT item_id FROM responses WHERE user_id = ?)""",
+        (user["id"],),
+    ).fetchone()[0]
+
+
+def pick_item(user: dict) -> tuple[dict | None, bool]:
+    """An unseen item near the target difficulty; (item, is_repeat)."""
     target = rating.target_item_rating(user["rating"])
-    recent = [
-        r["item_id"]
-        for r in conn.execute(
-            "SELECT item_id FROM responses WHERE user_id = ? ORDER BY id DESC LIMIT ?",
-            (user["id"], RECENT_EXCLUDE),
-        )
-    ]
-    placeholders = ",".join("?" * len(recent)) or "NULL"
     rows = conn.execute(
-        f"""SELECT * FROM items
-            WHERE learnable = 1 AND id NOT IN ({placeholders})
-            ORDER BY ABS(rating - ?) LIMIT 30""",
-        (*recent, target),
+        """SELECT * FROM items
+           WHERE learnable = 1
+             AND id NOT IN (SELECT item_id FROM responses WHERE user_id = ?)
+           ORDER BY ABS(rating - ?) LIMIT 30""",
+        (user["id"], target),
     ).fetchall()
-    if not rows:
-        rows = conn.execute(
-            "SELECT * FROM items WHERE learnable = 1 ORDER BY ABS(rating - ?) LIMIT 30",
-            (target,),
-        ).fetchall()
-    return dict(random.choice(rows)) if rows else None
+    if rows:
+        return dict(random.choice(rows)), False
+    # Bank exhausted. Serve the least-recently-answered item so the app stays
+    # usable, but flag it: repeat answers aren't clean measurements.
+    row = conn.execute(
+        """SELECT items.* FROM items
+           JOIN responses ON responses.item_id = items.id
+           WHERE items.learnable = 1 AND responses.user_id = ?
+           GROUP BY items.id ORDER BY MAX(responses.id) LIMIT 1""",
+        (user["id"],),
+    ).fetchone()
+    return (dict(row), True) if row else (None, False)
 
 
 @app.get("/api/next")
 @locked
 def next_item(user: str = "default"):
     u = get_user(user)
-    item = pick_item(u)
+    item, is_repeat = pick_item(u)
     if item is None:
         raise HTTPException(503, "no items in bank — run the mining/labeling pipeline")
     moves = [item["best_uci"], item["distractor_uci"]]
@@ -100,9 +107,8 @@ def next_item(user: str = "default"):
         "fen": item["fen"],
         "side_to_move": "white" if chess.Board(item["fen"]).turn else "black",
         "moves": [{"uci": m, "san": san(item["fen"], m)} for m in moves],
-        # Deliberately no probe flag here: announcing "this one doesn't
-        # count" before the answer would change behavior on exactly the
-        # trials that are the metric.
+        "repeat": is_repeat,
+        "items_remaining": unseen_count(u),
         "trial_number": u["attempts"] + 1,
         "user_rating": round(u["rating"]),
     }
@@ -127,20 +133,26 @@ def answer(a: Answer):
         raise HTTPException(400, "choice is not one of the offered moves")
 
     correct = a.choice_uci == item["best_uci"]
-    probe = is_probe(u["attempts"])
-    # Probe trials are pure measurement: no rating movement at all, or the
-    # delta (even seen one trial later) becomes a correctness oracle.
-    if probe:
+    is_repeat = (
+        conn.execute(
+            "SELECT 1 FROM responses WHERE user_id = ? AND item_id = ? LIMIT 1",
+            (u["id"], item["id"]),
+        ).fetchone()
+        is not None
+    )
+    # Repeats only happen when the bank is exhausted; they get feedback like
+    # any trial but don't move ratings — a remembered answer isn't skill.
+    if is_repeat:
         new_user_r, new_item_r = u["rating"], item["rating"]
     else:
         new_user_r, new_item_r = rating.update(u["rating"], item["rating"], correct)
 
     conn.execute(
         """INSERT INTO responses
-           (user_id, item_id, choice_uci, correct, probe, response_ms,
+           (user_id, item_id, choice_uci, correct, response_ms,
             user_rating_before, user_rating_after, item_rating_before, item_rating_after)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (u["id"], item["id"], a.choice_uci, int(correct), int(probe), a.response_ms,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (u["id"], item["id"], a.choice_uci, int(correct), a.response_ms,
          u["rating"], new_user_r, item["rating"], new_item_r),
     )
     conn.execute(
@@ -153,13 +165,8 @@ def answer(a: Answer):
     )
     conn.commit()
 
-    if probe:
-        # No-feedback trial: recorded, but the reveal (and any rating info
-        # that could stand in for it) is withheld.
-        return {"probe": True}
-
     return {
-        "probe": False,
+        "repeat": is_repeat,
         "user_rating": round(new_user_r),
         "rating_delta": round(new_user_r - u["rating"], 1),
         "correct": correct,
@@ -186,39 +193,40 @@ def answer(a: Answer):
 @locked
 def stats(user: str = "default"):
     u = get_user(user)
+    # Only first exposures count toward accuracy: repeats (served only once
+    # the bank is exhausted) can be answered from memory of the reveal.
     rows = [
         dict(r)
         for r in conn.execute(
-            """SELECT correct, probe, user_rating_after, created_at
-               FROM responses WHERE user_id = ? ORDER BY id""",
+            """SELECT r.correct, r.user_rating_after
+               FROM responses r
+               WHERE r.user_id = ?
+                 AND NOT EXISTS (SELECT 1 FROM responses p
+                                 WHERE p.user_id = r.user_id
+                                   AND p.item_id = r.item_id AND p.id < r.id)
+               ORDER BY r.id""",
             (u["id"],),
         )
     ]
-    # Feedback and probe trials are reported separately: mixing them makes
-    # the headline accuracy incomparable with the frontend's live window,
-    # and the probe-vs-feedback contrast is the interesting number.
-    feedback = [r for r in rows if not r["probe"]]
-    last50 = feedback[-50:]
-    probes = [r for r in rows if r["probe"]]
+    total_attempts = conn.execute(
+        "SELECT COUNT(*) FROM responses WHERE user_id = ?", (u["id"],)
+    ).fetchone()[0]
+    last50 = rows[-50:]
     n_items, n_learnable = conn.execute(
         "SELECT COUNT(*), SUM(learnable) FROM items"
     ).fetchone()
     return {
         "user_rating": round(u["rating"]),
-        "attempts": len(rows),
-        "accuracy": round(sum(r["correct"] for r in feedback) / len(feedback), 3)
-        if feedback
-        else None,
+        "attempts": total_attempts,
+        "first_exposures": len(rows),
+        "accuracy": round(sum(r["correct"] for r in rows) / len(rows), 3) if rows else None,
         "accuracy_last_50": round(sum(r["correct"] for r in last50) / len(last50), 3)
         if last50
-        else None,
-        "probe_attempts": len(probes),
-        "probe_accuracy": round(sum(r["correct"] for r in probes) / len(probes), 3)
-        if probes
         else None,
         "rating_history": [round(r["user_rating_after"]) for r in rows],
         "items_total": n_items,
         "items_learnable": n_learnable or 0,
+        "items_remaining": unseen_count(u),
     }
 
 

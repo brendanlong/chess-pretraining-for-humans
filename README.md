@@ -28,9 +28,12 @@ mechanism.
   shallow and deep search disagree about which move is better, the answer
   hinges on deep calculation rather than anything perceivable, so the item is
   labeled correct-but-unlearnable and never served.
-- **Probe trials**: every 8th trial gives no feedback. Those are the real
-  measure — the failure mode to guard against is learning to read the
-  feedback loop rather than the board.
+- **No repeats, feedback on every trial.** Items are never re-served while
+  fresh ones remain, so every answer is a first exposure recorded *before*
+  the reveal — simultaneously a clean measurement and a training trial.
+  There is no separate no-feedback stream; if the bank runs dry, the fix is
+  mining more games, not recycling (repeats are served as a last resort,
+  flagged, and excluded from ratings and accuracy).
 
 ## Running it
 
@@ -68,7 +71,12 @@ Open the page, press <kbd>1</kbd>/<kbd>2</kbd> to answer,
 
 ## Not built yet
 
-- The color/sound overlay during reveal (the synesthesia hypothesis — v1.1).
-- Stroop-interference measurement (deliberately mismatched cue) and transfer
-  measurement; probe-trial accuracy is the v1 stand-in.
+- The color/sound overlay (the synesthesia hypothesis — v1.1). Constraint
+  for when it lands: the cue plays only during the reveal, never while the
+  user is choosing, so it can never leak the answer.
+- Transfer measurement. In-app accuracy on fresh items is the running
+  measure, but it shares the item generator's biases; the real test is
+  external (rated games, puzzle ratings, or items mined from a deliberately
+  different distribution).
+- Stroop-interference measurement (deliberately mismatched cue).
 - Glicko-2 (plain Elo for now).

@@ -130,7 +130,7 @@ kbd {
   cursor: pointer;
 }
 
-.probe-badge {
+.repeat-badge {
   display: inline-block;
   background: var(--probe);
   color: #1c1425;
@@ -142,4 +142,4 @@ kbd {
   padding: 2px 8px;
   margin-bottom: 6px;
 }
-#probe-note p { font-size: 13px; color: var(--muted); }
+#repeat-note p { font-size: 13px; color: var(--muted); }

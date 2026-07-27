@@ -23,6 +23,7 @@
       <span>trial <b id="stat-trial">–</b></span>
       <span>last 50 <b id="stat-acc">–</b></span>
       <span>streak <b id="stat-streak">0</b></span>
+      <span>fresh <b id="stat-remaining">–</b></span>
     </div>
     <p id="prompt">Which move is better? Press <kbd>1</kbd> or <kbd>2</kbd>.</p>
     <div id="choices">
@@ -38,10 +39,10 @@
       <div id="detail"></div>
       <button id="next">Next <kbd>space</kbd></button>
     </div>
-    <div id="probe-note" hidden>
-      <div class="probe-badge">probe trial</div>
-      <p>Answer recorded — no feedback on this one. Probe accuracy is the real
-      measure of whether the training transfers.</p>
+    <div id="repeat-note" hidden>
+      <div class="repeat-badge">repeat</div>
+      <p>You've seen every item — this one is a rerun and won't affect your
+      rating. Mine more games to keep training on fresh positions.</p>
     </div>
   </aside>
 </main>

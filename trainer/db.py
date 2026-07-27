@@ -44,7 +44,6 @@ CREATE TABLE IF NOT EXISTS responses (
     item_id INTEGER NOT NULL REFERENCES items(id),
     choice_uci TEXT NOT NULL,
     correct INTEGER NOT NULL,
-    probe INTEGER NOT NULL DEFAULT 0,  -- no-feedback trial
     response_ms INTEGER,
     user_rating_before REAL,
     user_rating_after REAL,
