@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Move Discrimination Trainer</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&%239822;</text></svg>">
+<link rel="stylesheet" href="vendor/chessground.base.css">
+<link rel="stylesheet" href="vendor/chessground.brown.css">
+<link rel="stylesheet" href="vendor/chessground.cburnett.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <div id="board-col">
+    <div id="turn-banner">&nbsp;</div>
+    <div id="board"></div>
+  </div>
+  <aside id="panel">
+    <h1>Move discrimination</h1>
+    <div id="statusbar">
+      <span>rating <b id="stat-rating">–</b></span>
+      <span>trial <b id="stat-trial">–</b></span>
+      <span>last 50 <b id="stat-acc">–</b></span>
+      <span>streak <b id="stat-streak">0</b></span>
+    </div>
+    <p id="prompt">Which move is better? Press <kbd>1</kbd> or <kbd>2</kbd>.</p>
+    <div id="choices">
+      <button id="choice-1" class="choice"><span class="key">1</span><span class="san"></span></button>
+      <button id="choice-2" class="choice"><span class="key">2</span><span class="san"></span></button>
+    </div>
+    <div id="feedback" hidden>
+      <div id="verdict"></div>
+      <table id="reveal">
+        <tr id="row-best"><td class="move"></td><td class="eval"></td><td class="wp"></td></tr>
+        <tr id="row-distractor"><td class="move"></td><td class="eval"></td><td class="wp"></td></tr>
+      </table>
+      <div id="detail"></div>
+      <button id="next">Next <kbd>space</kbd></button>
+    </div>
+    <div id="probe-note" hidden>
+      <div class="probe-badge">probe trial</div>
+      <p>Answer recorded — no feedback on this one. Probe accuracy is the real
+      measure of whether the training transfers.</p>
+    </div>
+  </aside>
+</main>
+<script type="module" src="app.js"></script>
+</body>
+</html>

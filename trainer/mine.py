@@ -1,0 +1,180 @@
+"""Mine candidate discrimination items from a Lichess PGN stream.
+
+Reads PGN from stdin (intended use: stream the head of a monthly Lichess dump
+through zstdcat) and emits one JSON candidate per line. A candidate is a real
+decision point from a real game: a position where the player made a move that
+Lichess's server analysis says was meaningfully worse than best play.
+
+The played move becomes the distractor later; here we only need positions
+where (a) server evals exist, (b) the played move lost a calibrated amount of
+win probability, and (c) the position wasn't already decided. Precise labels
+(the best move, deep/shallow evals, learnability) come from the local
+Stockfish pass in label.py.
+
+Usage:
+    curl -s -r 0-100000000 <dump-url> | zstdcat 2>/dev/null | \
+        uv run python -m trainer.mine --max-candidates 2000 > data/candidates.jsonl
+"""
+
+import argparse
+import io
+import json
+import sys
+from typing import Iterator
+
+import chess
+import chess.pgn
+
+from .winprob import cp_to_winprob
+
+MIN_PLY = 12  # skip opening-book territory
+MAX_PLY = 90
+MAX_ABS_EVAL_CP = 500  # position not already decided (white POV)
+MIN_GAP_WP = 0.03  # played move must lose at least this much win prob...
+MAX_GAP_WP = 0.35  # ...but not be an absurd blunder nobody would consider
+MIN_BASE_TIME_S = 180  # blitz and slower; bullet errors are mostly mouse slips
+MAX_PER_GAME = 2
+MIN_PLY_SPACING = 10  # candidates from one game must be far apart
+
+
+def raw_games(stream: io.TextIOBase) -> Iterator[str]:
+    """Split a PGN stream into per-game text without parsing moves.
+
+    A PGN game is a header section and a movetext section, each followed by a
+    blank line. Splitting on that structure lets us substring-test for %eval
+    before paying for a full parse (only ~6% of Lichess games are analyzed).
+    """
+    chunks: list[str] = []
+    blank_seen = 0
+    for line in stream:
+        chunks.append(line)
+        if line.strip() == "":
+            blank_seen += 1
+            if blank_seen == 2:
+                yield "".join(chunks)
+                chunks = []
+                blank_seen = 0
+
+
+def score_cp(pov_score) -> int | None:
+    """White-POV cp, or None for mate scores (skipped in mining)."""
+    if pov_score.mate() is not None:
+        return None
+    return pov_score.score()
+
+
+def base_time_seconds(headers: chess.pgn.Headers) -> int:
+    tc = headers.get("TimeControl", "-")
+    try:
+        return int(tc.split("+")[0])
+    except ValueError:
+        return 0
+
+
+def mine_game(game: chess.pgn.Game, seen_fens: set[str]) -> list[dict]:
+    headers = game.headers
+    if base_time_seconds(headers) < MIN_BASE_TIME_S:
+        return []
+
+    candidates: list[dict] = []
+    last_candidate_ply = -MIN_PLY_SPACING
+    prev_eval = None  # PovScore after the previous move
+    board = game.board()
+
+    for node in game.mainline():
+        move = node.move
+        this_eval = node.eval()
+        eval_before, prev_eval = prev_eval, this_eval
+        ply = board.ply()
+        mover = board.turn
+        position = board.copy(stack=False)
+        board.push(move)
+
+        if len(candidates) >= MAX_PER_GAME:
+            break
+        if eval_before is None or this_eval is None:
+            continue
+        if not (MIN_PLY <= ply <= MAX_PLY):
+            continue
+        if ply - last_candidate_ply < MIN_PLY_SPACING:
+            continue
+
+        cp_before_white = score_cp(eval_before.white())
+        cp_after_white = score_cp(this_eval.white())
+        if cp_before_white is None or cp_after_white is None:
+            continue
+        if abs(cp_before_white) > MAX_ABS_EVAL_CP:
+            continue
+
+        # Win probability lost by the played move, from the mover's POV.
+        sign = 1 if mover == chess.WHITE else -1
+        wp_before = cp_to_winprob(sign * cp_before_white)
+        wp_after = cp_to_winprob(sign * cp_after_white)
+        gap_wp = wp_before - wp_after
+        if not (MIN_GAP_WP <= gap_wp <= MAX_GAP_WP):
+            continue
+
+        epd = position.epd()
+        if epd in seen_fens:
+            continue
+        seen_fens.add(epd)
+        last_candidate_ply = ply
+
+        elo_key = "WhiteElo" if mover == chess.WHITE else "BlackElo"
+        candidates.append(
+            {
+                "fen": position.fen(),
+                "played_uci": move.uci(),
+                "cp_before_white": cp_before_white,
+                "cp_after_white": cp_after_white,
+                "gap_wp_mined": round(gap_wp, 4),
+                "ply": ply,
+                "game_url": headers.get("Site", ""),
+                "mover_elo": int(headers.get(elo_key, 0) or 0),
+                "time_control": headers.get("TimeControl", ""),
+            }
+        )
+    return candidates
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--max-candidates", type=int, default=2000)
+    args = parser.parse_args()
+
+    seen_fens: set[str] = set()
+    emitted = 0
+    games_read = 0
+    games_with_evals = 0
+
+    for game_text in raw_games(sys.stdin):
+        if emitted >= args.max_candidates:
+            break
+        games_read += 1
+        if games_read % 20000 == 0:
+            print(
+                f"games={games_read} with_evals={games_with_evals} candidates={emitted}",
+                file=sys.stderr,
+            )
+        if "%eval" not in game_text:
+            continue
+        games_with_evals += 1
+        try:
+            game = chess.pgn.read_game(io.StringIO(game_text))
+            if game is None:
+                continue
+            candidates = mine_game(game, seen_fens)
+        except Exception:
+            continue  # malformed / truncated tail
+        for c in candidates:
+            print(json.dumps(c))
+            emitted += 1
+
+    print(
+        f"done: games={games_read} with_evals={games_with_evals} candidates={emitted}",
+        file=sys.stderr,
+    )
+
+
+if __name__ == "__main__":
+    main()
