@@ -15,6 +15,18 @@
   <div id="board-col">
     <div id="turn-banner">&nbsp;</div>
     <div id="board"></div>
+    <div id="board-controls" hidden>
+      <button id="ctl-reset" title="Back to the choice">&#10226;</button>
+      <button id="ctl-back" title="Step back">&#9664;</button>
+      <button id="ctl-fwd" title="Step forward">&#9654;</button>
+      <button id="ctl-gear" title="Replay speed">&#9881;</button>
+    </div>
+    <div id="speed-menu" hidden>
+      <span>auto-play speed</span>
+      <button data-speed="1400">slow</button>
+      <button data-speed="750">normal</button>
+      <button data-speed="450">fast</button>
+    </div>
   </div>
   <aside id="panel">
     <h1>Move discrimination</h1>

@@ -40,9 +40,50 @@ main {
 }
 
 #board {
-  width: min(80vw, 72vh, 560px);
-  height: min(80vw, 72vh, 560px);
+  width: min(92vw, 72vh, 560px);
+  height: min(92vw, 72vh, 560px);
 }
+
+#board-controls {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+}
+#board-controls[hidden] { display: none; }
+#board-controls button {
+  font: inherit;
+  font-size: 20px;
+  min-width: 52px;
+  min-height: 44px;
+  border-radius: 8px;
+  border: 1px solid #45413a;
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+}
+#board-controls button:active { filter: brightness(1.3); }
+#ctl-gear { color: var(--muted); }
+
+#speed-menu {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--muted);
+}
+#speed-menu[hidden] { display: none; }
+#speed-menu button {
+  font: inherit;
+  font-size: 13px;
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid #45413a;
+  background: var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+}
+#speed-menu button.active { color: var(--text); border-color: var(--accent-1); }
 
 #panel {
   background: var(--panel);

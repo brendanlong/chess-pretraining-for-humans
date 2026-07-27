@@ -20,6 +20,7 @@ let lines = [];
 let activeLine = 0;
 let stepIdx = -1; // -1 = at the decision position, before any line move
 let autoplayTimer = null;
+let stepMs = +(localStorage.getItem("stepMs") || 750); // auto-play pace
 
 function arrow(uci, brush) {
   return { orig: uci.slice(0, 2), dest: uci.slice(2, 4), brush };
@@ -101,10 +102,17 @@ function autoplayFrom(idx) {
     if (stepIdx >= lines[activeLine].steps.length - 1) return;
     stepIdx += 1;
     renderStep();
-    autoplayTimer = setTimeout(play, 750);
+    autoplayTimer = setTimeout(play, stepMs);
   };
   stepIdx = idx - 1;
-  autoplayTimer = setTimeout(play, 650);
+  autoplayTimer = setTimeout(play, Math.min(stepMs, 650));
+}
+
+function resetLine() {
+  if (phase !== "revealed") return;
+  stopAutoplay();
+  stepIdx = -1;
+  renderStep();
 }
 
 async function api(path, body) {
@@ -124,6 +132,8 @@ async function loadTrial() {
   stepIdx = -1;
   el("feedback").hidden = true;
   el("repeat-note").hidden = true;
+  el("board-controls").hidden = true;
+  el("speed-menu").hidden = true;
   choiceEls.forEach((b) => {
     b.disabled = false;
     b.classList.remove("picked-good", "picked-bad");
@@ -205,6 +215,7 @@ async function choose(i) {
     `Item rating ${result.item_rating} (${result.rating_delta >= 0 ? "+" : ""}${result.rating_delta} for you).`;
 
   el("feedback").hidden = false;
+  el("board-controls").hidden = false;
   phase = "revealed";
   activeLine = 0;
   stepIdx = -1;
@@ -252,6 +263,23 @@ choiceEls.forEach((b, i) => b.addEventListener("click", () => choose(i)));
 el("tab-0").addEventListener("click", () => switchLine(0, true));
 el("tab-1").addEventListener("click", () => switchLine(1, true));
 el("next").addEventListener("click", loadTrial);
+el("ctl-reset").addEventListener("click", resetLine);
+el("ctl-back").addEventListener("click", () => stepLine(-1));
+el("ctl-fwd").addEventListener("click", () => stepLine(1));
+el("ctl-gear").addEventListener("click", () => {
+  el("speed-menu").hidden = !el("speed-menu").hidden;
+});
+document.querySelectorAll("#speed-menu button").forEach((b) => {
+  if (+b.dataset.speed === stepMs) b.classList.add("active");
+  b.addEventListener("click", () => {
+    stepMs = +b.dataset.speed;
+    localStorage.setItem("stepMs", stepMs);
+    document.querySelectorAll("#speed-menu button").forEach((x) =>
+      x.classList.toggle("active", x === b),
+    );
+    el("speed-menu").hidden = true;
+  });
+});
 
 initStats();
 loadTrial().catch((e) => {
