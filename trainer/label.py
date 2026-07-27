@@ -135,11 +135,15 @@ def label_candidate(cand: dict) -> dict | None:
 
 
 def main() -> None:
+    global MIN_GAP_WP, MAX_GAP_WP
     parser = argparse.ArgumentParser()
     parser.add_argument("candidates", type=Path)
     parser.add_argument("--db", type=Path, default=DEFAULT_DB)
     parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument("--min-gap-wp", type=float, default=MIN_GAP_WP)
+    parser.add_argument("--max-gap-wp", type=float, default=MAX_GAP_WP)
     args = parser.parse_args()
+    MIN_GAP_WP, MAX_GAP_WP = args.min_gap_wp, args.max_gap_wp
 
     conn = connect(args.db)
     existing = {row["fen"] for row in conn.execute("SELECT fen FROM items")}

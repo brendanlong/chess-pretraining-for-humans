@@ -138,9 +138,13 @@ def mine_game(game: chess.pgn.Game, seen_fens: set[str]) -> list[dict]:
 
 
 def main() -> None:
+    global MIN_GAP_WP, MAX_GAP_WP
     parser = argparse.ArgumentParser()
     parser.add_argument("--max-candidates", type=int, default=2000)
+    parser.add_argument("--min-gap-wp", type=float, default=MIN_GAP_WP)
+    parser.add_argument("--max-gap-wp", type=float, default=MAX_GAP_WP)
     args = parser.parse_args()
+    MIN_GAP_WP, MAX_GAP_WP = args.min_gap_wp, args.max_gap_wp
 
     seen_fens: set[str] = set()
     emitted = 0
