@@ -48,6 +48,7 @@ def seed_rating(gap_wp: float) -> float:
 
 
 _local = threading.local()
+_engines: list[chess.engine.SimpleEngine] = []
 
 
 def get_engine() -> chess.engine.SimpleEngine:
@@ -55,6 +56,7 @@ def get_engine() -> chess.engine.SimpleEngine:
         engine = chess.engine.SimpleEngine.popen_uci("stockfish")
         engine.configure({"Threads": ENGINE_THREADS, "Hash": 128})
         _local.engine = engine
+        _engines.append(engine)
     return _local.engine
 
 
@@ -181,6 +183,8 @@ def main() -> None:
             inserted += 1
             learnable_count += item["learnable"]
     conn.commit()
+    for engine in _engines:
+        engine.quit()  # otherwise their non-daemon threads keep the process alive
     print(f"done: inserted={inserted} learnable={learnable_count}", file=sys.stderr)
 
 
