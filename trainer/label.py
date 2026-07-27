@@ -31,6 +31,7 @@ import chess
 import chess.engine
 
 from .db import DEFAULT_DB, connect
+from .rating import RATING_MAX, RATING_MIN
 from .winprob import score_to_winprob
 
 DEPTH_DEEP = 18
@@ -39,9 +40,6 @@ MIN_GAP_WP = 0.015
 MAX_GAP_WP = 0.40
 ENGINE_WORKERS = 8
 ENGINE_THREADS = 2
-
-RATING_MAX = 2500
-RATING_MIN = 600
 
 
 def seed_rating(gap_wp: float) -> float:

@@ -1,6 +1,13 @@
 import math
 
-from trainer.rating import expected_score, target_item_rating, update, TARGET_ACCURACY
+from trainer.rating import (
+    RATING_MAX,
+    RATING_MIN,
+    TARGET_ACCURACY,
+    expected_score,
+    target_item_rating,
+    update,
+)
 from trainer.winprob import cp_to_winprob, score_to_winprob
 
 
@@ -22,6 +29,13 @@ def test_elo_update_direction():
     assert u > 1500 > i
     u, i = update(1500, 1500, correct=False)
     assert u < 1500 < i
+
+
+def test_item_rating_stays_in_seed_range():
+    _, i = update(1500, RATING_MIN, correct=True)
+    assert i == RATING_MIN
+    _, i = update(1500, RATING_MAX, correct=False)
+    assert i == RATING_MAX
 
 
 def test_target_rating_hits_target_accuracy():

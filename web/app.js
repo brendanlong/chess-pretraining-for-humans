@@ -51,8 +51,7 @@ async function loadTrial() {
   });
 
   trial = await api(`/api/next?user=${encodeURIComponent(USER)}`);
-  el("turn-banner").textContent =
-    `${trial.side_to_move} to move` + (trial.probe ? " · probe" : "");
+  el("turn-banner").textContent = `${trial.side_to_move} to move`;
   setBoard(
     trial.fen,
     trial.side_to_move,
@@ -80,14 +79,15 @@ async function choose(i) {
     user: USER,
   });
 
-  el("stat-rating").textContent = result.user_rating;
-
   if (result.probe) {
+    // No feedback of any kind — not even the rating delta.
     phase = "probe-done";
     el("probe-note").hidden = false;
     setTimeout(loadTrial, 900);
     return;
   }
+
+  el("stat-rating").textContent = result.user_rating;
 
   streak = result.correct ? streak + 1 : 0;
   accWindow.push(result.correct ? 1 : 0);

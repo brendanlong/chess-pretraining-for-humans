@@ -100,7 +100,9 @@ def next_item(user: str = "default"):
         "fen": item["fen"],
         "side_to_move": "white" if chess.Board(item["fen"]).turn else "black",
         "moves": [{"uci": m, "san": san(item["fen"], m)} for m in moves],
-        "probe": is_probe(u["attempts"]),
+        # Deliberately no probe flag here: announcing "this one doesn't
+        # count" before the answer would change behavior on exactly the
+        # trials that are the metric.
         "trial_number": u["attempts"] + 1,
         "user_rating": round(u["rating"]),
     }
@@ -126,7 +128,12 @@ def answer(a: Answer):
 
     correct = a.choice_uci == item["best_uci"]
     probe = is_probe(u["attempts"])
-    new_user_r, new_item_r = rating.update(u["rating"], item["rating"], correct)
+    # Probe trials are pure measurement: no rating movement at all, or the
+    # delta (even seen one trial later) becomes a correctness oracle.
+    if probe:
+        new_user_r, new_item_r = u["rating"], item["rating"]
+    else:
+        new_user_r, new_item_r = rating.update(u["rating"], item["rating"], correct)
 
     conn.execute(
         """INSERT INTO responses
@@ -146,18 +153,15 @@ def answer(a: Answer):
     )
     conn.commit()
 
-    base = {
-        "probe": probe,
-        "user_rating": round(new_user_r),
-        "rating_delta": round(new_user_r - u["rating"], 1),
-    }
     if probe:
-        # No-feedback trial: recorded, but the reveal is withheld so these
-        # trials measure judgment rather than reinforce it.
-        return base
+        # No-feedback trial: recorded, but the reveal (and any rating info
+        # that could stand in for it) is withheld.
+        return {"probe": True}
 
     return {
-        **base,
+        "probe": False,
+        "user_rating": round(new_user_r),
+        "rating_delta": round(new_user_r - u["rating"], 1),
         "correct": correct,
         "best": {
             "uci": item["best_uci"],
@@ -190,7 +194,11 @@ def stats(user: str = "default"):
             (u["id"],),
         )
     ]
-    last50 = rows[-50:]
+    # Feedback and probe trials are reported separately: mixing them makes
+    # the headline accuracy incomparable with the frontend's live window,
+    # and the probe-vs-feedback contrast is the interesting number.
+    feedback = [r for r in rows if not r["probe"]]
+    last50 = feedback[-50:]
     probes = [r for r in rows if r["probe"]]
     n_items, n_learnable = conn.execute(
         "SELECT COUNT(*), SUM(learnable) FROM items"
@@ -198,7 +206,9 @@ def stats(user: str = "default"):
     return {
         "user_rating": round(u["rating"]),
         "attempts": len(rows),
-        "accuracy": round(sum(r["correct"] for r in rows) / len(rows), 3) if rows else None,
+        "accuracy": round(sum(r["correct"] for r in feedback) / len(feedback), 3)
+        if feedback
+        else None,
         "accuracy_last_50": round(sum(r["correct"] for r in last50) / len(last50), 3)
         if last50
         else None,

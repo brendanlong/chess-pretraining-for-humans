@@ -18,6 +18,8 @@ TARGET_ACCURACY = 0.80
 K_USER = 32
 K_ITEM = 16
 SELECTION_JITTER = 75  # rating points of noise around the target difficulty
+RATING_MIN = 600
+RATING_MAX = 2500
 
 
 def expected_score(user_rating: float, item_rating: float) -> float:
@@ -33,4 +35,8 @@ def target_item_rating(user_rating: float) -> float:
 def update(user_rating: float, item_rating: float, correct: bool) -> tuple[float, float]:
     e = expected_score(user_rating, item_rating)
     s = 1.0 if correct else 0.0
-    return user_rating + K_USER * (s - e), item_rating - K_ITEM * (s - e)
+    new_item = item_rating - K_ITEM * (s - e)
+    # Items stay inside the seed-prior range so a streak on a rarely-served
+    # item can't drift it out of selection reach.
+    new_item = max(RATING_MIN, min(RATING_MAX, new_item))
+    return user_rating + K_USER * (s - e), new_item
