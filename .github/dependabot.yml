@@ -1,0 +1,41 @@
+version: 2
+
+# cooldown mirrors the exclude-newer = "7 days" rule the lockfiles are
+# generated under: nothing gets proposed until it has been public a week.
+# (Security updates ignore cooldown, which is what we want.)
+#
+# Note for the uv entry: Dependabot regenerates uv.lock without our global
+# uv config, so its PRs drop the `[options] exclude-newer` block. That's
+# harmless — CI uses `uv sync --frozen` — and the next local `uv lock`
+# writes it back.
+
+updates:
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    groups:
+      python:
+        patterns: ["*"]
+
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    groups:
+      eslint:
+        patterns: ["*"]
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]
