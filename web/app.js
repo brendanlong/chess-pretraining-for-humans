@@ -1,7 +1,14 @@
 import { Chessground } from "./vendor/chessground.min.js";
 
 const USER = new URLSearchParams(location.search).get("user") || "default";
-const BRUSHES = ["blue", "yellow"]; // arrow colors matching the two buttons
+const BRUSHES = ["blue", "purple"]; // arrow colors matching the two buttons
+// Custom brush set: chessground's yellow is invisible on the light squares.
+const BRUSH_DEFS = {
+  blue: { key: "blue", color: "#1a56c4", opacity: 0.9, lineWidth: 10 },
+  purple: { key: "purple", color: "#8a2be2", opacity: 0.9, lineWidth: 10 },
+  green: { key: "green", color: "#15781b", opacity: 0.85, lineWidth: 10 },
+  red: { key: "red", color: "#b02323", opacity: 0.85, lineWidth: 10 },
+};
 
 const el = (id) => document.getElementById(id);
 const boardEl = el("board");
@@ -40,7 +47,7 @@ function setBoard(fen, orientation, shapes, opts = {}) {
     coordinates: true,
     animation: { enabled: opts.animate ?? false, duration: 250 },
     lastMove: opts.lastMove,
-    drawable: { autoShapes: shapes },
+    drawable: { autoShapes: shapes, brushes: BRUSH_DEFS },
   };
   if (!cg) cg = Chessground(boardEl, config);
   else cg.set(config);

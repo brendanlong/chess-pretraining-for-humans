@@ -1,95 +1,40 @@
 # chess-pretraining-for-humans
 
 A pairwise move-discrimination trainer: you're shown a real position from a
-real game and two candidate moves, and you pick the better one. Stockfish is
-the ground truth; feedback is immediate; difficulty adapts to hold you near
-80% accuracy.
+real game and two candidate moves, and you pick the better one. Stockfish
+is the ground truth, feedback is immediate, and difficulty adapts to hold
+you near 80% accuracy.
 
-The framing is *supervised pretraining for humans*: instead of learning chess
-from sparse end-of-game reward, train the underlying perceptual judgment —
-"this move is better than that move" — with thousands of dense, labeled,
-fast trials, the way perceptual category learning works in chicken sexing or
-radiology. Forced choice plus immediate feedback is the load-bearing
-mechanism.
-
-## Design
-
-- **Correct answer = the position's best move** (full-strength Stockfish,
-  multipv). Discriminating between two bad moves isn't a useful skill, and
-  being wrong against real truth beats learning to prefer weaker moves.
-- **Distractor = the move actually played in the game** when it wasn't best
-  (those are the errors humans actually make); the engine's second choice as
-  fallback when the game move was best.
-- **Difficulty lives in win-probability space**, not centipawns (a 1.0-pawn
-  gap at 0.00 is enormous; at +6.00 it's noise). Evals are converted with
-  Lichess's logistic model, and the wp-gap seeds a per-item Elo rating that
-  real responses then correct — gap alone can't hold a target accuracy.
-- **Everyone starts as a beginner.** New users begin at rating 700 ("knows
-  the rules, terrible at chess") rather than being asked their strength.
-  A calibration staircase makes that cheap: the rating jumps by a large
-  step on each correct answer, the step halves on each miss, and once the
-  step is small normal Elo takes over — beginners settle in a few trials,
-  experienced players climb to their level within ~10.
-- **Learnability filter**: both moves are re-evaluated at shallow depth. If
-  shallow and deep search disagree about which move is better, the answer
-  hinges on deep calculation rather than anything perceivable, so the item is
-  labeled correct-but-unlearnable and never served.
-- **No repeats, feedback on every trial.** Items are never re-served while
-  fresh ones remain, so every answer is a first exposure recorded *before*
-  the reveal — simultaneously a clean measurement and a training trial.
-  There is no separate no-feedback stream; if the bank runs dry, the fix is
-  mining more games, not recycling (repeats are served as a last resort,
-  flagged, and excluded from ratings and accuracy).
+- **[SPEC.md](SPEC.md)** — what this is trying to do, and the invariants.
+- **[DESIGN.md](DESIGN.md)** — how the app is put together.
 
 ## Running it
 
-Requires [uv](https://docs.astral.sh/uv/), a `stockfish` binary on PATH, and
-`zstd`.
+Requires [uv](https://docs.astral.sh/uv/), a `stockfish` binary on PATH,
+and `zstd`.
 
 ```bash
-# 1. Mine candidate positions from a Lichess monthly dump (streams the head,
-#    no need to download 30GB; only analyzed games are parsed)
+# 1. Mine candidate positions from a Lichess monthly dump (streams the
+#    head, no need to download 30GB)
 curl -s -r 0-150000000 https://database.lichess.org/standard/lichess_db_standard_rated_2026-06.pgn.zst \
   | zstdcat 2>/dev/null \
   | uv run python -m trainer.mine --max-candidates 2500 > data/candidates.jsonl
 
-# 2. Label with Stockfish (deep multipv for ground truth, shallow pass for
-#    the learnability filter) — builds data/items.db
+# 2. Label with Stockfish — builds data/items.db
 uv run python -m trainer.label data/candidates.jsonl
 
 # 3. Serve
 uv run uvicorn trainer.server:app --host 0.0.0.0 --port 8000
 ```
 
-Open the page, press <kbd>1</kbd>/<kbd>2</kbd> to answer,
-<kbd>space</kbd> for the next trial. `?user=name` keeps separate profiles.
+## Using it
 
-After each answer the engine line for the move you picked auto-plays on the
-board (the "why": your move's consequences, or the best move's follow-up).
-Press <kbd>1</kbd>/<kbd>2</kbd> or click the tabs to switch between the two
-lines, <kbd>&larr;</kbd>/<kbd>&rarr;</kbd> to step manually. Items labeled
-before PV storage existed can be backfilled with
-`uv run python -m trainer.backfill_pvs`.
+Press <kbd>1</kbd>/<kbd>2</kbd> (or tap) to answer; the chosen move's
+engine line then auto-plays on the board. <kbd>1</kbd>/<kbd>2</kbd> or the
+tabs switch lines, <kbd>&larr;</kbd>/<kbd>&rarr;</kbd> or the buttons under
+the board step through, ⟲ returns to the choice, ⚙ sets replay speed.
+<kbd>space</kbd> for the next trial. "Copy for Claude" exports the position
+and both lines as text to ask an assistant about. `?user=name` keeps
+separate profiles.
 
-## Layout
-
-| path | what |
-|---|---|
-| `trainer/mine.py` | Lichess dump stream → candidate decision points |
-| `trainer/label.py` | Stockfish labeling: best move, evals, learnability, seed rating |
-| `trainer/winprob.py` | centipawns → win probability |
-| `trainer/rating.py` | Elo machinery: item selection targets ~80% expected score |
-| `trainer/server.py` | FastAPI: `/api/next`, `/api/answer`, `/api/stats` |
-| `web/` | vanilla-JS frontend on [chessground](https://github.com/lichess-org/chessground) (vendored) |
-
-## Not built yet
-
-- The color/sound overlay (the synesthesia hypothesis — v1.1). Constraint
-  for when it lands: the cue plays only during the reveal, never while the
-  user is choosing, so it can never leak the answer.
-- Transfer measurement. In-app accuracy on fresh items is the running
-  measure, but it shares the item generator's biases; the real test is
-  external (rated games, puzzle ratings, or items mined from a deliberately
-  different distribution).
-- Stroop-interference measurement (deliberately mismatched cue).
-- Glicko-2 (plain Elo for now).
+Tests: `uv run pytest`.
