@@ -21,6 +21,8 @@ let activeLine = 0;
 let stepIdx = -1; // -1 = at the decision position, before any line move
 let autoplayTimer = null;
 let stepMs = +(localStorage.getItem("stepMs") || 750); // auto-play pace
+let lastResult = null; // /api/answer payload for the current reveal
+let lastChoiceSan = null;
 
 function arrow(uci, brush) {
   return { orig: uci.slice(0, 2), dest: uci.slice(2, 4), brush };
@@ -115,6 +117,53 @@ function resetLine() {
   renderStep();
 }
 
+// --- copy-for-Claude ----------------------------------------------------
+
+function describeMove(mv, tag) {
+  const sans = mv.line.map((s) => s.san).join(" ");
+  return (
+    `${tag}: ${mv.san} — Stockfish eval ${mv.eval} (${mv.wp}% win probability for the side to move)\n` +
+    `  Engine line: ${sans}`
+  );
+}
+
+function buildCopyText() {
+  const r = lastResult;
+  return [
+    `I'm training move discrimination in chess. Position (FEN):`,
+    trial.fen,
+    ``,
+    `${trial.side_to_move} to move. I was asked which of these two moves is better:`,
+    ``,
+    describeMove(r.best, `Best move (per Stockfish)`),
+    describeMove(r.distractor, `Alternative`),
+    ``,
+    `The gap is ${r.gap_wp}% win probability. I picked ${lastChoiceSan}, which was ${r.correct ? "correct" : "wrong"}.`,
+    `Please explain in plain terms why ${r.best.san} is better and what's wrong with ${r.distractor.san} — what should I have noticed on the board?`,
+  ].join("\n");
+}
+
+async function copyForClaude() {
+  if (!lastResult) return;
+  const text = buildCopyText();
+  window.__lastCopyText = text; // debugging/testing hook
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    // http (non-secure context, e.g. over the tailnet): legacy fallback
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand("copy");
+    ta.remove();
+  }
+  const btn = el("copy-btn");
+  const old = btn.innerHTML;
+  btn.textContent = "Copied ✓";
+  setTimeout(() => (btn.innerHTML = old), 1500);
+}
+
 async function api(path, body) {
   const res = await fetch(path, body && {
     method: "POST",
@@ -183,6 +232,8 @@ async function choose(i) {
       Math.round((100 * accWindow.reduce((a, b) => a + b, 0)) / accWindow.length) + "%";
 
   choiceEls[i].classList.add(result.correct ? "picked-good" : "picked-bad");
+  lastResult = result;
+  lastChoiceSan = choice.san;
 
   // Replay lines: your pick first (it auto-plays), the other switchable.
   const mkLine = (mv, isBest, tag) => ({
@@ -263,6 +314,7 @@ choiceEls.forEach((b, i) => b.addEventListener("click", () => choose(i)));
 el("tab-0").addEventListener("click", () => switchLine(0, true));
 el("tab-1").addEventListener("click", () => switchLine(1, true));
 el("next").addEventListener("click", loadTrial);
+el("copy-btn").addEventListener("click", copyForClaude);
 el("ctl-reset").addEventListener("click", resetLine);
 el("ctl-back").addEventListener("click", () => stepLine(-1));
 el("ctl-fwd").addEventListener("click", () => stepLine(1));

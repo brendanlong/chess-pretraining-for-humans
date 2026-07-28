@@ -192,6 +192,8 @@ kbd {
 
 #replay-hint { font-size: 12px; color: var(--muted); margin: 6px 0 0; }
 
+#actions { display: flex; gap: 10px; flex-wrap: wrap; }
+
 #next {
   font: inherit;
   padding: 10px 18px;
@@ -201,6 +203,18 @@ kbd {
   color: #fff;
   cursor: pointer;
 }
+
+#copy-btn {
+  font: inherit;
+  font-size: 14px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  border: 1px solid #45413a;
+  background: var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+}
+#copy-btn:hover { color: var(--text); }
 
 .repeat-badge {
   display: inline-block;
