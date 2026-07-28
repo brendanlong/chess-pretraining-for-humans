@@ -1,6 +1,10 @@
 import { Chessground } from "./vendor/chessground.min.js";
 
-const USER = new URLSearchParams(location.search).get("user") || "default";
+// User identity: URL param wins (shareable/debug), then the sticky local
+// choice, then "default". Real accounts come later; see the settings drawer.
+const urlUser = new URLSearchParams(location.search).get("user");
+const USER = urlUser || localStorage.getItem("user") || "default";
+
 const BRUSHES = ["blue", "purple"]; // arrow colors matching the two buttons
 // Custom brush set: chessground's yellow is invisible on the light squares.
 const BRUSH_DEFS = {
@@ -22,7 +26,7 @@ let streak = 0;
 let accWindow = []; // local last-50 correctness (feedback trials only)
 
 // Reveal replay state: two engine lines, one active, stepped through on the
-// main board. lines[i] = {label, cls, steps: [{uci, san, fen}]}
+// main board. lines[i] = {mv, tag, cls, brush, steps}
 let lines = [];
 let activeLine = 0;
 let stepIdx = -1; // -1 = at the decision position, before any line move
@@ -189,15 +193,12 @@ async function loadTrial() {
   stepIdx = -1;
   el("feedback").hidden = true;
   el("repeat-note").hidden = true;
-  el("board-controls").hidden = true;
-  el("speed-menu").hidden = true;
-  choiceEls.forEach((b) => {
-    b.disabled = false;
-    b.classList.remove("picked-good", "picked-bad");
-  });
+  el("ask").hidden = false;
+  choiceEls.forEach((b) => (b.disabled = false));
 
   trial = await api(`/api/next?user=${encodeURIComponent(USER)}`);
-  el("turn-banner").textContent = `${trial.side_to_move} to move`;
+  el("turn-label").textContent = `${trial.side_to_move} to move`;
+  el("turn-dot").className = trial.side_to_move;
   setBoard(
     trial.fen,
     trial.side_to_move,
@@ -239,53 +240,51 @@ async function choose(i) {
     el("stat-acc").textContent =
       Math.round((100 * accWindow.reduce((a, b) => a + b, 0)) / accWindow.length) + "%";
 
-  choiceEls[i].classList.add(result.correct ? "picked-good" : "picked-bad");
   lastResult = result;
 
   // Replay lines: your pick first (it auto-plays), the other switchable.
   const mkLine = (mv, isBest, tag) => ({
+    mv,
+    tag,
     steps: mv.line,
     brush: isBest ? "green" : "red",
     cls: isBest ? "good" : "bad",
-    label: `${mv.san} · ${tag}`,
   });
   lines = result.correct
     ? [mkLine(result.best, true, "your pick"), mkLine(result.distractor, false, "alternative")]
     : [mkLine(result.distractor, false, "your pick"), mkLine(result.best, true, "best move")];
   lines.forEach((l, idx) => {
-    const tab = el(`tab-${idx}`);
-    tab.textContent = "▶ " + l.label;
-    tab.className = `line-tab ${l.cls}`;
+    const card = el(`tab-${idx}`);
+    card.classList.remove("good", "bad", "active");
+    card.classList.add(l.cls);
+    card.querySelector(".san").textContent = l.mv.san;
+    card.querySelector(".tag").textContent = l.tag;
+    card.querySelector(".eval").textContent = l.mv.eval;
+    card.querySelector(".wp").textContent = `${l.mv.wp}% win`;
   });
 
   const verdict = el("verdict");
-  verdict.textContent = result.correct ? "Correct" : "Wrong";
+  verdict.textContent = result.correct ? "✓ Correct" : "✗ Wrong";
   verdict.className = result.correct ? "good" : "bad";
+  el("rating-delta").textContent = result.repeat
+    ? "rerun — not rated"
+    : `${result.rating_delta >= 0 ? "+" : ""}${result.rating_delta} Elo`;
 
-  fillRow("row-best", result.best);
-  fillRow("row-distractor", result.distractor);
   const source =
     result.distractor_source === "game"
       ? `the move actually played in <a href="${result.game_url}" target="_blank">the game</a>`
       : "the engine's second choice";
   el("detail").innerHTML =
     `Gap: ${result.gap_wp}% win probability. The alternative was ${source}. ` +
-    `Item rating ${result.item_rating} (${result.rating_delta >= 0 ? "+" : ""}${result.rating_delta} for you).`;
+    `Item rating ${result.item_rating}.`;
 
+  el("ask").hidden = true;
   el("feedback").hidden = false;
-  el("board-controls").hidden = false;
   phase = "revealed";
   activeLine = 0;
   stepIdx = -1;
   renderStep();
   autoplayFrom(0);
-}
-
-function fillRow(rowId, move) {
-  const row = el(rowId);
-  row.querySelector(".move").textContent = move.san;
-  row.querySelector(".eval").textContent = move.eval;
-  row.querySelector(".wp").textContent = `${move.wp}% win`;
 }
 
 async function initStats() {
@@ -298,7 +297,55 @@ async function initStats() {
   }
 }
 
+// --- settings drawer ------------------------------------------------------
+
+function openSettings() {
+  el("user-input").value = USER;
+  el("settings").hidden = false;
+}
+
+function closeSettings() {
+  el("settings").hidden = true;
+}
+
+function switchUser(name) {
+  localStorage.setItem("user", name);
+  // Drop any ?user= override so the stored name takes effect.
+  location.href = location.pathname;
+}
+
+el("settings-btn").addEventListener("click", openSettings);
+el("user-btn").addEventListener("click", openSettings);
+el("settings-close").addEventListener("click", closeSettings);
+el("settings").addEventListener("click", (e) => {
+  if (e.target === el("settings")) closeSettings();
+});
+el("user-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const name = el("user-input").value.trim();
+  if (name && name !== USER) switchUser(name);
+  else closeSettings();
+});
+
+document.querySelectorAll("#speed-menu button").forEach((b) => {
+  if (+b.dataset.speed === stepMs) b.classList.add("active");
+  b.addEventListener("click", () => {
+    stepMs = +b.dataset.speed;
+    localStorage.setItem("stepMs", stepMs);
+    document.querySelectorAll("#speed-menu button").forEach((x) =>
+      x.classList.toggle("active", x === b),
+    );
+  });
+});
+
+// --- input ----------------------------------------------------------------
+
 document.addEventListener("keydown", (e) => {
+  if (!el("settings").hidden) {
+    if (e.key === "Escape") closeSettings();
+    return;
+  }
+  if (e.target.tagName === "INPUT") return;
   if (phase === "choosing") {
     if (e.key === "1" || e.key === "ArrowLeft") choose(0);
     else if (e.key === "2" || e.key === "ArrowRight") choose(1);
@@ -325,21 +372,8 @@ el("copy-btn").addEventListener("click", copyForClaude);
 el("ctl-reset").addEventListener("click", resetLine);
 el("ctl-back").addEventListener("click", () => stepLine(-1));
 el("ctl-fwd").addEventListener("click", () => stepLine(1));
-el("ctl-gear").addEventListener("click", () => {
-  el("speed-menu").hidden = !el("speed-menu").hidden;
-});
-document.querySelectorAll("#speed-menu button").forEach((b) => {
-  if (+b.dataset.speed === stepMs) b.classList.add("active");
-  b.addEventListener("click", () => {
-    stepMs = +b.dataset.speed;
-    localStorage.setItem("stepMs", stepMs);
-    document.querySelectorAll("#speed-menu button").forEach((x) =>
-      x.classList.toggle("active", x === b),
-    );
-    el("speed-menu").hidden = true;
-  });
-});
 
+el("user-name").textContent = USER;
 initStats();
 loadTrial().catch((e) => {
   el("prompt").textContent = e.message;
