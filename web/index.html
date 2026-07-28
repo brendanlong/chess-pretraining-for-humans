@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Move Discrimination Trainer</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&%239822;</text></svg>">
+<link rel="stylesheet" href="vendor/chessground.base.css">
+<link rel="stylesheet" href="vendor/chessground.brown.css">
+<link rel="stylesheet" href="vendor/chessground.cburnett.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <div id="board-col">
+    <div id="turn-banner">&nbsp;</div>
+    <div id="board"></div>
+    <div id="board-controls" hidden>
+      <button id="ctl-reset" title="Back to the choice">&#10226;</button>
+      <button id="ctl-back" title="Step back">&#9664;</button>
+      <button id="ctl-fwd" title="Step forward">&#9654;</button>
+      <button id="ctl-gear" title="Replay speed">&#9881;</button>
+    </div>
+    <div id="speed-menu" hidden>
+      <span>auto-play speed</span>
+      <button data-speed="1400">slow</button>
+      <button data-speed="750">normal</button>
+      <button data-speed="450">fast</button>
+    </div>
+  </div>
+  <aside id="panel">
+    <h1>Move discrimination</h1>
+    <div id="statusbar">
+      <span>rating <b id="stat-rating">–</b></span>
+      <span>trial <b id="stat-trial">–</b></span>
+      <span>last 50 <b id="stat-acc">–</b></span>
+      <span>streak <b id="stat-streak">0</b></span>
+      <span>fresh <b id="stat-remaining">–</b></span>
+    </div>
+    <p id="prompt">Which move is better? Press <kbd>1</kbd> or <kbd>2</kbd>.</p>
+    <div id="choices">
+      <button id="choice-1" class="choice"><span class="key">1</span><span class="san"></span></button>
+      <button id="choice-2" class="choice"><span class="key">2</span><span class="san"></span></button>
+    </div>
+    <div id="feedback" hidden>
+      <div id="verdict"></div>
+      <table id="reveal">
+        <tr id="row-best"><td class="move"></td><td class="eval"></td><td class="wp"></td></tr>
+        <tr id="row-distractor"><td class="move"></td><td class="eval"></td><td class="wp"></td></tr>
+      </table>
+      <div id="detail"></div>
+      <div id="replay">
+        <div id="line-tabs">
+          <button id="tab-0" class="line-tab"></button>
+          <button id="tab-1" class="line-tab"></button>
+        </div>
+        <div id="line-sans"></div>
+        <p id="replay-hint"><kbd>&larr;</kbd><kbd>&rarr;</kbd> step through the line</p>
+      </div>
+      <div id="actions">
+        <button id="next">Next <kbd>space</kbd></button>
+        <button id="copy-btn" title="Copy the position and both engine lines as a question for Claude">&#10697; Copy for Claude</button>
+      </div>
+    </div>
+    <div id="repeat-note" hidden>
+      <div class="repeat-badge">repeat</div>
+      <p>You've seen every item — this one is a rerun and won't affect your
+      rating. Mine more games to keep training on fresh positions.</p>
+    </div>
+  </aside>
+</main>
+<script type="module" src="app.js"></script>
+</body>
+</html>
