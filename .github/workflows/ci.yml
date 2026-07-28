@@ -5,19 +5,28 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   python:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # --frozen, not --locked: uv.lock records an `exclude-newer` from the
+    # authoring machine's global uv config, which a runner doesn't have, so
+    # --locked always reports the lock as stale. --frozen uses it as-is.
+    env:
+      UV_FROZEN: "1"
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v9
         with:
           enable-cache: true
-      - run: uv sync --locked
+      - run: uv sync --frozen
       - name: ruff (lint)
         run: uv run ruff check --output-format=github .
       - name: ruff (format)
@@ -29,6 +38,7 @@ jobs:
 
   web:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7

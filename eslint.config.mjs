@@ -9,10 +9,7 @@ export default [
     languageOptions: {
       ecmaVersion: 2023,
       sourceType: "module",
-      globals: {
-        ...globals.browser,
-        Chessground: "readonly", // web/vendor/chessground.min.js
-      },
+      globals: globals.browser,
     },
   },
 ];

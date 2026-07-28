@@ -63,8 +63,7 @@ def san(fen: str, uci: str) -> str:
 def eval_display(cp: int | None, mate: int | None) -> str:
     if mate is not None:
         return f"#{mate}" if mate > 0 else f"#-{abs(mate)}"
-    if cp is None:  # neither score stored (shouldn't happen); don't 500 the trial
-        return "?"
+    assert cp is not None  # pov_parts always yields one of cp/mate
     return f"{cp / 100:+.2f}"
 
 
