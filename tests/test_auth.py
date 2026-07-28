@@ -489,28 +489,46 @@ def test_a_crash_does_not_burn_a_signup_slot(client, monkeypatch):
     assert client.post("/api/account/signup", json=CREDS).status_code == 200
 
 
-def test_a_shed_signup_does_not_spend_an_attempt(client, monkeypatch):
-    monkeypatch.setattr(server, "signup_attempt_limiter", auth.RateLimiter(2, 3600))
+def test_a_shed_signup_still_costs_an_attempt(db, monkeypatch):
+    """A shed request has already minted a guest row and a session by the time
+    the hasher refuses it. Refunding the attempt would leave a saturated box
+    with an unmetered signup endpoint — worse than the throttling it avoids."""
+    monkeypatch.setattr(server, "signup_attempt_limiter", auth.RateLimiter(3, 3600))
     monkeypatch.setattr(auth, "HASH_WAIT_S", 0.05)
-    saturated, real = threading.Semaphore(0), auth._hash_slots
-    monkeypatch.setattr(auth, "_hash_slots", saturated)
-    for _ in range(3):
-        assert client.post("/api/account/signup", json=CREDS).status_code == 503
-    monkeypatch.setattr(auth, "_hash_slots", real)
-    assert client.post("/api/account/signup", json=CREDS).status_code == 200
+    monkeypatch.setattr(auth, "_hash_slots", threading.Semaphore(0))
+    codes = []
+    for _ in range(6):
+        with TestClient(server.app) as c:  # a fresh browser each time
+            codes.append(c.post("/api/account/signup", json=CREDS).status_code)
+    assert codes == [503, 503, 503, 429, 429, 429], codes
+    assert db.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 3  # not 6
 
 
-def test_successes_do_not_refund_other_requests_wrong_guesses(client, monkeypatch):
-    """A refund gives back the slot that request took, not the last one taken,
-    so someone holding one working account can't alternate correct/wrong to
-    keep guessing at another. Wrong guesses still accumulate to the limit."""
+def test_interleaved_successes_cannot_buy_extra_wrong_guesses(client, monkeypatch):
+    """Someone holding one working account must not be able to alternate
+    correct/wrong to keep guessing at another. A refund drops the key's newest
+    timestamp, which under concurrency may be a different request's — safe
+    because the *count* of live entries is what bounds the key, and only wrong
+    guesses keep theirs. Run concurrently, where that distinction is real."""
     client.post("/api/account/signup", json=CREDS)
-    monkeypatch.setattr(server, "login_limiter", auth.RateLimiter(3, 900))
+    limit = 5
+    monkeypatch.setattr(server, "login_limiter", auth.RateLimiter(limit, 900))
     bad = {**CREDS, "password": "wrongwrongwrong"}
     codes = []
-    with TestClient(server.app) as other:
-        for _ in range(5):
-            codes.append(other.post("/api/account/login", json=bad).status_code)
-            codes.append(other.post("/api/account/login", json=CREDS).status_code)
-    assert codes.count(400) == 3, codes  # the wrong guesses ran out of slots
-    assert 429 in codes
+
+    def alternate():
+        with TestClient(server.app) as other:
+            for _ in range(6):
+                codes.append(other.post("/api/account/login", json=bad).status_code)
+                codes.append(other.post("/api/account/login", json=CREDS).status_code)
+
+    threads = [threading.Thread(target=alternate) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    # Never more than `limit` guesses reach the verify, however many successes
+    # interleave. Not exactly `limit`: a success holds its slot across its own
+    # verify, so it can transiently crowd out a guess that then gets a 429.
+    assert codes.count(400) <= limit, codes
+    assert 429 in codes, codes  # and the cap really did bind

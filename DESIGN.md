@@ -41,9 +41,12 @@ is the CSRF-and-shared-cache story. Signup and login are rate-limited per IP
 in memory rather than captcha'd: a loose per-attempt limit, because an
 attempt is what costs us (an argon2 hash, and an answer to "is this name
 taken?"), plus a tight limit on accounts actually created. Slots are taken
-before the slow work and handed back when the outcome turns out not to count,
-never checked first and recorded after — that ordering is one a concurrent
-burst walks straight past. argon2 runs outside the database lock but under two
+before the slow work, never checked first and recorded after — that ordering
+is one a concurrent burst walks straight past. A slot is handed back only when
+the request cost us nothing it was meant to ration: the creation slot when no
+account was made, the login slot when the guess wasn't wrong. Attempts are
+never refunded, or a saturated server would be an unmetered one. argon2 runs
+outside the database lock but under two
 caps: how many hash at once (it is memory-hard by design, so unbounded
 parallelism is an out-of-memory button) and how many may be inside the hasher
 at all, since sync endpoints run on a fixed thread pool and a caller merely

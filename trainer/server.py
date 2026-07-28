@@ -31,11 +31,14 @@ conn = connect(DEFAULT_DB, check_same_thread=False)
 db_lock = threading.Lock()
 
 # Two gates on signup, neither a captcha (see auth.RateLimiter). The attempt
-# limit is charged for every request, because an attempt is what costs us — an
-# argon2 hash, and an answer to "is this username taken?" — and is loose enough
-# that a person fumbling the form never reaches it. The creation limit is what
-# bounds how many accounts one address can make; it's taken up front and handed
-# back when nothing was created, so it can't be walked past by a burst.
+# limit is charged for every request and never refunded, because an attempt is
+# what costs us — a guest row, an argon2 hash, an answer to "is this username
+# taken?" — and it is loose enough that a person fumbling the form never
+# reaches it. The creation limit is what bounds how many accounts one address
+# can make; it's taken up front and handed back when nothing was created, so it
+# can't be walked past by a burst. Login is charged the same way, refunded on
+# anything that isn't a wrong guess so shared addresses don't throttle each
+# other; it counts wrong guesses only, hence the tighter number.
 signup_attempt_limiter = auth.RateLimiter(limit=20, window_s=3600)
 signup_limiter = auth.RateLimiter(limit=5, window_s=3600)
 login_limiter = auth.RateLimiter(limit=10, window_s=900)
@@ -422,15 +425,20 @@ def account(user_id: int = CurrentUserId):
 def signup(body: Signup, request: Request):
     """Claim the guest row this session has been playing on — no reset."""
     ip = client_key(request)
+    # The attempt slot is never refunded. Every request that gets this far
+    # costs us something real — at minimum a guest row and a session, minted
+    # below — so even one we refuse to finish is an attempt. Refunding it on
+    # the refusal path would make a saturated hasher an unmetered signup
+    # endpoint, which is a worse failure than the throttling it avoids.
     spend(signup_attempt_limiter, ip)
-    # Both slots are taken up front and handed back on the way out, rather
-    # than recorded at the end: a limit checked before the ~50ms hash and
-    # written after is one a concurrent burst walks straight past. The refunds
-    # live in `finally` because any path that returns without doing the thing
-    # the slot pays for — including a crash — has to give it back, or an
-    # overloaded box turns into an hour-long lockout for a real user.
+    # The creation slot is taken up front and handed back on the way out,
+    # rather than recorded at the end: a limit checked before the ~50ms hash
+    # and written after is one a concurrent burst walks straight past. The
+    # refund lives in `finally` because every path that returns without an
+    # account — including a crash — has to give it back, or an overloaded box
+    # turns into an hour-long lockout for a real user.
     spend(signup_limiter, ip)
-    created = shed = False
+    created = False
     try:
         # Everything cheap first: a typo, a taken name, or an already-claimed
         # session must not cost an argon2 hash (~50ms and 64 MiB).
@@ -446,16 +454,11 @@ def signup(body: Signup, request: Request):
             u = auth.claim(conn, user_id, username, password_hash, email)
             reissue_session(request, u["id"])
         created = True
-    except auth.AuthBusy as e:
-        shed = True  # we refused to do the work; that isn't an attempt
-        raise auth_error(e) from e
     except auth.AuthError as e:
         raise auth_error(e) from e
     finally:
         if not created:
             signup_limiter.release(ip)
-        if shed:
-            signup_attempt_limiter.release(ip)
     return account_payload(u)
 
 
@@ -464,9 +467,10 @@ def login(body: Login, request: Request):
     ip = client_key(request)
     # Taken before the verify, not incremented after it: a limit read before
     # the ~50ms hash and written after is one a concurrent burst walks straight
-    # past. A success refunds only the slot it took itself, so wrong guesses
-    # still accumulate toward the limit while people sharing an address (NAT, a
-    # proxy without --proxy-headers) don't throttle each other by signing in.
+    # past. Only wrong guesses keep their slot, so the count of live entries is
+    # the count of wrong guesses however they interleave with successes — which
+    # is what lets people sharing an address (NAT, a proxy without
+    # --proxy-headers) sign in without throttling each other.
     spend(login_limiter, ip)
     wrong = False
     try:

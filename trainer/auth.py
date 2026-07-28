@@ -341,8 +341,17 @@ class RateLimiter:
             self._record(key, now)
 
     def release(self, key: str) -> None:
-        """Hand back the slot most recently taken for this key, once the
-        outcome turns out not to be worth counting."""
+        """Give a slot back once the outcome turns out not to be worth
+        counting.
+
+        This drops the key's newest timestamp, which under concurrency may
+        belong to a different in-flight request rather than the caller. That
+        is deliberate and safe: what bounds the key is the *count* of live
+        entries, and count is unaffected by which one is dropped. The only
+        visible effect is that the surviving entry is the older timestamp, so
+        the window rolls over a request-duration sooner. Do not read this as
+        "each caller gets its own slot back" — nothing tracks callers.
+        """
         with self._lock:
             hits = self._hits.get(key)
             if hits:
