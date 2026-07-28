@@ -50,10 +50,16 @@ uv run python -m trainer.account list
 uv run python -m trainer.account set-password brendan
 ```
 
-Behind a reverse proxy, run uvicorn with `--proxy-headers` and a trusted
-`--forwarded-allow-ips` so the signup/login rate limits see real client
-addresses, and terminate TLS there (the session cookie is marked `Secure`
-whenever the request arrives over https).
+Behind a reverse proxy, terminate TLS there (the session cookie is marked
+`Secure` whenever the request arrives over https) and run uvicorn with
+`--proxy-headers` and a trusted `--forwarded-allow-ips`, so the signup limit
+sees real client addresses rather than counting the whole site as one. Login
+throttling is per account and unaffected either way.
+
+If you expose this publicly, put per-IP request limiting in the proxy
+(`limit_req` in nginx, or equivalent) rather than relying on the in-app
+counter: the proxy's is shared across workers, survives a restart, and sheds
+load before it reaches Python.
 
 ## Checks
 

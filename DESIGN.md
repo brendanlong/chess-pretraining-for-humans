@@ -38,17 +38,22 @@ history rather than a gate in front of it. Sessions are a table of hashed
 tokens, so a database read grants no logins; the token is rotated on every
 privilege change, and `SameSite=Lax` plus `no-store` on every API response
 is the CSRF-and-shared-cache story. Signup and login are rate-limited per IP
-in memory rather than captcha'd: one counter per endpoint, charged on every
-request and never refunded, deliberately loose. Counting outcomes instead of
-requests needs the counter read before the slow work and written after, which
-a concurrent burst walks straight past; refunding the ones that "shouldn't
-count" then needs every exit path to be right. Both are how this got fiddly
-before, and neither buys much here — a limit loose enough that a fumbled form
-can't reach it does the same job. argon2 runs outside the database lock, under
-a concurrency cap because it is memory-hard by design (unbounded parallelism
-is an out-of-memory button) and with a short wait rather than an unbounded
-one, because sync endpoints share a fixed thread pool and a caller merely
-waiting still holds a thread the trial flow needs. Because arriving is
+in memory rather than captcha'd. Login is throttled **per account**, not per
+address: what an attacker is guessing at is one account's password, and
+rotating addresses is a line of script, while several real users share one
+address routinely. The price is that a known account can be held locked while
+someone keeps guessing at it — inherent to per-account throttling, with the
+short window as the mitigation. Signup is throttled per address only because
+there is no account to key on yet; per-IP volume really belongs in a reverse
+proxy, which sees the true client, is shared across workers and survives a
+restart, so treat that counter as insurance rather than a defence. Counters
+are charged before the slow work and never refunded — read-before/write-after
+is what a burst walks past, and per-outcome refunds need every exit path to be
+right. argon2 runs outside the database lock, under a concurrency cap because
+it is memory-hard by design (unbounded parallelism is an out-of-memory button)
+and with a short wait rather than an unbounded one, because sync endpoints
+share a fixed thread pool and a caller merely waiting still holds a thread the
+trial flow needs. Because arriving is
 enough to mint a guest, guests that answered nothing and went cold are swept
 periodically; anything with a response or a password is never touched.
 `trainer/account.py` is the operator's way to put a password on a row the

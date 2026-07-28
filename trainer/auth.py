@@ -339,3 +339,15 @@ class RateLimiter:
             if len(self._live(key, now)) >= self.limit:
                 raise RateLimited("Too many attempts. Wait a few minutes and try again.")
             self._record(key, now)
+
+    def clear(self, key: str) -> None:
+        """Forget a key entirely.
+
+        Unlike a per-request refund — which needs every exit path to be right,
+        and is where earlier versions of this went wrong — this is reachable
+        only by proving you know the password. An attacker who doesn't can
+        never trigger it, and forgetting to call it just leaves someone
+        slightly more throttled than intended.
+        """
+        with self._lock:
+            self._hits.pop(key, None)

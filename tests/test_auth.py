@@ -427,13 +427,61 @@ def test_every_signup_attempt_counts_including_rejected_ones(client, monkeypatch
         )
 
 
-def test_every_login_attempt_counts_including_successful_ones(client, monkeypatch):
-    monkeypatch.setattr(server, "login_limiter", auth.RateLimiter(2, 900))
+def test_guessing_is_throttled_per_account_not_per_address(client, monkeypatch):
+    """The thing being attacked is an account, so that's what we count. An
+    attacker rotating addresses — one line of script — must not get a fresh
+    budget each time, which is exactly what a per-IP limit would give them."""
     client.post("/api/account/signup", json=CREDS)
-    with TestClient(server.app) as other:
-        assert other.post("/api/account/login", json=CREDS).status_code == 200
-        assert other.post("/api/account/login", json=CREDS).status_code == 200
-        assert other.post("/api/account/login", json=CREDS).status_code == 429
+    monkeypatch.setattr(server, "login_limiter", auth.RateLimiter(3, 900))
+    bad = {**CREDS, "password": "wrongwrongwrong"}
+    codes = []
+    for i in range(8):
+        monkeypatch.setattr(server, "client_key", lambda _r, i=i: f"10.0.0.{i}")
+        with TestClient(server.app) as attacker:  # a new address every time
+            codes.append(attacker.post("/api/account/login", json=bad).status_code)
+    assert codes.count(400) == 3, codes
+    assert codes.count(429) == 5, codes
+
+
+def test_throttling_one_account_does_not_touch_another(client, monkeypatch):
+    client.post("/api/account/signup", json=CREDS)
+    with TestClient(server.app) as second:
+        second.post("/api/account/signup", json={"username": "other", "password": "hunter2hunter2"})
+    monkeypatch.setattr(server, "login_limiter", auth.RateLimiter(2, 900))
+    bad = {**CREDS, "password": "wrongwrongwrong"}
+    with TestClient(server.app) as c:
+        for _ in range(2):
+            assert c.post("/api/account/login", json=bad).status_code == 400
+        assert c.post("/api/account/login", json=bad).status_code == 429  # tester is out
+        # ...but the other account, from the same address, is unaffected.
+        r = c.post("/api/account/login", json={"username": "other", "password": "hunter2hunter2"})
+        assert r.status_code == 200
+
+
+def test_unknown_usernames_do_not_consume_a_real_accounts_budget(client, monkeypatch):
+    """Keys are row ids, so junk names can't crowd a real account's counter
+    out of the tracked key space and reset its throttle."""
+    client.post("/api/account/signup", json=CREDS)
+    monkeypatch.setattr(server, "login_limiter", auth.RateLimiter(2, 900))
+    with TestClient(server.app) as c:
+        for i in range(20):
+            r = c.post("/api/account/login", json={"username": f"nobody{i}", "password": "x" * 12})
+            assert r.status_code == 400  # no account to protect, nothing counted
+        assert c.post("/api/account/login", json=CREDS).status_code == 200  # budget intact
+
+
+def test_a_correct_password_clears_the_accounts_strikes(client, monkeypatch):
+    client.post("/api/account/signup", json=CREDS)
+    monkeypatch.setattr(server, "login_limiter", auth.RateLimiter(3, 900))
+    bad = {**CREDS, "password": "wrongwrongwrong"}
+    with TestClient(server.app) as c:
+        for _ in range(2):
+            assert c.post("/api/account/login", json=bad).status_code == 400
+        assert c.post("/api/account/login", json=CREDS).status_code == 200
+        # Strikes reset, so a user who fumbled and then got it right isn't
+        # left one typo from a lockout.
+        for _ in range(3):
+            assert c.post("/api/account/login", json=bad).status_code == 400
 
 
 def test_a_saturated_hasher_waits_briefly_then_sheds(client, monkeypatch):

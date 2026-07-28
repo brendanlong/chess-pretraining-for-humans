@@ -30,13 +30,24 @@ app = FastAPI(title="chess-pretraining")
 conn = connect(DEFAULT_DB, check_same_thread=False)
 db_lock = threading.Lock()
 
-# One counter per endpoint, charged on every request, never refunded — not a
-# captcha (see auth.RateLimiter). Deliberately loose: what it has to stop is a
-# script, and what it must not do is punish someone fumbling a form. Anything
-# finer-grained needs per-outcome accounting, which is where this file's bugs
-# have come from and which buys very little on a self-hosted trainer.
+# Not a captcha (see auth.RateLimiter). Two limits, keyed on different things
+# on purpose, because they defend different things.
+#
+# Login is keyed on the *account*, not the address. What we're protecting is
+# one account's password, and an address is not what attacks it: guessing from
+# a hundred addresses is one line of script, while several legitimate users
+# routinely share one (NAT, or a proxy started without --proxy-headers). The
+# cost of keying this way is that someone can hold a known account locked for
+# as long as they keep guessing at it; that is inherent to per-account
+# throttling, and the short window is the mitigation.
+#
+# Signup is keyed on the address because there is no account to key on yet.
+# It's a blunt volume gate, and per-IP volume is really a reverse proxy's job
+# (nginx limit_req and friends see the true client, are shared across workers,
+# and survive a restart — this counter is per-process and in memory). Keep it
+# as insurance for a deployment without one; don't mistake it for a defence.
 signup_limiter = auth.RateLimiter(limit=20, window_s=3600)
-login_limiter = auth.RateLimiter(limit=20, window_s=900)
+login_limiter = auth.RateLimiter(limit=10, window_s=900)
 
 # Guests are swept periodically rather than on a timer; there is no scheduler
 # here and arrival rate is exactly the signal that we need one.
@@ -443,15 +454,17 @@ def signup(body: Signup, request: Request):
 
 @app.post("/api/account/login")
 def login(body: Login, request: Request):
-    # Charged before the verify, not incremented after it: a limit read before
-    # the ~50ms hash and written after is one a concurrent burst walks straight
-    # past. Every attempt counts, right or wrong — 20 per 15 minutes is far
-    # more than a person signing in needs, including several sharing an address
-    # (NAT, or a proxy started without --proxy-headers).
-    spend(login_limiter, client_key(request))
     try:
         with db_lock:
             u = auth.find_by_username(conn, body.username.strip())
+        if u is not None:
+            # Charged before the verify, not incremented after it: a counter
+            # read before the ~50ms hash and written after is one a concurrent
+            # burst walks straight past. Keyed on the row id, so the key space
+            # is the set of real accounts — a name nobody has registered has no
+            # password to protect, and letting those through unmetered keeps an
+            # attacker from evicting a real account's counter with junk names.
+            spend(login_limiter, f"user:{u['id']}")
         # Verify outside the lock: argon2 is deliberately slow, and holding the
         # single database lock through it would stall every trial in flight.
         if not auth.verify_password(auth.credential_for(u), body.password) or u is None:
@@ -469,6 +482,9 @@ def login(body: Login, request: Request):
             # Drop the session we arrived with (typically a fresh guest's)
             # rather than leaving a live token pointing at an abandoned row.
             reissue_session(request, u["id"])
+        # Only reachable by knowing the password, so an attacker can't use it
+        # to reset the count — and forgetting it would only over-throttle.
+        login_limiter.clear(f"user:{u['id']}")
     except auth.AuthError as e:  # a saturated hasher; the guess never happened
         raise auth_error(e) from e
     return account_payload(u)
