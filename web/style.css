@@ -360,9 +360,23 @@ kbd {
 }
 #speed-menu button.active { color: var(--text); border-color: var(--accent-1); }
 
-#user-form { display: flex; gap: 8px; }
-#user-form input {
+#auth-tabs { display: flex; gap: 8px; margin: 4px 0 2px; }
+.auth-tab {
   flex: 1;
+  font: inherit;
+  font-size: 13px;
+  padding: 8px 0;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--card);
+  color: var(--muted);
+  cursor: pointer;
+}
+.auth-tab.active { color: var(--text); border-color: var(--accent-1); }
+
+.auth-form { display: flex; flex-direction: column; gap: 8px; }
+.auth-form[hidden] { display: none; }
+.auth-form input {
   min-width: 0;
   font: inherit;
   font-size: 14px;
@@ -372,16 +386,31 @@ kbd {
   background: var(--card);
   color: var(--text);
 }
-#user-form button {
+.auth-form button,
+#logout-btn {
   font: inherit;
   font-size: 14px;
-  padding: 8px 14px;
+  padding: 9px 14px;
   border-radius: 8px;
   border: 1px solid var(--line);
   background: var(--card);
   color: var(--text);
   cursor: pointer;
 }
+.auth-form button { border-color: var(--accent-1); }
+.auth-form button:disabled,
+#logout-btn:disabled { opacity: 0.6; cursor: default; }
+#logout-btn { align-self: flex-start; }
+
+#account-guest, #account-user { display: flex; flex-direction: column; gap: 8px; }
+#account-guest[hidden], #account-user[hidden] { display: none; }
+
+#auth-error {
+  margin: 0;
+  font-size: 13px;
+  color: var(--bad);
+}
+#auth-error[hidden] { display: none; }
 
 #drawer-stats {
   display: grid;

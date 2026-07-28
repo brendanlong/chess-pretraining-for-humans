@@ -33,12 +33,25 @@ CREATE TABLE IF NOT EXISTS items (
     time_control TEXT
 );
 
+-- A user starts as a guest: a row with no password, reachable only through
+-- the session token in its owner's cookie. Signing up sets name/password on
+-- that same row, so claiming an account keeps every response already given.
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY,
-    name TEXT UNIQUE NOT NULL,
+    name TEXT UNIQUE NOT NULL,  -- chosen username once claimed; opaque 'guest_…' before
     rating REAL NOT NULL DEFAULT 700,
     calib_step REAL NOT NULL DEFAULT 250,  -- staircase step; < ~40 means calibrated
-    attempts INTEGER NOT NULL DEFAULT 0
+    attempts INTEGER NOT NULL DEFAULT 0,
+    password_hash TEXT,  -- NULL means guest
+    email TEXT,          -- optional and unverified; only ever used for password reset
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    token_hash TEXT PRIMARY KEY,  -- sha256 of the cookie token; a DB leak grants no logins
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    last_seen TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS responses (
@@ -57,6 +70,7 @@ CREATE TABLE IF NOT EXISTS responses (
 
 CREATE INDEX IF NOT EXISTS idx_items_rating ON items(rating);
 CREATE INDEX IF NOT EXISTS idx_responses_user ON responses(user_id, id);
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 """
 
 
@@ -70,6 +84,15 @@ def connect(path: Path = DEFAULT_DB, check_same_thread: bool = True) -> sqlite3.
     user_cols = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
     if "calib_step" not in user_cols:
         conn.execute("ALTER TABLE users ADD COLUMN calib_step REAL NOT NULL DEFAULT 250")
+    for col, decl in (
+        ("password_hash", "TEXT"),
+        ("email", "TEXT"),
+        # No datetime('now') default: SQLite rejects non-constant defaults in
+        # ALTER TABLE, and pre-auth rows have no signup date to record anyway.
+        ("created_at", "TEXT"),
+    ):
+        if col not in user_cols:
+            conn.execute(f"ALTER TABLE users ADD COLUMN {col} {decl}")
     item_cols = {row[1] for row in conn.execute("PRAGMA table_info(items)")}
     for col in ("pv_best", "pv_distractor"):
         if col not in item_cols:

@@ -10,11 +10,11 @@ import threading
 from pathlib import Path
 
 import chess
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import rating
+from . import auth, rating
 from .db import DEFAULT_DB, connect
 
 # Items are never repeated for a user: every trial is a first exposure, so
@@ -25,9 +25,15 @@ WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
 app = FastAPI(title="chess-pretraining")
 # FastAPI runs sync endpoints in a threadpool; share one connection behind a
-# lock (single-user tool, contention is irrelevant).
+# lock (small tool, contention is irrelevant). Reentrant because the identity
+# dependency and the endpoint it feeds both take it.
 conn = connect(DEFAULT_DB, check_same_thread=False)
-db_lock = threading.Lock()
+db_lock = threading.RLock()
+
+# Signup is the expensive-to-abuse one (it burns usernames); login is the one
+# worth guessing at. Neither is a captcha — see auth.RateLimiter.
+signup_limiter = auth.RateLimiter(limit=5, window_s=3600)
+login_limiter = auth.RateLimiter(limit=10, window_s=900)
 
 
 def locked(fn):
@@ -39,16 +45,38 @@ def locked(fn):
     return wrapper
 
 
-def get_user(name: str) -> dict:
-    row = conn.execute("SELECT * FROM users WHERE name = ?", (name,)).fetchone()
-    if row is None:
-        conn.execute(
-            "INSERT INTO users (name, rating, calib_step) VALUES (?, ?, ?)",
-            (name, rating.USER_START, rating.CALIB_START_STEP),
-        )
-        conn.commit()
-        row = conn.execute("SELECT * FROM users WHERE name = ?", (name,)).fetchone()
-    return dict(row)
+def set_session_cookie(request: Request, response: Response, token: str) -> None:
+    response.set_cookie(
+        auth.COOKIE_NAME,
+        token,
+        max_age=auth.SESSION_DAYS * 86400,
+        httponly=True,
+        samesite="lax",  # blocks cross-site POSTs, which is our CSRF story
+        secure=request.url.scheme == "https",
+        path="/",
+    )
+
+
+def current_user(request: Request, response: Response) -> dict:
+    """Resolve the session cookie, minting a guest identity if there isn't one.
+
+    Landing on the site is enough to start answering: no name to type, and
+    the row is reachable only through an unguessable token rather than a
+    guessable name in a URL.
+    """
+    with db_lock:
+        user = auth.session_user(conn, request.cookies.get(auth.COOKIE_NAME))
+        if user is None:
+            user = auth.create_guest(conn, rating.USER_START, rating.CALIB_START_STEP)
+            set_session_cookie(request, response, auth.start_session(conn, user["id"]))
+        return user
+
+
+CurrentUser = Depends(current_user)
+
+
+def account_payload(user: dict) -> dict:
+    return {"username": auth.display_name(user), "guest": auth.is_guest(user)}
 
 
 def is_calibrating(user: dict) -> bool:
@@ -117,8 +145,7 @@ def pick_item(user: dict) -> tuple[dict | None, bool]:
 
 @app.get("/api/next")
 @locked
-def next_item(user: str = "default"):
-    u = get_user(user)
+def next_item(u: dict = CurrentUser):
     item, is_repeat = pick_item(u)
     if item is None:
         raise HTTPException(503, "no items in bank — run the mining/labeling pipeline")
@@ -141,13 +168,11 @@ class Answer(BaseModel):
     item_id: int
     choice_uci: str
     response_ms: int | None = None
-    user: str = "default"
 
 
 @app.post("/api/answer")
 @locked
-def answer(a: Answer):
-    u = get_user(a.user)
+def answer(a: Answer, u: dict = CurrentUser):
     item = conn.execute("SELECT * FROM items WHERE id = ?", (a.item_id,)).fetchone()
     if item is None:
         raise HTTPException(404, "unknown item")
@@ -231,8 +256,7 @@ def answer(a: Answer):
 
 @app.get("/api/stats")
 @locked
-def stats(user: str = "default"):
-    u = get_user(user)
+def stats(u: dict = CurrentUser):
     # Only first exposures count toward accuracy: repeats (served only once
     # the bank is exhausted) can be answered from memory of the reveal.
     rows = [
@@ -265,7 +289,75 @@ def stats(user: str = "default"):
         "items_total": n_items,
         "items_learnable": n_learnable or 0,
         "items_remaining": unseen_count(u),
+        "account": account_payload(u),
     }
+
+
+# --- accounts -------------------------------------------------------------
+#
+# Auth is orthogonal to the trial flow: these payloads carry no item data, so
+# none of them can leak which move is better.
+
+
+def client_key(request: Request) -> str:
+    # Behind a reverse proxy this is only the real client if uvicorn runs with
+    # --proxy-headers and a trusted --forwarded-allow-ips.
+    return request.client.host if request.client else "unknown"
+
+
+def auth_error(e: auth.AuthError) -> HTTPException:
+    return HTTPException(429 if isinstance(e, auth.RateLimited) else 400, str(e))
+
+
+class Signup(BaseModel):
+    username: str
+    password: str
+    email: str | None = None
+
+
+class Login(BaseModel):
+    username: str
+    password: str
+
+
+@app.get("/api/account")
+def account(u: dict = CurrentUser):
+    return account_payload(u)
+
+
+@app.post("/api/account/signup")
+@locked
+def signup(body: Signup, request: Request, u: dict = CurrentUser):
+    """Claim the guest row this session has been playing on — no reset."""
+    try:
+        signup_limiter.check(client_key(request))
+        u = auth.claim(conn, u, body.username, body.password, body.email)
+    except auth.AuthError as e:
+        raise auth_error(e) from e
+    return account_payload(u)
+
+
+@app.post("/api/account/login")
+@locked
+def login(body: Login, request: Request, response: Response):
+    try:
+        login_limiter.check(client_key(request))
+        u = auth.authenticate(conn, body.username, body.password)
+    except auth.AuthError as e:
+        raise auth_error(e) from e
+    # Drop the session we arrived with (typically a fresh guest's) rather than
+    # leaving a live token pointing at an abandoned row.
+    auth.end_session(conn, request.cookies.get(auth.COOKIE_NAME))
+    set_session_cookie(request, response, auth.start_session(conn, u["id"]))
+    return account_payload(u)
+
+
+@app.post("/api/account/logout")
+@locked
+def logout(request: Request, response: Response):
+    auth.end_session(conn, request.cookies.get(auth.COOKIE_NAME))
+    response.delete_cookie(auth.COOKIE_NAME, path="/")
+    return {"ok": True}
 
 
 app.mount("/", StaticFiles(directory=WEB_DIR, html=True), name="web")

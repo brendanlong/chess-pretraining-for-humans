@@ -21,11 +21,24 @@ frontend. Data flows one way:
 ## Server (`trainer/server.py`)
 
 FastAPI over a single SQLite file (WAL; shared safely with a running
-labeler). Three endpoints: next trial, answer, stats. Selection picks an
+labeler). Trial endpoints: next trial, answer, stats. Selection picks an
 unseen learnable item near the rating where the user's expected score is
 80%. Answers move user and item Elo ratings; new users run a calibration
 staircase first (start low, big steps, halve on miss). All responses are
 recorded with timing for later analysis.
+
+## Identity (`trainer/auth.py`)
+
+Anonymous-first. The first request mints a guest `users` row and an opaque
+session token in an HttpOnly cookie; no name is typed and no name is
+guessable, which the old `?user=` scheme couldn't say. Signing up attaches a
+username, an argon2 password hash, and an optional unverified email (kept
+only for a future reset) to *that same row*, so an account is a claim on
+history rather than a gate in front of it. Sessions are a table of hashed
+tokens, so a database read grants no logins; `SameSite=Lax` is the CSRF
+story. Signup and login are rate-limited per IP in memory rather than
+captcha'd. `trainer/account.py` is the operator's way to put a password on a
+row the app can't reach (the pre-account `?user=` profiles).
 
 ## Frontend (`web/`)
 
@@ -42,13 +55,14 @@ settings) over a single column, with the space under the board swapping
 between the choice buttons and the reveal — verdict and rating delta,
 then replay controls with a primary Next, then the two engine lines as
 tappable cards; secondary detail sits below the fold. Desktop places the
-same panel beside the board. A settings drawer holds replay speed, a
-per-name user switcher (URL param overrides localStorage; real accounts
-later), and session/debug counters like the fresh-item count.
+same panel beside the board. A settings drawer holds replay speed, the
+account controls (sign up / sign in / sign out, reached from the header
+chip), and session/debug counters like the fresh-item count.
 
 ## Storage
 
 One SQLite database: `items` (positions, moves, evals, lines, difficulty),
-`users` (rating, calibration state), `responses` (every answer, timed,
-with rating snapshots). The item bank is disposable and rebuildable from
-the pipeline; responses are the experimental record.
+`users` (rating, calibration state, optional credentials), `sessions`
+(hashed cookie tokens), `responses` (every answer, timed, with rating
+snapshots). The item bank is disposable and rebuildable from the pipeline;
+responses are the experimental record.

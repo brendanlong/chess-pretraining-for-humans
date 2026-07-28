@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Pairwise chess move-discrimination trainer with Stockfish-calibrated difficulty"
 requires-python = ">=3.12"
 dependencies = [
+    "argon2-cffi>=25.1.0",
     "chess>=1.11.2",
     "fastapi>=0.139.2",
     "uvicorn[standard]>=0.51.0",
@@ -14,6 +15,7 @@ dev = [
     "pytest>=9.1.1",
     "ruff>=0.15.0",
     "pyright>=1.1.407",
+    "httpx>=0.28.1",
 ]
 
 [tool.pytest.ini_options]
