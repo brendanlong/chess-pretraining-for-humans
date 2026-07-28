@@ -506,29 +506,23 @@ def test_a_shed_signup_still_costs_an_attempt(db, monkeypatch):
 
 def test_interleaved_successes_cannot_buy_extra_wrong_guesses(client, monkeypatch):
     """Someone holding one working account must not be able to alternate
-    correct/wrong to keep guessing at another. A refund drops the key's newest
-    timestamp, which under concurrency may be a different request's — safe
-    because the *count* of live entries is what bounds the key, and only wrong
-    guesses keep theirs. Run concurrently, where that distinction is real."""
+    correct/wrong to keep guessing at another.
+
+    Sequential on purpose: the alternation only actually happens while slots
+    remain, and a concurrent version spends them in the first round and then
+    429s every success — testing nothing this doesn't, less precisely.
+    Concurrency is covered by test_concurrent_login_guesses_cannot_outrun_the_limit.
+    """
     client.post("/api/account/signup", json=CREDS)
-    limit = 5
+    limit = 3
     monkeypatch.setattr(server, "login_limiter", auth.RateLimiter(limit, 900))
     bad = {**CREDS, "password": "wrongwrongwrong"}
     codes = []
-
-    def alternate():
-        with TestClient(server.app) as other:
-            for _ in range(6):
-                codes.append(other.post("/api/account/login", json=bad).status_code)
-                codes.append(other.post("/api/account/login", json=CREDS).status_code)
-
-    threads = [threading.Thread(target=alternate) for _ in range(4)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-    # Never more than `limit` guesses reach the verify, however many successes
-    # interleave. Not exactly `limit`: a success holds its slot across its own
-    # verify, so it can transiently crowd out a guess that then gets a 429.
-    assert codes.count(400) <= limit, codes
-    assert 429 in codes, codes  # and the cap really did bind
+    with TestClient(server.app) as other:
+        for _ in range(5):
+            codes.append(other.post("/api/account/login", json=bad).status_code)
+            codes.append(other.post("/api/account/login", json=CREDS).status_code)
+    # Exactly `limit` wrong guesses got through: each success refunded only
+    # what it took, so none of them bought an extra guess.
+    assert codes.count(400) == limit, codes
+    assert 429 in codes, codes

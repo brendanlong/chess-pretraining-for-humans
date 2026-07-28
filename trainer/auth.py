@@ -344,13 +344,18 @@ class RateLimiter:
         """Give a slot back once the outcome turns out not to be worth
         counting.
 
-        This drops the key's newest timestamp, which under concurrency may
+        This drops the key's last recorded entry, which under concurrency may
         belong to a different in-flight request rather than the caller. That
-        is deliberate and safe: what bounds the key is the *count* of live
-        entries, and count is unaffected by which one is dropped. The only
-        visible effect is that the surviving entry is the older timestamp, so
-        the window rolls over a request-duration sooner. Do not read this as
-        "each caller gets its own slot back" — nothing tracks callers.
+        is safe *because at most one release follows each successful consume*:
+        what bounds a key is the count of live entries, and the count doesn't
+        care which one is dropped. Callers must keep that one-to-one — both
+        here take their slot outside the `try` whose `finally` releases it.
+        Release more than you consumed and you take a live request's slot.
+
+        Do not read this as "each caller gets its own slot back"; nothing
+        tracks callers. The only visible effect is that the surviving entry is
+        the older timestamp, so the window rolls over a request-duration
+        sooner — always in the forgiving direction.
         """
         with self._lock:
             hits = self._hits.get(key)

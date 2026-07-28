@@ -425,11 +425,12 @@ def account(user_id: int = CurrentUserId):
 def signup(body: Signup, request: Request):
     """Claim the guest row this session has been playing on — no reset."""
     ip = client_key(request)
-    # The attempt slot is never refunded. Every request that gets this far
-    # costs us something real — at minimum a guest row and a session, minted
-    # below — so even one we refuse to finish is an attempt. Refunding it on
-    # the refusal path would make a saturated hasher an unmetered signup
-    # endpoint, which is a worse failure than the throttling it avoids.
+    # The attempt slot is never refunded — not even when the hasher refuses
+    # the request, which is the tempting case. What this limit rations is the
+    # argon2 hash and the "is this username taken?" oracle, and a refusal
+    # still has to be *asked* before it can be refused; refunding it would
+    # leave a saturated server with an unmetered signup endpoint, which is a
+    # worse failure than the throttling it avoids.
     spend(signup_attempt_limiter, ip)
     # The creation slot is taken up front and handed back on the way out,
     # rather than recorded at the end: a limit checked before the ~50ms hash
