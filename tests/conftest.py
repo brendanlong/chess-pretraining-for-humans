@@ -60,9 +60,8 @@ def db(tmp_path, monkeypatch, item_count):
     # Fresh limiters per test, so one test's attempts can't starve another's.
     # (TestClient reports one host for everyone, so they all share a key.)
     for name, limiter in (
-        ("signup_attempt_limiter", auth.RateLimiter(20, 3600)),
-        ("signup_limiter", auth.RateLimiter(5, 3600)),
-        ("login_limiter", auth.RateLimiter(10, 900)),
+        ("signup_limiter", auth.RateLimiter(20, 3600)),
+        ("login_limiter", auth.RateLimiter(20, 900)),
     ):
         monkeypatch.setattr(server, name, limiter)
     return conn

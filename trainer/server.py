@@ -30,18 +30,13 @@ app = FastAPI(title="chess-pretraining")
 conn = connect(DEFAULT_DB, check_same_thread=False)
 db_lock = threading.Lock()
 
-# Two gates on signup, neither a captcha (see auth.RateLimiter). The attempt
-# limit is charged for every request and never refunded, because an attempt is
-# what costs us — a guest row, an argon2 hash, an answer to "is this username
-# taken?" — and it is loose enough that a person fumbling the form never
-# reaches it. The creation limit is what bounds how many accounts one address
-# can make; it's taken up front and handed back when nothing was created, so it
-# can't be walked past by a burst. Login is charged the same way, refunded on
-# anything that isn't a wrong guess so shared addresses don't throttle each
-# other; it counts wrong guesses only, hence the tighter number.
-signup_attempt_limiter = auth.RateLimiter(limit=20, window_s=3600)
-signup_limiter = auth.RateLimiter(limit=5, window_s=3600)
-login_limiter = auth.RateLimiter(limit=10, window_s=900)
+# One counter per endpoint, charged on every request, never refunded — not a
+# captcha (see auth.RateLimiter). Deliberately loose: what it has to stop is a
+# script, and what it must not do is punish someone fumbling a form. Anything
+# finer-grained needs per-outcome accounting, which is where this file's bugs
+# have come from and which buys very little on a self-hosted trainer.
+signup_limiter = auth.RateLimiter(limit=20, window_s=3600)
+login_limiter = auth.RateLimiter(limit=20, window_s=900)
 
 # Guests are swept periodically rather than on a timer; there is no scheduler
 # here and arrival rate is exactly the signal that we need one.
@@ -424,22 +419,9 @@ def account(user_id: int = CurrentUserId):
 @app.post("/api/account/signup")
 def signup(body: Signup, request: Request):
     """Claim the guest row this session has been playing on — no reset."""
-    ip = client_key(request)
-    # The attempt slot is never refunded — not even when the hasher refuses
-    # the request, which is the tempting case. What this limit rations is the
-    # argon2 hash and the "is this username taken?" oracle, and a refusal
-    # still has to be *asked* before it can be refused; refunding it would
-    # leave a saturated server with an unmetered signup endpoint, which is a
-    # worse failure than the throttling it avoids.
-    spend(signup_attempt_limiter, ip)
-    # The creation slot is taken up front and handed back on the way out,
-    # rather than recorded at the end: a limit checked before the ~50ms hash
-    # and written after is one a concurrent burst walks straight past. The
-    # refund lives in `finally` because every path that returns without an
-    # account — including a crash — has to give it back, or an overloaded box
-    # turns into an hour-long lockout for a real user.
-    spend(signup_limiter, ip)
-    created = False
+    # Charged before anything else, so no request can buy work by failing, and
+    # a burst can't walk past a counter that only the outcome increments.
+    spend(signup_limiter, client_key(request))
     try:
         # Everything cheap first: a typo, a taken name, or an already-claimed
         # session must not cost an argon2 hash (~50ms and 64 MiB).
@@ -454,34 +436,25 @@ def signup(body: Signup, request: Request):
         with db_lock:
             u = auth.claim(conn, user_id, username, password_hash, email)
             reissue_session(request, u["id"])
-        created = True
     except auth.AuthError as e:
         raise auth_error(e) from e
-    finally:
-        if not created:
-            signup_limiter.release(ip)
     return account_payload(u)
 
 
 @app.post("/api/account/login")
 def login(body: Login, request: Request):
-    ip = client_key(request)
-    # Taken before the verify, not incremented after it: a limit read before
+    # Charged before the verify, not incremented after it: a limit read before
     # the ~50ms hash and written after is one a concurrent burst walks straight
-    # past. Only wrong guesses keep their slot, so the count of live entries is
-    # the count of wrong guesses however they interleave with successes — which
-    # is what lets people sharing an address (NAT, a proxy without
-    # --proxy-headers) sign in without throttling each other.
-    spend(login_limiter, ip)
-    wrong = False
+    # past. Every attempt counts, right or wrong — 20 per 15 minutes is far
+    # more than a person signing in needs, including several sharing an address
+    # (NAT, or a proxy started without --proxy-headers).
+    spend(login_limiter, client_key(request))
     try:
         with db_lock:
             u = auth.find_by_username(conn, body.username.strip())
         # Verify outside the lock: argon2 is deliberately slow, and holding the
         # single database lock through it would stall every trial in flight.
-        ok = auth.verify_password(auth.credential_for(u), body.password)
-        if not ok or u is None:
-            wrong = True
+        if not auth.verify_password(auth.credential_for(u), body.password) or u is None:
             raise HTTPException(400, "Wrong username or password.")
         with db_lock:
             # The row was read before the verify; re-check that the credential
@@ -492,18 +465,12 @@ def login(body: Login, request: Request):
                 (u["id"], u["password_hash"]),
             ).fetchone()
             if current is None:
-                wrong = True
                 raise HTTPException(400, "Wrong username or password.")
             # Drop the session we arrived with (typically a fresh guest's)
             # rather than leaving a live token pointing at an abandoned row.
             reissue_session(request, u["id"])
     except auth.AuthError as e:  # a saturated hasher; the guess never happened
         raise auth_error(e) from e
-    finally:
-        # Anything that isn't a wrong guess — success, a shed request, a crash
-        # — gives the slot back rather than rationing a real user's next login.
-        if not wrong:
-            login_limiter.release(ip)
     return account_payload(u)
 
 

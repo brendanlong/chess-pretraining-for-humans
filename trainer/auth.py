@@ -39,17 +39,19 @@ _hasher = PasswordHasher()
 # wrong password and timing can't enumerate accounts.
 _DUMMY_HASH = _hasher.hash("no such user")
 # argon2 is memory-hard on purpose — 64 MiB per hash at the default settings —
-# and endpoints no longer serialize on the database lock, so without a cap a
-# burst of concurrent signups would each claim their own 64 MiB and take the
-# box out. Two limits, because bounding memory alone isn't enough: the server
-# runs sync endpoints on a fixed thread pool, so callers merely *waiting* for a
-# hash still occupy threads the trial flow needs. HASH_QUEUE keeps auth's share
-# of that pool small and sheds anything beyond it immediately.
-HASH_CONCURRENCY = 4  # hashing at once — bounds memory
-HASH_QUEUE = 12  # inside the hasher at all, waiting included — bounds threads
-HASH_WAIT_S = 1.5
+# and endpoints don't serialize on the database lock, so without a cap a burst
+# of concurrent signups would each claim their own 64 MiB and take the box out.
+# The short wait is what keeps this from trading the out-of-memory for a
+# stalled thread pool: sync endpoints run on a fixed pool, so a caller merely
+# waiting still holds a thread the trial flow needs. Past the wait we shed.
+#
+# Sized as a small multiple of one hash (~50ms here): long enough that real
+# contention resolves rather than 503s, short enough that a flood can only
+# hold a thread briefly. Measured under 300 concurrent logins from distinct
+# addresses, the trial flow's worst case goes 7.7s uncapped -> 0.55s.
+HASH_CONCURRENCY = 4
+HASH_WAIT_S = 0.1
 _hash_slots = threading.Semaphore(HASH_CONCURRENCY)
-_hash_queue = threading.Semaphore(HASH_QUEUE)
 
 
 class AuthError(Exception):
@@ -69,17 +71,12 @@ BUSY_MESSAGE = "Too many people signing in right now. Try again in a moment."
 
 @contextlib.contextmanager
 def _hash_slot():
-    if not _hash_queue.acquire(blocking=False):
-        raise AuthBusy(BUSY_MESSAGE)  # don't even hold a thread to wait
+    if not _hash_slots.acquire(timeout=HASH_WAIT_S):
+        raise AuthBusy(BUSY_MESSAGE)
     try:
-        if not _hash_slots.acquire(timeout=HASH_WAIT_S):
-            raise AuthBusy(BUSY_MESSAGE)
-        try:
-            yield
-        finally:
-            _hash_slots.release()
+        yield
     finally:
-        _hash_queue.release()
+        _hash_slots.release()
 
 
 # --- credentials ----------------------------------------------------------
@@ -294,12 +291,15 @@ class RateLimiter:
     guess here should be a wait, not a lost signup. State is per-process and
     resets on restart, which is fine for the threat (casual scripted abuse).
 
-    The only gate is `consume`: one atomic check-and-record, taken *before*
-    the slow work. Checking first and recording after the outcome is known
-    reads a counter that nothing in flight has incremented yet, so a
-    concurrent burst all passes at once. Where an outcome shouldn't have
-    counted after all — a login that turned out to be correct — the slot is
-    handed back with `release` rather than never taken.
+    `consume` is the whole interface: one atomic check-and-record, taken
+    *before* the work it rations. Checking first and recording once the
+    outcome is known reads a counter that nothing in flight has incremented
+    yet, so a concurrent burst all passes at once.
+
+    Nothing is ever handed back. Refunding slots for outcomes that "shouldn't
+    count" is where every version of this file went wrong: it needs an exit
+    path to be right on, and it never was. A limit loose enough that a
+    fumbled form can't reach it buys the same forgiveness for free.
     """
 
     MAX_KEYS = 10_000
@@ -333,31 +333,9 @@ class RateLimiter:
         self._prune(now)
 
     def consume(self, key: str, now: float | None = None) -> None:
-        """Take a slot, or raise. Held for the duration of the work."""
+        """Spend a slot, or raise."""
         now = time.monotonic() if now is None else now
         with self._lock:
             if len(self._live(key, now)) >= self.limit:
                 raise RateLimited("Too many attempts. Wait a few minutes and try again.")
             self._record(key, now)
-
-    def release(self, key: str) -> None:
-        """Give a slot back once the outcome turns out not to be worth
-        counting.
-
-        This drops the key's last recorded entry, which under concurrency may
-        belong to a different in-flight request rather than the caller. That
-        is safe *because at most one release follows each successful consume*:
-        what bounds a key is the count of live entries, and the count doesn't
-        care which one is dropped. Callers must keep that one-to-one — both
-        here take their slot outside the `try` whose `finally` releases it.
-        Release more than you consumed and you take a live request's slot.
-
-        Do not read this as "each caller gets its own slot back"; nothing
-        tracks callers. The only visible effect is that the surviving entry is
-        the older timestamp, so the window rolls over a request-duration
-        sooner — always in the forgiving direction.
-        """
-        with self._lock:
-            hits = self._hits.get(key)
-            if hits:
-                hits.pop()

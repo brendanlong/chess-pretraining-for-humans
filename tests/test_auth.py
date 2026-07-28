@@ -165,25 +165,6 @@ def test_rate_limiter_keys_are_independent():
         limiter.consume("a", now=0)
 
 
-def test_signup_typos_do_not_burn_attempts(client, monkeypatch):
-    """A user fumbling the form must not lock themselves out of signing up."""
-    monkeypatch.setattr(server, "signup_limiter", auth.RateLimiter(1, 3600))
-    for bad in ({**CREDS, "password": "short"}, {**CREDS, "username": "!!"}):
-        assert client.post("/api/account/signup", json=bad).status_code == 400
-    assert client.post("/api/account/signup", json=CREDS).status_code == 200
-
-
-def test_successful_logins_hand_their_slot_back(client, monkeypatch):
-    """The slot is held across the verify — so a burst can't walk past the
-    limit — but a correct password refunds it, or everyone behind one NAT
-    would throttle each other just by signing in."""
-    client.post("/api/account/signup", json=CREDS)
-    monkeypatch.setattr(server, "login_limiter", auth.RateLimiter(1, 900))
-    for _ in range(3):
-        with TestClient(server.app) as other:
-            assert other.post("/api/account/login", json=CREDS).status_code == 200
-
-
 def test_account_payloads_carry_no_credentials(client):
     client.post("/api/account/signup", json={**CREDS, "email": "a@b.co"})
     t = next_trial(client)
@@ -314,7 +295,7 @@ def test_failed_signups_are_throttled(client, monkeypatch):
         owner.post("/api/account/signup", json=taken)
     # Patched after the setup signup: TestClient reports one host for every
     # client, so they all share a limiter key.
-    monkeypatch.setattr(server, "signup_attempt_limiter", auth.RateLimiter(3, 3600))
+    monkeypatch.setattr(server, "signup_limiter", auth.RateLimiter(3, 3600))
     for _ in range(3):
         assert client.post("/api/account/signup", json=taken).status_code == 400
     assert client.post("/api/account/signup", json=taken).status_code == 429
@@ -350,8 +331,12 @@ def test_concurrent_login_guesses_cannot_outrun_the_limit(client, monkeypatch):
             t.start()
         for t in threads:
             t.join()
-    assert codes.count(400) <= limit, codes
-    assert codes.count(429) == 20 - codes.count(400)
+    # The limiter admits exactly `limit`, however many arrive at once. Those
+    # it admits either guess wrong (400) or find the hasher saturated and get
+    # shed (503) — a burst this size is exactly what the shedding is for.
+    admitted = [c for c in codes if c != 429]
+    assert len(admitted) == limit, codes
+    assert set(admitted) <= {400, 503}, codes
 
 
 def test_rate_limiter_consume_is_atomic_under_threads():
@@ -386,38 +371,11 @@ def test_crash_still_hands_out_the_identity_it_created(client, db, monkeypatch):
 def test_throttled_signups_do_not_mint_guest_rows(db, monkeypatch):
     """Identity is resolved after the gate, not by a dependency in front of
     it — otherwise a rejected flood leaves one row per attempt behind."""
-    monkeypatch.setattr(server, "signup_attempt_limiter", auth.RateLimiter(0, 3600))
+    monkeypatch.setattr(server, "signup_limiter", auth.RateLimiter(0, 3600))
     for _ in range(5):
         with TestClient(server.app) as c:
             assert c.post("/api/account/signup", json=CREDS).status_code == 429
     assert db.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0
-
-
-def test_concurrent_signups_cannot_outrun_the_creation_limit(db, monkeypatch):
-    """The creation limit is the one that says how many accounts an address
-    gets; checking it before the ~50ms hash and recording after lets every
-    request in flight pass a counter none of them has incremented."""
-    limit = 3
-    monkeypatch.setattr(server, "signup_limiter", auth.RateLimiter(limit, 3600))
-    monkeypatch.setattr(server, "signup_attempt_limiter", auth.RateLimiter(50, 3600))
-    codes = []
-    barrier = threading.Barrier(15)
-
-    def attempt(i):
-        with TestClient(server.app) as c:
-            barrier.wait()
-            codes.append(
-                c.post("/api/account/signup", json={**CREDS, "username": f"u{i}"}).status_code
-            )
-
-    threads = [threading.Thread(target=attempt, args=(i,)) for i in range(15)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-    assert codes.count(200) == limit, codes
-    created = db.execute("SELECT COUNT(*) FROM users WHERE password_hash IS NOT NULL").fetchone()[0]
-    assert created == limit
 
 
 def test_saturated_hasher_sheds_load_instead_of_queueing(client, monkeypatch):
@@ -430,18 +388,6 @@ def test_saturated_hasher_sheds_load_instead_of_queueing(client, monkeypatch):
     assert "try again" in r.json()["detail"].lower()
 
 
-def test_a_shed_login_does_not_spend_a_slot(client, monkeypatch):
-    client.post("/api/account/signup", json=CREDS)
-    monkeypatch.setattr(server, "login_limiter", auth.RateLimiter(1, 900))
-    monkeypatch.setattr(auth, "HASH_WAIT_S", 0.05)
-    saturated, real = threading.Semaphore(0), auth._hash_slots
-    with TestClient(server.app) as other:
-        monkeypatch.setattr(auth, "_hash_slots", saturated)
-        assert other.post("/api/account/login", json=CREDS).status_code == 503
-        monkeypatch.setattr(auth, "_hash_slots", real)  # the slot was never spent
-        assert other.post("/api/account/login", json=CREDS).status_code == 200
-
-
 def test_rate_limiter_key_space_is_bounded():
     limiter = auth.RateLimiter(5, window_s=3600)
     monkey = limiter.MAX_KEYS + 5000
@@ -450,50 +396,11 @@ def test_rate_limiter_key_space_is_bounded():
     assert len(limiter._hits) <= limiter.MAX_KEYS
 
 
-def test_rate_limiter_release_gives_back_one_slot():
-    limiter = auth.RateLimiter(1, window_s=60)
-    limiter.consume("ip", now=0)
-    with pytest.raises(auth.RateLimited):
-        limiter.consume("ip", now=0)
-    limiter.release("ip")
-    limiter.consume("ip", now=0)  # usable again
-    limiter.release("nobody")  # releasing an untracked key is harmless
-
-
-def test_hasher_queue_gate_sheds_without_occupying_a_thread(client, monkeypatch):
-    """Bounding hash *concurrency* bounds memory, but callers merely waiting
-    still hold threads the trial flow needs — so past the queue bound we
-    refuse immediately rather than waiting our turn."""
-    monkeypatch.setattr(auth, "HASH_WAIT_S", 30)  # a wait here would be a 30s stall
-    monkeypatch.setattr(auth, "_hash_queue", threading.Semaphore(0))
-    started = time.monotonic()
-    assert client.post("/api/account/signup", json=CREDS).status_code == 503
-    assert time.monotonic() - started < 5
-
-
-def test_a_crash_does_not_burn_a_signup_slot(client, monkeypatch):
-    """argon2 raises HashingError when it can't get its 64 MiB — the very
-    pressure the hasher caps exist for. That must not also cost the creation
-    slots, or an overloaded box becomes an hour-long lockout."""
-    monkeypatch.setattr(server, "signup_limiter", auth.RateLimiter(2, 3600))
-    real_hash = auth.hash_password
-
-    def boom(_):
-        raise RuntimeError("out of memory")
-
-    monkeypatch.setattr(auth, "hash_password", boom)
-    with TestClient(server.app, raise_server_exceptions=False) as c:
-        for _ in range(3):
-            assert c.post("/api/account/signup", json=CREDS).status_code == 500
-    monkeypatch.setattr(auth, "hash_password", real_hash)
-    assert client.post("/api/account/signup", json=CREDS).status_code == 200
-
-
-def test_a_shed_signup_still_costs_an_attempt(db, monkeypatch):
+def test_a_shed_signup_still_costs_a_slot(db, monkeypatch):
     """A shed request has already minted a guest row and a session by the time
     the hasher refuses it. Refunding the attempt would leave a saturated box
     with an unmetered signup endpoint — worse than the throttling it avoids."""
-    monkeypatch.setattr(server, "signup_attempt_limiter", auth.RateLimiter(3, 3600))
+    monkeypatch.setattr(server, "signup_limiter", auth.RateLimiter(3, 3600))
     monkeypatch.setattr(auth, "HASH_WAIT_S", 0.05)
     monkeypatch.setattr(auth, "_hash_slots", threading.Semaphore(0))
     codes = []
@@ -504,25 +411,40 @@ def test_a_shed_signup_still_costs_an_attempt(db, monkeypatch):
     assert db.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 3  # not 6
 
 
-def test_interleaved_successes_cannot_buy_extra_wrong_guesses(client, monkeypatch):
-    """Someone holding one working account must not be able to alternate
-    correct/wrong to keep guessing at another.
-
-    Sequential on purpose: the alternation only actually happens while slots
-    remain, and a concurrent version spends them in the first round and then
-    429s every success — testing nothing this doesn't, less precisely.
-    Concurrency is covered by test_concurrent_login_guesses_cannot_outrun_the_limit.
-    """
-    client.post("/api/account/signup", json=CREDS)
-    limit = 3
-    monkeypatch.setattr(server, "login_limiter", auth.RateLimiter(limit, 900))
-    bad = {**CREDS, "password": "wrongwrongwrong"}
-    codes = []
+def test_every_signup_attempt_counts_including_rejected_ones(client, monkeypatch):
+    """No refunds anywhere: a request that fails validation, hits a taken
+    name, or gets shed still spends its slot. That's what stops a flood from
+    buying unlimited argon2 and unlimited "is this name taken?" answers. The
+    limit is loose instead of clever, so a person fumbling the form never
+    reaches it."""
+    monkeypatch.setattr(server, "signup_limiter", auth.RateLimiter(3, 3600))
+    assert client.post("/api/account/signup", json={**CREDS, "password": "sh"}).status_code == 400
+    assert client.post("/api/account/signup", json={**CREDS, "username": "!"}).status_code == 400
+    assert client.post("/api/account/signup", json=CREDS).status_code == 200
     with TestClient(server.app) as other:
-        for _ in range(5):
-            codes.append(other.post("/api/account/login", json=bad).status_code)
-            codes.append(other.post("/api/account/login", json=CREDS).status_code)
-    # Exactly `limit` wrong guesses got through: each success refunded only
-    # what it took, so none of them bought an extra guess.
-    assert codes.count(400) == limit, codes
-    assert 429 in codes, codes
+        assert (
+            other.post("/api/account/signup", json={**CREDS, "username": "x2"}).status_code == 429
+        )
+
+
+def test_every_login_attempt_counts_including_successful_ones(client, monkeypatch):
+    monkeypatch.setattr(server, "login_limiter", auth.RateLimiter(2, 900))
+    client.post("/api/account/signup", json=CREDS)
+    with TestClient(server.app) as other:
+        assert other.post("/api/account/login", json=CREDS).status_code == 200
+        assert other.post("/api/account/login", json=CREDS).status_code == 200
+        assert other.post("/api/account/login", json=CREDS).status_code == 429
+
+
+def test_a_saturated_hasher_waits_briefly_then_sheds(client, monkeypatch):
+    """The wait bounds memory without trading it for a stalled thread pool:
+    sync endpoints run on a fixed pool, so a caller queueing indefinitely
+    holds a thread the trial flow needs."""
+    assert auth.HASH_WAIT_S <= 0.5  # the bound the trial flow relies on
+    monkeypatch.setattr(auth, "_hash_slots", threading.Semaphore(0))
+    started = time.monotonic()
+    r = client.post("/api/account/signup", json=CREDS)
+    waited = time.monotonic() - started
+    assert r.status_code == 503
+    assert "try again" in r.json()["detail"].lower()
+    assert waited < auth.HASH_WAIT_S + 1
