@@ -493,11 +493,15 @@ el("prompt").addEventListener("click", () => {
 // The first request is what mints a guest identity and its cookie, so it has
 // to land alone — parallel cold requests would each create their own row.
 async function boot() {
+  let a = { username: null, guest: true };
   try {
-    setAccount(await api("/api/account"));
+    a = await api("/api/account");
   } catch (e) {
+    // Fall back to the guest view rather than leaving the drawer's account
+    // section blank: the forms still work, and a failing one says why.
     console.warn(e);
   }
+  setAccount(a);
   initStats();
   nextTrial();
 }

@@ -35,10 +35,23 @@ guessable, which the old `?user=` scheme couldn't say. Signing up attaches a
 username, an argon2 password hash, and an optional unverified email (kept
 only for a future reset) to *that same row*, so an account is a claim on
 history rather than a gate in front of it. Sessions are a table of hashed
-tokens, so a database read grants no logins; `SameSite=Lax` is the CSRF
-story. Signup and login are rate-limited per IP in memory rather than
-captcha'd. `trainer/account.py` is the operator's way to put a password on a
-row the app can't reach (the pre-account `?user=` profiles).
+tokens, so a database read grants no logins; the token is rotated on every
+privilege change, and `SameSite=Lax` plus `no-store` on every API response
+is the CSRF-and-shared-cache story. Signup and login are rate-limited per IP
+in memory rather than captcha'd, charged only for accounts actually created
+and passwords actually missed so typos cost nothing. Because arriving is
+enough to mint a guest, guests that answered nothing and went cold are swept
+periodically; anything with a response or a password is never touched.
+`trainer/account.py` is the operator's way to put a password on a row the
+app can't reach (the pre-account `?user=` profiles).
+
+Two ordering constraints are easy to get wrong. Identity resolution is a
+dependency, but it yields a user *id*: FastAPI finishes dependencies before
+the endpoint body, so a row read there would be a pre-lock snapshot and
+concurrent answers would overwrite each other's ratings. And the session
+cookie is applied by middleware rather than by the endpoint, so a request
+that mints a guest and then fails (503 on an empty bank) still hands the
+identity out instead of orphaning it.
 
 ## Frontend (`web/`)
 

@@ -25,15 +25,19 @@ WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
 app = FastAPI(title="chess-pretraining")
 # FastAPI runs sync endpoints in a threadpool; share one connection behind a
-# lock (small tool, contention is irrelevant). Reentrant because the identity
-# dependency and the endpoint it feeds both take it.
+# lock (small tool, contention is irrelevant).
 conn = connect(DEFAULT_DB, check_same_thread=False)
-db_lock = threading.RLock()
+db_lock = threading.Lock()
 
 # Signup is the expensive-to-abuse one (it burns usernames); login is the one
 # worth guessing at. Neither is a captcha — see auth.RateLimiter.
 signup_limiter = auth.RateLimiter(limit=5, window_s=3600)
 login_limiter = auth.RateLimiter(limit=10, window_s=900)
+
+# Guests are swept periodically rather than on a timer; there is no scheduler
+# here and arrival rate is exactly the signal that we need one.
+SWEEP_EVERY_GUESTS = 100
+guests_minted = 0
 
 
 def locked(fn):
@@ -43,6 +47,9 @@ def locked(fn):
             return fn(*args, **kwargs)
 
     return wrapper
+
+
+# --- identity -------------------------------------------------------------
 
 
 def set_session_cookie(request: Request, response: Response, token: str) -> None:
@@ -57,22 +64,59 @@ def set_session_cookie(request: Request, response: Response, token: str) -> None
     )
 
 
-def current_user(request: Request, response: Response) -> dict:
-    """Resolve the session cookie, minting a guest identity if there isn't one.
+def queue_cookie(request: Request, token: str | None) -> None:
+    """Ask the middleware to set (or, for None, clear) the session cookie.
 
-    Landing on the site is enough to start answering: no name to type, and
-    the row is reachable only through an unguessable token rather than a
-    guessable name in a URL.
+    Endpoints can't set it themselves: a guest minted while serving a request
+    that then raises — an empty item bank answers 503 — would be committed to
+    the database with its `Set-Cookie` discarded by the exception handler, and
+    the client would mint another orphan on every retry.
     """
+    request.state.session_cookie = "" if token is None else token
+
+
+@app.middleware("http")
+async def session_cookie_middleware(request: Request, call_next):
+    response = await call_next(request)
+    token = getattr(request.state, "session_cookie", None)
+    if token:
+        set_session_cookie(request, response, token)
+    elif token == "":
+        response.delete_cookie(auth.COOKIE_NAME, path="/")
+    if request.url.path.startswith("/api/"):
+        # Every API response is specific to one session's cookie, and one of
+        # them hands out that cookie. A shared cache must never serve either.
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Vary"] = "Cookie"
+    return response
+
+
+def current_user_id(request: Request) -> int:
+    """Resolve the session cookie to a user id, minting a guest if there isn't
+    one. Landing on the site is enough to start answering: no name to type,
+    and the row is reachable only through an unguessable token rather than a
+    guessable name in a URL.
+
+    Returns an *id*, not a row. FastAPI resolves sync dependencies in a
+    separate threadpool call that finishes before the endpoint body starts, so
+    a row read here would be a snapshot from an already-released critical
+    section — two overlapping answers would both write ratings derived from
+    the same stale row. Endpoints re-read under their own lock.
+    """
+    global guests_minted
     with db_lock:
         user = auth.session_user(conn, request.cookies.get(auth.COOKIE_NAME))
-        if user is None:
-            user = auth.create_guest(conn, rating.USER_START, rating.CALIB_START_STEP)
-            set_session_cookie(request, response, auth.start_session(conn, user["id"]))
-        return user
+        if user is not None:
+            return user["id"]
+        guests_minted += 1
+        if guests_minted % SWEEP_EVERY_GUESTS == 1:
+            auth.sweep(conn)
+        user = auth.create_guest(conn, rating.USER_START, rating.CALIB_START_STEP)
+        queue_cookie(request, auth.start_session(conn, user["id"]))
+        return user["id"]
 
 
-CurrentUser = Depends(current_user)
+CurrentUserId = Depends(current_user_id)
 
 
 def account_payload(user: dict) -> dict:
@@ -145,7 +189,8 @@ def pick_item(user: dict) -> tuple[dict | None, bool]:
 
 @app.get("/api/next")
 @locked
-def next_item(u: dict = CurrentUser):
+def next_item(user_id: int = CurrentUserId):
+    u = auth.get_user(conn, user_id)
     item, is_repeat = pick_item(u)
     if item is None:
         raise HTTPException(503, "no items in bank — run the mining/labeling pipeline")
@@ -172,7 +217,11 @@ class Answer(BaseModel):
 
 @app.post("/api/answer")
 @locked
-def answer(a: Answer, u: dict = CurrentUser):
+def answer(a: Answer, user_id: int = CurrentUserId):
+    # Read the row here, inside the lock that also writes it back: rating and
+    # calibration updates below are read-modify-write, so a snapshot taken
+    # before the lock would let two overlapping answers clobber each other.
+    u = auth.get_user(conn, user_id)
     item = conn.execute("SELECT * FROM items WHERE id = ?", (a.item_id,)).fetchone()
     if item is None:
         raise HTTPException(404, "unknown item")
@@ -256,7 +305,8 @@ def answer(a: Answer, u: dict = CurrentUser):
 
 @app.get("/api/stats")
 @locked
-def stats(u: dict = CurrentUser):
+def stats(user_id: int = CurrentUserId):
+    u = auth.get_user(conn, user_id)
     # Only first exposures count toward accuracy: repeats (served only once
     # the bank is exhausted) can be answered from memory of the reveal.
     rows = [
@@ -320,43 +370,70 @@ class Login(BaseModel):
     password: str
 
 
+def reissue_session(request: Request, user_id: int) -> None:
+    """Point this browser at `user_id` on a brand-new token.
+
+    Rotating on every privilege change means a token planted before signup
+    (over plain http, say) can't be riding along on the account afterwards.
+    """
+    # Both the token we arrived with and one minted for us moments ago by
+    # current_user_id (whose cookie we are about to overwrite).
+    auth.end_session(conn, request.cookies.get(auth.COOKIE_NAME))
+    auth.end_session(conn, getattr(request.state, "session_cookie", None))
+    queue_cookie(request, auth.start_session(conn, user_id))
+
+
 @app.get("/api/account")
-def account(u: dict = CurrentUser):
-    return account_payload(u)
+@locked
+def account(user_id: int = CurrentUserId):
+    return account_payload(auth.get_user(conn, user_id))
 
 
 @app.post("/api/account/signup")
-@locked
-def signup(body: Signup, request: Request, u: dict = CurrentUser):
+def signup(body: Signup, request: Request, user_id: int = CurrentUserId):
     """Claim the guest row this session has been playing on — no reset."""
+    ip = client_key(request)
     try:
-        signup_limiter.check(client_key(request))
-        u = auth.claim(conn, u, body.username, body.password, body.email)
+        signup_limiter.check(ip)
+        # Validate before hashing: an argon2 hash is ~50ms, and a typo
+        # shouldn't cost the user one of their few attempts.
+        username, email = auth.validate_signup(body.username, body.password, body.email)
+        password_hash = auth.hash_password(body.password)  # slow; not under the lock
+        with db_lock:
+            u = auth.claim(conn, user_id, username, password_hash, email)
+            reissue_session(request, u["id"])
     except auth.AuthError as e:
         raise auth_error(e) from e
+    signup_limiter.record(ip)  # only accounts actually created spend a slot
     return account_payload(u)
 
 
 @app.post("/api/account/login")
-@locked
-def login(body: Login, request: Request, response: Response):
+def login(body: Login, request: Request):
+    ip = client_key(request)
     try:
-        login_limiter.check(client_key(request))
-        u = auth.authenticate(conn, body.username, body.password)
+        login_limiter.check(ip)
     except auth.AuthError as e:
         raise auth_error(e) from e
-    # Drop the session we arrived with (typically a fresh guest's) rather than
-    # leaving a live token pointing at an abandoned row.
-    auth.end_session(conn, request.cookies.get(auth.COOKIE_NAME))
-    set_session_cookie(request, response, auth.start_session(conn, u["id"]))
+    with db_lock:
+        u = auth.find_by_username(conn, body.username.strip())
+    # Verify outside the lock: argon2 is deliberately slow, and holding the
+    # single database lock through it would stall every trial in flight.
+    if not auth.verify_password(auth.credential_for(u), body.password) or u is None:
+        login_limiter.record(ip)  # only misses spend a slot
+        raise HTTPException(400, "Wrong username or password.")
+    with db_lock:
+        # Drop the session we arrived with (typically a fresh guest's) rather
+        # than leaving a live token pointing at an abandoned row.
+        reissue_session(request, u["id"])
     return account_payload(u)
 
 
 @app.post("/api/account/logout")
 @locked
-def logout(request: Request, response: Response):
+def logout(request: Request):
     auth.end_session(conn, request.cookies.get(auth.COOKIE_NAME))
-    response.delete_cookie(auth.COOKIE_NAME, path="/")
+    queue_cookie(request, None)
     return {"ok": True}
 
 

@@ -1,7 +1,10 @@
+import threading
+
 import pytest
 from fastapi.testclient import TestClient
 
 from trainer import auth, server
+from trainer.db import connect
 
 from .conftest import answer, next_trial
 
@@ -117,7 +120,7 @@ def test_logout_revokes_the_session_and_lands_on_a_fresh_guest(client, db):
     assert client.get("/api/stats").json()["attempts"] == 0
 
 
-def test_login_rate_limit_is_per_ip(client, monkeypatch):
+def test_repeated_wrong_passwords_are_throttled(client, monkeypatch):
     client.post("/api/account/signup", json=CREDS)
     monkeypatch.setattr(server, "login_limiter", auth.RateLimiter(2, 900))
     with TestClient(server.app) as other:
@@ -126,6 +129,15 @@ def test_login_rate_limit_is_per_ip(client, monkeypatch):
         assert other.post("/api/account/login", json=bad).status_code == 400
         # Right password, but out of tries.
         assert other.post("/api/account/login", json=CREDS).status_code == 429
+
+
+def test_absurdly_long_password_is_refused_without_hashing_it(client):
+    client.post("/api/account/signup", json=CREDS)
+    with TestClient(server.app) as other:
+        r = other.post(
+            "/api/account/login", json={**CREDS, "password": "x" * (auth.MAX_PASSWORD_LEN + 1)}
+        )
+        assert r.status_code == 400
 
 
 def test_signup_rate_limit_is_per_ip(db, monkeypatch):
@@ -137,11 +149,36 @@ def test_signup_rate_limit_is_per_ip(db, monkeypatch):
 
 def test_rate_limiter_window_expires():
     limiter = auth.RateLimiter(2, window_s=60)
-    limiter.check("ip", now=0)
-    limiter.check("ip", now=1)
+    limiter.record("ip", now=0)
+    limiter.record("ip", now=1)
     with pytest.raises(auth.RateLimited):
         limiter.check("ip", now=2)
     limiter.check("ip", now=100)  # the first two have rolled out of the window
+
+
+def test_rate_limiter_only_counts_what_is_recorded():
+    limiter = auth.RateLimiter(1, window_s=60)
+    for _ in range(10):
+        limiter.check("ip", now=0)  # checking is free
+    limiter.record("ip", now=0)
+    with pytest.raises(auth.RateLimited):
+        limiter.check("ip", now=0)
+
+
+def test_signup_typos_do_not_burn_attempts(client, monkeypatch):
+    """A user fumbling the form must not lock themselves out of signing up."""
+    monkeypatch.setattr(server, "signup_limiter", auth.RateLimiter(1, 3600))
+    for bad in ({**CREDS, "password": "short"}, {**CREDS, "username": "!!"}):
+        assert client.post("/api/account/signup", json=bad).status_code == 400
+    assert client.post("/api/account/signup", json=CREDS).status_code == 200
+
+
+def test_successful_logins_do_not_burn_attempts(client, monkeypatch):
+    client.post("/api/account/signup", json=CREDS)
+    monkeypatch.setattr(server, "login_limiter", auth.RateLimiter(1, 900))
+    for _ in range(3):
+        with TestClient(server.app) as other:
+            assert other.post("/api/account/login", json=CREDS).status_code == 200
 
 
 def test_account_payloads_carry_no_credentials(client):
@@ -159,3 +196,108 @@ def test_account_payloads_carry_no_credentials(client):
     assert "a@b.co" not in body
     assert "argon2" not in body
     assert client.cookies[auth.COOKIE_NAME] not in body
+
+
+def test_failed_request_still_hands_out_the_identity_it_created(tmp_path, monkeypatch):
+    """A 503 from an empty bank must not mint an orphan row per retry.
+
+    The guest is committed while serving the request; if the error response
+    drops its Set-Cookie, the client never gets an identity and every retry
+    creates another unreachable row.
+    """
+    empty = connect(tmp_path / "empty.db", check_same_thread=False)
+    monkeypatch.setattr(server, "conn", empty)
+    with TestClient(server.app) as c:
+        for _ in range(3):
+            assert c.get("/api/next").status_code == 503
+        assert auth.COOKIE_NAME in c.cookies
+    assert empty.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 1
+    assert empty.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
+
+
+def test_concurrent_answers_do_not_clobber_rating(client, db):
+    """Two overlapping answers on one session (two tabs, or a retried POST).
+
+    The user row is read-modify-written, so both requests must serialize on
+    the same lock the write happens under — a row read before that lock is a
+    snapshot, and the second writer would roll the first one back.
+    """
+    trials = [next_trial(client) for _ in range(1)]
+    trials.append(next_trial(client))
+    results = []
+    threads = [
+        threading.Thread(target=lambda t=t: results.append(answer(client, t))) for t in trials
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    row = db.execute("SELECT rating, calib_step, attempts FROM users").fetchone()
+    assert row["attempts"] == 2
+    # Both were correct-or-not, but each moved the rating from the previous
+    # one's result: the final row must equal the last recorded snapshot.
+    last = db.execute(
+        "SELECT user_rating_after FROM responses ORDER BY id DESC LIMIT 1"
+    ).fetchone()[0]
+    assert row["rating"] == last
+    assert db.execute("SELECT COUNT(DISTINCT user_rating_before) FROM responses").fetchone()[0] == 2
+
+
+def test_garbage_cookie_falls_back_to_a_fresh_guest(client):
+    client.cookies.set(auth.COOKIE_NAME, "not-a-real-token")
+    r = client.get("/api/account")
+    assert r.status_code == 200
+    assert r.json()["guest"] is True
+
+
+def test_expired_sessions_stop_working(client, db):
+    client.post("/api/account/signup", json=CREDS)
+    token = client.cookies[auth.COOKIE_NAME]
+    assert auth.session_user(db, token) is not None
+    db.execute(
+        "UPDATE sessions SET last_seen = datetime('now', ?)", (f"-{auth.SESSION_DAYS + 1} days",)
+    )
+    db.commit()
+    assert auth.session_user(db, token) is None
+    assert client.get("/api/account").json()["guest"] is True  # not an error, just a new guest
+
+
+def test_signup_rotates_the_session_token(client):
+    client.get("/api/account")
+    before = client.cookies[auth.COOKIE_NAME]
+    client.post("/api/account/signup", json=CREDS)
+    assert client.cookies[auth.COOKIE_NAME] != before
+
+
+def test_sweep_drops_empty_guests_but_never_history(client, db):
+    answer(client, next_trial(client))  # this guest has a response
+    with TestClient(server.app) as idle:
+        idle.get("/api/account")  # this one has nothing
+    db.execute("UPDATE users SET created_at = datetime('now', '-30 days')")
+    db.execute("UPDATE sessions SET last_seen = datetime('now', '-30 days')")
+    db.commit()
+
+    auth.sweep(db)
+
+    names = [r[0] for r in db.execute("SELECT name FROM users")]
+    assert len(names) == 1  # the idle guest is gone
+    assert db.execute("SELECT COUNT(*) FROM responses").fetchone()[0] == 1
+
+
+def test_sweep_keeps_claimed_accounts_even_when_idle(client, db):
+    client.post("/api/account/signup", json=CREDS)
+    db.execute("UPDATE users SET created_at = datetime('now', '-400 days')")
+    db.execute("UPDATE sessions SET last_seen = datetime('now', '-400 days')")
+    db.commit()
+
+    auth.sweep(db)
+
+    assert auth.find_by_username(db, "tester") is not None
+
+
+def test_api_responses_are_never_cacheable(client):
+    for path in ("/api/account", "/api/stats", "/api/next"):
+        r = client.get(path)
+        assert r.headers["cache-control"] == "no-store", path
+        assert r.headers["vary"] == "Cookie", path

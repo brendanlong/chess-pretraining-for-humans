@@ -21,6 +21,10 @@ from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatc
 
 COOKIE_NAME = "sid"
 SESSION_DAYS = 365
+# Anyone can mint a guest just by arriving, so untouched ones are swept: a
+# guest that answered nothing and whose session has gone cold is indexable
+# noise, not history. Anything with a response or a password is never touched.
+GUEST_TTL_DAYS = 1
 # Guest rows carry a random name so nothing about them is guessable, and the
 # prefix is reserved so a signup can never collide with one.
 GUEST_PREFIX = "guest_"
@@ -29,6 +33,9 @@ MIN_PASSWORD_LEN = 8
 MAX_PASSWORD_LEN = 200  # argon2 is happy to hash megabytes; we shouldn't let it
 
 _hasher = PasswordHasher()
+# Verified against when the username is unknown, so a miss costs the same as a
+# wrong password and timing can't enumerate accounts.
+_DUMMY_HASH = _hasher.hash("no such user")
 
 
 class AuthError(Exception):
@@ -47,10 +54,11 @@ def hash_password(password: str) -> str:
 
 
 def verify_password(password_hash: str | None, password: str) -> bool:
-    if not password_hash:
-        return False
+    """Constant-ish work whether or not there is a hash to check against."""
+    if len(password) > MAX_PASSWORD_LEN:
+        return False  # nothing this long was ever hashed; don't pay to find out
     try:
-        return _hasher.verify(password_hash, password)
+        return _hasher.verify(password_hash or _DUMMY_HASH, password) and bool(password_hash)
     except (VerifyMismatchError, VerificationError, InvalidHashError):
         return False
 
@@ -121,36 +129,40 @@ def find_by_username(conn: sqlite3.Connection, name: str) -> dict | None:
     return dict(row) if row else None
 
 
-def claim(
-    conn: sqlite3.Connection, user: dict, username: str, password: str, email: str | None
-) -> dict:
-    """Attach credentials to an existing (guest) row. Nothing else changes:
-    rating, calibration state and responses carry over untouched."""
-    if not is_guest(user):
-        raise AuthError("This session is already signed in.")
+def validate_signup(username: str, password: str, email: str | None) -> tuple[str, str | None]:
+    """Everything checkable without touching the database, so the caller can
+    reject typos before paying for an argon2 hash."""
     username = check_username(username)
     check_password(password)
-    email = check_email(email)
+    return username, check_email(email)
+
+
+def claim(
+    conn: sqlite3.Connection, user_id: int, username: str, password_hash: str, email: str | None
+) -> dict:
+    """Attach credentials to an existing (guest) row. Nothing else changes:
+    rating, calibration state and responses carry over untouched.
+
+    Takes an already-computed hash so the caller can do the slow part without
+    holding the database lock; the taken-name check and the write stay
+    together here, under whatever lock the caller holds."""
+    user = get_user(conn, user_id)
+    if not is_guest(user):
+        raise AuthError("This session is already signed in.")
     if find_by_username(conn, username):
         raise AuthError("That username is taken.")
     conn.execute(
         "UPDATE users SET name = ?, password_hash = ?, email = ? WHERE id = ?",
-        (username, hash_password(password), email, user["id"]),
+        (username, password_hash, email, user_id),
     )
     conn.commit()
-    return get_user(conn, user["id"])
+    return get_user(conn, user_id)
 
 
-def authenticate(conn: sqlite3.Connection, username: str, password: str) -> dict:
-    user = find_by_username(conn, username.strip())
-    # Hash anyway when the name is unknown so a miss costs the same as a wrong
-    # password — otherwise timing enumerates usernames.
-    if user is None or is_guest(user):
-        _hasher.hash(password[:MAX_PASSWORD_LEN])
-        raise AuthError("Wrong username or password.")
-    if not verify_password(user["password_hash"], password):
-        raise AuthError("Wrong username or password.")
-    return user
+def credential_for(user: dict | None) -> str | None:
+    """The hash to check a login against — None for unknown or guest rows,
+    which `verify_password` still spends a full verify on."""
+    return None if user is None or is_guest(user) else user["password_hash"]
 
 
 # --- sessions -------------------------------------------------------------
@@ -199,15 +211,47 @@ def end_session(conn: sqlite3.Connection, token: str | None) -> None:
         conn.commit()
 
 
+def sweep(conn: sqlite3.Connection) -> None:
+    """Drop dead sessions and the empty guest rows they leave behind.
+
+    Arriving is enough to mint a guest, so crawlers and health checks would
+    otherwise grow `users` without bound. Only rows with no password, no
+    trials, no responses and no warm session are touched — the experimental
+    record is never in reach.
+    """
+    conn.execute(
+        "DELETE FROM sessions WHERE last_seen < datetime('now', ?)", (f"-{SESSION_DAYS} days",)
+    )
+    conn.execute(
+        """DELETE FROM users
+           WHERE password_hash IS NULL
+             AND attempts = 0
+             AND created_at IS NOT NULL
+             AND created_at < datetime('now', ?)
+             AND NOT EXISTS (SELECT 1 FROM responses WHERE responses.user_id = users.id)
+             AND NOT EXISTS (SELECT 1 FROM sessions
+                             WHERE sessions.user_id = users.id
+                               AND sessions.last_seen > datetime('now', ?))""",
+        (f"-{GUEST_TTL_DAYS} days", f"-{GUEST_TTL_DAYS} days"),
+    )
+    conn.execute("DELETE FROM sessions WHERE user_id NOT IN (SELECT id FROM users)")
+    conn.commit()
+
+
 # --- rate limiting --------------------------------------------------------
 
 
 class RateLimiter:
-    """Fixed-window per-key counter, in memory.
+    """Sliding-window per-key counter, in memory.
 
     Deliberately not a captcha: this is a small app, and the cost of a wrong
     guess here should be a wait, not a lost signup. State is per-process and
     resets on restart, which is fine for the threat (casual scripted abuse).
+
+    `check` and `record` are separate on purpose. Only the outcomes worth
+    throttling — accounts actually created, passwords actually missed — spend
+    a slot, so someone fumbling their way through the form never locks
+    themselves out over a typo.
     """
 
     def __init__(self, limit: int, window_s: float):
@@ -215,13 +259,17 @@ class RateLimiter:
         self.window_s = window_s
         self._hits: dict[str, list[float]] = {}
 
+    def _live(self, key: str, now: float) -> list[float]:
+        return [t for t in self._hits.get(key, []) if now - t < self.window_s]
+
     def check(self, key: str, now: float | None = None) -> None:
         now = time.monotonic() if now is None else now
-        hits = [t for t in self._hits.get(key, []) if now - t < self.window_s]
-        if len(hits) >= self.limit:
+        if len(self._live(key, now)) >= self.limit:
             raise RateLimited("Too many attempts. Wait a few minutes and try again.")
-        hits.append(now)
-        self._hits[key] = hits
-        if len(self._hits) > 10_000:  # crude bound; oldest keys are cheapest to lose
+
+    def record(self, key: str, now: float | None = None) -> None:
+        now = time.monotonic() if now is None else now
+        self._hits[key] = [*self._live(key, now), now]
+        if len(self._hits) > 10_000:  # crude bound; stale keys are cheapest to lose
             for k in [k for k, v in self._hits.items() if not v or now - v[-1] > self.window_s]:
                 del self._hits[k]
