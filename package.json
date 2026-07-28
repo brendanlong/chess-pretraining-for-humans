@@ -1,0 +1,14 @@
+{
+  "name": "chess-pretraining-web",
+  "private": true,
+  "description": "Lint config for the static frontend in web/ (no build step)",
+  "type": "module",
+  "scripts": {
+    "lint": "eslint web"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.0.0",
+    "eslint": "^9.0.0",
+    "globals": "^16.0.0"
+  }
+}
