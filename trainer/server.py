@@ -38,7 +38,7 @@ db_lock = threading.Lock()
 # back when nothing was created, so it can't be walked past by a burst.
 signup_attempt_limiter = auth.RateLimiter(limit=20, window_s=3600)
 signup_limiter = auth.RateLimiter(limit=5, window_s=3600)
-login_limiter = auth.RateLimiter(limit=20, window_s=900)
+login_limiter = auth.RateLimiter(limit=10, window_s=900)
 
 # Guests are swept periodically rather than on a timer; there is no scheduler
 # here and arrival rate is exactly the signal that we need one.
@@ -423,10 +423,14 @@ def signup(body: Signup, request: Request):
     """Claim the guest row this session has been playing on — no reset."""
     ip = client_key(request)
     spend(signup_attempt_limiter, ip)
-    # The creation slot is taken up front and handed back if the signup fails,
-    # rather than recorded at the end: a limit checked before the ~50ms hash
-    # and written after is one that a concurrent burst walks straight past.
+    # Both slots are taken up front and handed back on the way out, rather
+    # than recorded at the end: a limit checked before the ~50ms hash and
+    # written after is one a concurrent burst walks straight past. The refunds
+    # live in `finally` because any path that returns without doing the thing
+    # the slot pays for — including a crash — has to give it back, or an
+    # overloaded box turns into an hour-long lockout for a real user.
     spend(signup_limiter, ip)
+    created = shed = False
     try:
         # Everything cheap first: a typo, a taken name, or an already-claimed
         # session must not cost an argon2 hash (~50ms and 64 MiB).
@@ -441,46 +445,60 @@ def signup(body: Signup, request: Request):
         with db_lock:
             u = auth.claim(conn, user_id, username, password_hash, email)
             reissue_session(request, u["id"])
-    except auth.AuthError as e:
-        signup_limiter.release(ip)  # no account was created; don't charge for one
+        created = True
+    except auth.AuthBusy as e:
+        shed = True  # we refused to do the work; that isn't an attempt
         raise auth_error(e) from e
+    except auth.AuthError as e:
+        raise auth_error(e) from e
+    finally:
+        if not created:
+            signup_limiter.release(ip)
+        if shed:
+            signup_attempt_limiter.release(ip)
     return account_payload(u)
 
 
 @app.post("/api/account/login")
 def login(body: Login, request: Request):
     ip = client_key(request)
-    # Taken before the verify, not after: a limit that only failures increment
-    # is read before the ~50ms hash and written after, so a burst of concurrent
-    # guesses all passes at once. A correct password hands its slot back, so
-    # people sharing an address (NAT, a proxy without --proxy-headers) aren't
-    # throttled by each other's successful logins.
+    # Taken before the verify, not incremented after it: a limit read before
+    # the ~50ms hash and written after is one a concurrent burst walks straight
+    # past. A success refunds only the slot it took itself, so wrong guesses
+    # still accumulate toward the limit while people sharing an address (NAT, a
+    # proxy without --proxy-headers) don't throttle each other by signing in.
     spend(login_limiter, ip)
-    with db_lock:
-        u = auth.find_by_username(conn, body.username.strip())
-    # Verify outside the lock: argon2 is deliberately slow, and holding the
-    # single database lock through it would stall every trial in flight.
+    wrong = False
     try:
+        with db_lock:
+            u = auth.find_by_username(conn, body.username.strip())
+        # Verify outside the lock: argon2 is deliberately slow, and holding the
+        # single database lock through it would stall every trial in flight.
         ok = auth.verify_password(auth.credential_for(u), body.password)
-    except auth.AuthError as e:  # saturated hasher; the guess never happened
-        login_limiter.release(ip)
-        raise auth_error(e) from e
-    if not ok or u is None:
-        raise HTTPException(400, "Wrong username or password.")
-    with db_lock:
-        # The row was read before the verify; re-check that the credential we
-        # just matched is still the current one, so a password rotated away
-        # mid-login (trainer.account set-password) doesn't still open a session.
-        current = conn.execute(
-            "SELECT 1 FROM users WHERE id = ? AND password_hash = ?",
-            (u["id"], u["password_hash"]),
-        ).fetchone()
-        if current is None:
+        if not ok or u is None:
+            wrong = True
             raise HTTPException(400, "Wrong username or password.")
-        # Drop the session we arrived with (typically a fresh guest's) rather
-        # than leaving a live token pointing at an abandoned row.
-        reissue_session(request, u["id"])
-    login_limiter.release(ip)  # it was a real login; don't charge for it
+        with db_lock:
+            # The row was read before the verify; re-check that the credential
+            # we matched is still the current one, so a password rotated away
+            # mid-login (trainer.account set-password) can't open a session.
+            current = conn.execute(
+                "SELECT 1 FROM users WHERE id = ? AND password_hash = ?",
+                (u["id"], u["password_hash"]),
+            ).fetchone()
+            if current is None:
+                wrong = True
+                raise HTTPException(400, "Wrong username or password.")
+            # Drop the session we arrived with (typically a fresh guest's)
+            # rather than leaving a live token pointing at an abandoned row.
+            reissue_session(request, u["id"])
+    except auth.AuthError as e:  # a saturated hasher; the guess never happened
+        raise auth_error(e) from e
+    finally:
+        # Anything that isn't a wrong guess — success, a shed request, a crash
+        # — gives the slot back rather than rationing a real user's next login.
+        if not wrong:
+            login_limiter.release(ip)
     return account_payload(u)
 
 

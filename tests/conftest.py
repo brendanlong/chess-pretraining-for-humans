@@ -62,7 +62,7 @@ def db(tmp_path, monkeypatch, item_count):
     for name, limiter in (
         ("signup_attempt_limiter", auth.RateLimiter(20, 3600)),
         ("signup_limiter", auth.RateLimiter(5, 3600)),
-        ("login_limiter", auth.RateLimiter(20, 900)),
+        ("login_limiter", auth.RateLimiter(10, 900)),
     ):
         monkeypatch.setattr(server, name, limiter)
     return conn

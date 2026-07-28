@@ -469,3 +469,48 @@ def test_hasher_queue_gate_sheds_without_occupying_a_thread(client, monkeypatch)
     started = time.monotonic()
     assert client.post("/api/account/signup", json=CREDS).status_code == 503
     assert time.monotonic() - started < 5
+
+
+def test_a_crash_does_not_burn_a_signup_slot(client, monkeypatch):
+    """argon2 raises HashingError when it can't get its 64 MiB — the very
+    pressure the hasher caps exist for. That must not also cost the creation
+    slots, or an overloaded box becomes an hour-long lockout."""
+    monkeypatch.setattr(server, "signup_limiter", auth.RateLimiter(2, 3600))
+    real_hash = auth.hash_password
+
+    def boom(_):
+        raise RuntimeError("out of memory")
+
+    monkeypatch.setattr(auth, "hash_password", boom)
+    with TestClient(server.app, raise_server_exceptions=False) as c:
+        for _ in range(3):
+            assert c.post("/api/account/signup", json=CREDS).status_code == 500
+    monkeypatch.setattr(auth, "hash_password", real_hash)
+    assert client.post("/api/account/signup", json=CREDS).status_code == 200
+
+
+def test_a_shed_signup_does_not_spend_an_attempt(client, monkeypatch):
+    monkeypatch.setattr(server, "signup_attempt_limiter", auth.RateLimiter(2, 3600))
+    monkeypatch.setattr(auth, "HASH_WAIT_S", 0.05)
+    saturated, real = threading.Semaphore(0), auth._hash_slots
+    monkeypatch.setattr(auth, "_hash_slots", saturated)
+    for _ in range(3):
+        assert client.post("/api/account/signup", json=CREDS).status_code == 503
+    monkeypatch.setattr(auth, "_hash_slots", real)
+    assert client.post("/api/account/signup", json=CREDS).status_code == 200
+
+
+def test_successes_do_not_refund_other_requests_wrong_guesses(client, monkeypatch):
+    """A refund gives back the slot that request took, not the last one taken,
+    so someone holding one working account can't alternate correct/wrong to
+    keep guessing at another. Wrong guesses still accumulate to the limit."""
+    client.post("/api/account/signup", json=CREDS)
+    monkeypatch.setattr(server, "login_limiter", auth.RateLimiter(3, 900))
+    bad = {**CREDS, "password": "wrongwrongwrong"}
+    codes = []
+    with TestClient(server.app) as other:
+        for _ in range(5):
+            codes.append(other.post("/api/account/login", json=bad).status_code)
+            codes.append(other.post("/api/account/login", json=CREDS).status_code)
+    assert codes.count(400) == 3, codes  # the wrong guesses ran out of slots
+    assert 429 in codes
