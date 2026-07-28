@@ -37,6 +37,15 @@ chosen move's engine line (switchable to the other, steppable, speed
 configurable), and can copy the position + both lines as plain text for
 pasting into an assistant.
 
+Layout is mobile-first: a slim header (rating, recent accuracy, user,
+settings) over a single column, with the space under the board swapping
+between the choice buttons and the reveal — verdict and rating delta,
+then replay controls with a primary Next, then the two engine lines as
+tappable cards; secondary detail sits below the fold. Desktop places the
+same panel beside the board. A settings drawer holds replay speed, a
+per-name user switcher (URL param overrides localStorage; real accounts
+later), and session/debug counters like the fresh-item count.
+
 ## Storage
 
 One SQLite database: `items` (positions, moves, evals, lines, difficulty),

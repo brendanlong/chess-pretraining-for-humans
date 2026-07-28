@@ -11,64 +11,95 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
+<header id="topbar">
+  <div id="brand">&#9822;<span class="brand-name"> Move Trainer</span></div>
+  <div id="topstats">
+    <span class="stat" title="Your rating on this trainer">Elo <b id="stat-rating">–</b></span>
+    <span class="stat" title="Accuracy over your last 50 fresh trials">last 50 <b id="stat-acc">–</b></span>
+  </div>
+  <button id="user-btn" class="chip" title="Switch user"><span id="user-name"></span></button>
+  <button id="settings-btn" class="chip" title="Settings">&#9881;</button>
+</header>
 <main>
   <div id="board-col">
-    <div id="turn-banner">&nbsp;</div>
+    <div id="turn-banner"><span id="turn-dot"></span><span id="turn-label">&nbsp;</span></div>
     <div id="board"></div>
-    <div id="board-controls" hidden>
-      <button id="ctl-reset" title="Back to the choice">&#10226;</button>
-      <button id="ctl-back" title="Step back">&#9664;</button>
-      <button id="ctl-fwd" title="Step forward">&#9654;</button>
-      <button id="ctl-gear" title="Replay speed">&#9881;</button>
-    </div>
-    <div id="speed-menu" hidden>
-      <span>auto-play speed</span>
-      <button data-speed="1400">slow</button>
-      <button data-speed="750">normal</button>
-      <button data-speed="450">fast</button>
-    </div>
   </div>
-  <aside id="panel">
-    <h1>Move discrimination</h1>
-    <div id="statusbar">
-      <span>rating <b id="stat-rating">–</b></span>
-      <span>trial <b id="stat-trial">–</b></span>
-      <span>last 50 <b id="stat-acc">–</b></span>
-      <span>streak <b id="stat-streak">0</b></span>
-      <span>fresh <b id="stat-remaining">–</b></span>
+  <section id="panel">
+    <div id="repeat-note" hidden>
+      <span class="repeat-badge">rerun</span>
+      You've seen every item — this one won't affect your rating.
     </div>
-    <p id="prompt">Which move is better? Press <kbd>1</kbd> or <kbd>2</kbd>.</p>
-    <div id="choices">
-      <button id="choice-1" class="choice"><span class="key">1</span><span class="san"></span></button>
-      <button id="choice-2" class="choice"><span class="key">2</span><span class="san"></span></button>
+    <div id="ask">
+      <p id="prompt">Which move is better?<span class="kbd-hint"> Press <kbd>1</kbd> or <kbd>2</kbd>.</span></p>
+      <div id="choices">
+        <button id="choice-1" class="choice"><span class="key kbd-hint">1</span><span class="san"></span></button>
+        <button id="choice-2" class="choice"><span class="key kbd-hint">2</span><span class="san"></span></button>
+      </div>
     </div>
     <div id="feedback" hidden>
-      <div id="verdict"></div>
-      <table id="reveal">
-        <tr id="row-best"><td class="move"></td><td class="eval"></td><td class="wp"></td></tr>
-        <tr id="row-distractor"><td class="move"></td><td class="eval"></td><td class="wp"></td></tr>
-      </table>
-      <div id="detail"></div>
-      <div id="replay">
-        <div id="line-tabs">
-          <button id="tab-0" class="line-tab"></button>
-          <button id="tab-1" class="line-tab"></button>
-        </div>
-        <div id="line-sans"></div>
-        <p id="replay-hint"><kbd>&larr;</kbd><kbd>&rarr;</kbd> step through the line</p>
+      <div id="verdict-row">
+        <span id="verdict"></span>
+        <span id="rating-delta"></span>
       </div>
-      <div id="actions">
-        <button id="next">Next <kbd>space</kbd></button>
+      <div id="controls-row">
+        <button id="ctl-reset" class="ctl" title="Back to the decision point">&#10226;</button>
+        <button id="ctl-back" class="ctl" title="Step back">&#9664;</button>
+        <button id="ctl-fwd" class="ctl" title="Step forward">&#9654;</button>
+        <button id="next">Next <kbd class="kbd-hint">space</kbd></button>
+      </div>
+      <div id="line-cards">
+        <button id="tab-0" class="line-card">
+          <span class="key kbd-hint">1</span>
+          <span class="san"></span><span class="tag"></span>
+          <span class="nums"><span class="eval"></span><span class="wp"></span></span>
+        </button>
+        <button id="tab-1" class="line-card">
+          <span class="key kbd-hint">2</span>
+          <span class="san"></span><span class="tag"></span>
+          <span class="nums"><span class="eval"></span><span class="wp"></span></span>
+        </button>
+      </div>
+      <div id="line-sans"></div>
+      <div id="detail"></div>
+      <div id="extra-actions">
         <button id="copy-btn" title="Copy the position and both engine lines as a question for Claude">&#10697; Copy for Claude</button>
       </div>
     </div>
-    <div id="repeat-note" hidden>
-      <div class="repeat-badge">repeat</div>
-      <p>You've seen every item — this one is a rerun and won't affect your
-      rating. Mine more games to keep training on fresh positions.</p>
-    </div>
-  </aside>
+  </section>
 </main>
+<div id="settings" hidden>
+  <div id="settings-sheet" role="dialog" aria-modal="true" aria-label="Settings">
+    <div id="settings-head">
+      <h2>Settings</h2>
+      <button id="settings-close" class="chip" title="Close">&#10005;</button>
+    </div>
+    <div class="setting">
+      <span class="setting-label">Auto-play speed</span>
+      <div id="speed-menu">
+        <button data-speed="1400">slow</button>
+        <button data-speed="750">normal</button>
+        <button data-speed="450">fast</button>
+      </div>
+    </div>
+    <div class="setting">
+      <span class="setting-label">User</span>
+      <form id="user-form">
+        <input id="user-input" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="User name">
+        <button type="submit">Switch</button>
+      </form>
+      <p class="setting-note">Progress and rating are stored per name on this server. Real accounts come later.</p>
+    </div>
+    <div class="setting">
+      <span class="setting-label">Session</span>
+      <div id="drawer-stats">
+        <span>trial</span><b id="stat-trial">–</b>
+        <span>streak</span><b id="stat-streak">0</b>
+        <span>fresh items left</span><b id="stat-remaining">–</b>
+      </div>
+    </div>
+  </div>
+</div>
 <script type="module" src="app.js"></script>
 </body>
 </html>
