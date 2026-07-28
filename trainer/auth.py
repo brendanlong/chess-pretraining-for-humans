@@ -10,6 +10,7 @@ Nothing here touches the trial flow; ratings and responses are keyed on
 `users.id` exactly as before.
 """
 
+import contextlib
 import hashlib
 import re
 import secrets
@@ -37,12 +38,18 @@ _hasher = PasswordHasher()
 # Verified against when the username is unknown, so a miss costs the same as a
 # wrong password and timing can't enumerate accounts.
 _DUMMY_HASH = _hasher.hash("no such user")
-# argon2 is memory-hard on purpose — 64 MiB per hash at the default settings.
-# Endpoints no longer serialize on the database lock, so without a cap here a
+# argon2 is memory-hard on purpose — 64 MiB per hash at the default settings —
+# and endpoints no longer serialize on the database lock, so without a cap a
 # burst of concurrent signups would each claim their own 64 MiB and take the
-# box out. Callers queue instead; the wait is bounded and the RAM isn't.
-HASH_CONCURRENCY = 4
+# box out. Two limits, because bounding memory alone isn't enough: the server
+# runs sync endpoints on a fixed thread pool, so callers merely *waiting* for a
+# hash still occupy threads the trial flow needs. HASH_QUEUE keeps auth's share
+# of that pool small and sheds anything beyond it immediately.
+HASH_CONCURRENCY = 4  # hashing at once — bounds memory
+HASH_QUEUE = 12  # inside the hasher at all, waiting included — bounds threads
+HASH_WAIT_S = 1.5
 _hash_slots = threading.Semaphore(HASH_CONCURRENCY)
+_hash_queue = threading.Semaphore(HASH_QUEUE)
 
 
 class AuthError(Exception):
@@ -53,11 +60,33 @@ class RateLimited(AuthError):
     """Too many signup/login attempts from one address."""
 
 
+class AuthBusy(AuthError):
+    """Password hashing is saturated; the client should retry shortly."""
+
+
+BUSY_MESSAGE = "Too many people signing in right now. Try again in a moment."
+
+
+@contextlib.contextmanager
+def _hash_slot():
+    if not _hash_queue.acquire(blocking=False):
+        raise AuthBusy(BUSY_MESSAGE)  # don't even hold a thread to wait
+    try:
+        if not _hash_slots.acquire(timeout=HASH_WAIT_S):
+            raise AuthBusy(BUSY_MESSAGE)
+        try:
+            yield
+        finally:
+            _hash_slots.release()
+    finally:
+        _hash_queue.release()
+
+
 # --- credentials ----------------------------------------------------------
 
 
 def hash_password(password: str) -> str:
-    with _hash_slots:
+    with _hash_slot():
         return _hasher.hash(password)
 
 
@@ -65,12 +94,12 @@ def verify_password(password_hash: str | None, password: str) -> bool:
     """Constant-ish work whether or not there is a hash to check against."""
     if len(password) > MAX_PASSWORD_LEN:
         return False  # nothing this long was ever hashed; don't pay to find out
-    try:
-        with _hash_slots:
+    with _hash_slot():  # AuthBusy propagates: a saturated box says so
+        try:
             verified = _hasher.verify(password_hash or _DUMMY_HASH, password)
-        return verified and bool(password_hash)
-    except (VerifyMismatchError, VerificationError, InvalidHashError):
-        return False
+        except (VerifyMismatchError, VerificationError, InvalidHashError):
+            return False
+    return verified and bool(password_hash)
 
 
 def check_username(name: str) -> str:
@@ -265,12 +294,15 @@ class RateLimiter:
     guess here should be a wait, not a lost signup. State is per-process and
     resets on restart, which is fine for the threat (casual scripted abuse).
 
-    `consume` is the gate: one atomic check-and-record, so concurrent requests
-    can't all pass a check that none of them has incremented yet. `check` and
-    `record` exist for the second, narrower limit on outcomes — how many
-    accounts an address actually created — where the two halves are separated
-    by work we don't want to do twice.
+    The only gate is `consume`: one atomic check-and-record, taken *before*
+    the slow work. Checking first and recording after the outcome is known
+    reads a counter that nothing in flight has incremented yet, so a
+    concurrent burst all passes at once. Where an outcome shouldn't have
+    counted after all — a login that turned out to be correct — the slot is
+    handed back with `release` rather than never taken.
     """
+
+    MAX_KEYS = 10_000
 
     def __init__(self, limit: int, window_s: float):
         self.limit = limit
@@ -281,26 +313,37 @@ class RateLimiter:
     def _live(self, key: str, now: float) -> list[float]:
         return [t for t in self._hits.get(key, []) if now - t < self.window_s]
 
+    def _prune(self, now: float) -> None:
+        """Bound the key space. Runs only when over the cap, and cuts well
+        under it, so the scan amortizes instead of repeating every call."""
+        if len(self._hits) <= self.MAX_KEYS:
+            return
+        for key in [k for k, v in self._hits.items() if not v or now - v[-1] >= self.window_s]:
+            del self._hits[key]
+        if len(self._hits) > self.MAX_KEYS:
+            # Still over, so the traffic is spread across more addresses than
+            # we will track. Forget the least recently active: dropping a key
+            # forgives an address early, it can never block a legitimate one.
+            by_age = sorted(self._hits, key=lambda k: self._hits[k][-1])
+            for key in by_age[: len(self._hits) - self.MAX_KEYS * 3 // 4]:
+                del self._hits[key]
+
     def _record(self, key: str, now: float) -> None:
         self._hits[key] = [*self._live(key, now), now]
-        if len(self._hits) > 10_000:  # crude bound; stale keys are cheapest to lose
-            for k in [k for k, v in self._hits.items() if not v or now - v[-1] > self.window_s]:
-                del self._hits[k]
-
-    def check(self, key: str, now: float | None = None) -> None:
-        now = time.monotonic() if now is None else now
-        with self._lock:
-            if len(self._live(key, now)) >= self.limit:
-                raise RateLimited("Too many attempts. Wait a few minutes and try again.")
-
-    def record(self, key: str, now: float | None = None) -> None:
-        now = time.monotonic() if now is None else now
-        with self._lock:
-            self._record(key, now)
+        self._prune(now)
 
     def consume(self, key: str, now: float | None = None) -> None:
+        """Take a slot, or raise. Held for the duration of the work."""
         now = time.monotonic() if now is None else now
         with self._lock:
             if len(self._live(key, now)) >= self.limit:
                 raise RateLimited("Too many attempts. Wait a few minutes and try again.")
             self._record(key, now)
+
+    def release(self, key: str) -> None:
+        """Hand back the slot most recently taken for this key, once the
+        outcome turns out not to be worth counting."""
+        with self._lock:
+            hits = self._hits.get(key)
+            if hits:
+                hits.pop()

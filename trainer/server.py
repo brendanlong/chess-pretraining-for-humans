@@ -30,12 +30,12 @@ app = FastAPI(title="chess-pretraining")
 conn = connect(DEFAULT_DB, check_same_thread=False)
 db_lock = threading.Lock()
 
-# Two gates per endpoint, neither a captcha (see auth.RateLimiter). The
-# attempt limits are charged for *every* request, because an attempt is what
-# costs us — an argon2 hash, and an answer to "is this username taken?". They
-# are loose enough that a person fumbling the form never reaches them. The
-# creation limit is charged only on success, and is what actually bounds how
-# many accounts one address can make.
+# Two gates on signup, neither a captcha (see auth.RateLimiter). The attempt
+# limit is charged for every request, because an attempt is what costs us — an
+# argon2 hash, and an answer to "is this username taken?" — and is loose enough
+# that a person fumbling the form never reaches it. The creation limit is what
+# bounds how many accounts one address can make; it's taken up front and handed
+# back when nothing was created, so it can't be walked past by a burst.
 signup_attempt_limiter = auth.RateLimiter(limit=20, window_s=3600)
 signup_limiter = auth.RateLimiter(limit=5, window_s=3600)
 login_limiter = auth.RateLimiter(limit=20, window_s=900)
@@ -372,8 +372,20 @@ def client_key(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
+def spend(limiter: auth.RateLimiter, ip: str) -> None:
+    """Take a rate-limit slot or refuse the request."""
+    try:
+        limiter.consume(ip)
+    except auth.AuthError as e:
+        raise auth_error(e) from e
+
+
 def auth_error(e: auth.AuthError) -> HTTPException:
-    return HTTPException(429 if isinstance(e, auth.RateLimited) else 400, str(e))
+    if isinstance(e, auth.RateLimited):
+        return HTTPException(429, str(e))
+    if isinstance(e, auth.AuthBusy):
+        return HTTPException(503, str(e))
+    return HTTPException(400, str(e))
 
 
 class Signup(BaseModel):
@@ -410,9 +422,12 @@ def account(user_id: int = CurrentUserId):
 def signup(body: Signup, request: Request):
     """Claim the guest row this session has been playing on — no reset."""
     ip = client_key(request)
+    spend(signup_attempt_limiter, ip)
+    # The creation slot is taken up front and handed back if the signup fails,
+    # rather than recorded at the end: a limit checked before the ~50ms hash
+    # and written after is one that a concurrent burst walks straight past.
+    spend(signup_limiter, ip)
     try:
-        signup_attempt_limiter.consume(ip)
-        signup_limiter.check(ip)
         # Everything cheap first: a typo, a taken name, or an already-claimed
         # session must not cost an argon2 hash (~50ms and 64 MiB).
         username, email = auth.validate_signup(body.username, body.password, body.email)
@@ -427,24 +442,30 @@ def signup(body: Signup, request: Request):
             u = auth.claim(conn, user_id, username, password_hash, email)
             reissue_session(request, u["id"])
     except auth.AuthError as e:
+        signup_limiter.release(ip)  # no account was created; don't charge for one
         raise auth_error(e) from e
-    signup_limiter.record(ip)  # only accounts actually created spend a slot
     return account_payload(u)
 
 
 @app.post("/api/account/login")
 def login(body: Login, request: Request):
-    try:
-        # Charged per attempt, atomically: a check that only the *outcome*
-        # increments lets a burst of concurrent guesses all pass at once.
-        login_limiter.consume(client_key(request))
-    except auth.AuthError as e:
-        raise auth_error(e) from e
+    ip = client_key(request)
+    # Taken before the verify, not after: a limit that only failures increment
+    # is read before the ~50ms hash and written after, so a burst of concurrent
+    # guesses all passes at once. A correct password hands its slot back, so
+    # people sharing an address (NAT, a proxy without --proxy-headers) aren't
+    # throttled by each other's successful logins.
+    spend(login_limiter, ip)
     with db_lock:
         u = auth.find_by_username(conn, body.username.strip())
     # Verify outside the lock: argon2 is deliberately slow, and holding the
     # single database lock through it would stall every trial in flight.
-    if not auth.verify_password(auth.credential_for(u), body.password) or u is None:
+    try:
+        ok = auth.verify_password(auth.credential_for(u), body.password)
+    except auth.AuthError as e:  # saturated hasher; the guess never happened
+        login_limiter.release(ip)
+        raise auth_error(e) from e
+    if not ok or u is None:
         raise HTTPException(400, "Wrong username or password.")
     with db_lock:
         # The row was read before the verify; re-check that the credential we
@@ -459,6 +480,7 @@ def login(body: Login, request: Request):
         # Drop the session we arrived with (typically a fresh guest's) rather
         # than leaving a live token pointing at an abandoned row.
         reissue_session(request, u["id"])
+    login_limiter.release(ip)  # it was a real login; don't charge for it
     return account_payload(u)
 
 

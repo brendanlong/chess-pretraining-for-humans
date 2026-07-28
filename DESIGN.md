@@ -40,9 +40,14 @@ privilege change, and `SameSite=Lax` plus `no-store` on every API response
 is the CSRF-and-shared-cache story. Signup and login are rate-limited per IP
 in memory rather than captcha'd: a loose per-attempt limit, because an
 attempt is what costs us (an argon2 hash, and an answer to "is this name
-taken?"), plus a tight limit on accounts actually created. argon2 runs
-outside the database lock but under a concurrency cap — it is memory-hard by
-design, so unbounded parallelism is an out-of-memory button. Because arriving is
+taken?"), plus a tight limit on accounts actually created. Slots are taken
+before the slow work and handed back when the outcome turns out not to count,
+never checked first and recorded after — that ordering is one a concurrent
+burst walks straight past. argon2 runs outside the database lock but under two
+caps: how many hash at once (it is memory-hard by design, so unbounded
+parallelism is an out-of-memory button) and how many may be inside the hasher
+at all, since sync endpoints run on a fixed thread pool and a caller merely
+waiting still holds a thread the trial flow needs. Because arriving is
 enough to mint a guest, guests that answered nothing and went cold are swept
 periodically; anything with a response or a password is never touched.
 `trainer/account.py` is the operator's way to put a password on a row the
