@@ -22,7 +22,6 @@ let stepIdx = -1; // -1 = at the decision position, before any line move
 let autoplayTimer = null;
 let stepMs = +(localStorage.getItem("stepMs") || 750); // auto-play pace
 let lastResult = null; // /api/answer payload for the current reveal
-let lastChoiceSan = null;
 
 function arrow(uci, brush) {
   return { orig: uci.slice(0, 2), dest: uci.slice(2, 4), brush };
@@ -122,24 +121,26 @@ function resetLine() {
 function describeMove(mv, tag) {
   const sans = mv.line.map((s) => s.san).join(" ");
   return (
-    `${tag}: ${mv.san} — Stockfish eval ${mv.eval} (${mv.wp}% win probability for the side to move)\n` +
+    `${mv.san}${tag} — Stockfish eval ${mv.eval}, ${mv.wp}% win probability for the side to move\n` +
     `  Engine line: ${sans}`
   );
 }
 
+// Just the facts (position, moves, evals, lines) with no question attached,
+// so the user can ask their own — "I thought Bd3 was better because…".
 function buildCopyText() {
   const r = lastResult;
   return [
-    `I'm training move discrimination in chess. Position (FEN):`,
+    `Chess position (FEN):`,
     trial.fen,
     ``,
-    `${trial.side_to_move} to move. I was asked which of these two moves is better:`,
+    `${trial.side_to_move} to move. Two candidate moves, evaluated by Stockfish:`,
     ``,
-    describeMove(r.best, `Best move (per Stockfish)`),
-    describeMove(r.distractor, `Alternative`),
+    describeMove(r.best, ` (the engine's best move)`),
+    describeMove(r.distractor, ``),
     ``,
-    `The gap is ${r.gap_wp}% win probability. I picked ${lastChoiceSan}, which was ${r.correct ? "correct" : "wrong"}.`,
-    `Please explain in plain terms why ${r.best.san} is better and what's wrong with ${r.distractor.san} — what should I have noticed on the board?`,
+    `The gap between the moves is ${r.gap_wp}% win probability.`,
+    ``,
   ].join("\n");
 }
 
@@ -233,7 +234,6 @@ async function choose(i) {
 
   choiceEls[i].classList.add(result.correct ? "picked-good" : "picked-bad");
   lastResult = result;
-  lastChoiceSan = choice.san;
 
   // Replay lines: your pick first (it auto-plays), the other switchable.
   const mkLine = (mv, isBest, tag) => ({
