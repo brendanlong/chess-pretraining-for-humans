@@ -37,4 +37,15 @@ the board step through, ⟲ returns to the choice, ⚙ sets replay speed.
 and both lines as text to ask an assistant about. `?user=name` keeps
 separate profiles.
 
-Tests: `uv run pytest`.
+## Checks
+
+CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs all of these
+on every push and PR; none of them need Stockfish.
+
+```bash
+uv run pytest              # tests
+uv run ruff check .        # lint (--fix to autofix)
+uv run ruff format .       # format
+uv run pyright             # types
+npm ci && npm run lint     # eslint over web/ (vendor excluded)
+```

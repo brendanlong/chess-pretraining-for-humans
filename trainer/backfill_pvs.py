@@ -19,15 +19,13 @@ from .db import DEFAULT_DB, connect
 from .label import DEPTH_DEEP, _engines, get_engine, pv_text
 
 
-def compute_pvs(item: dict) -> tuple[int, str, str] | None:
+def compute_pvs(item: dict) -> tuple[int, str, str]:
     engine = get_engine()
     board = chess.Board(item["fen"])
     pvs = []
     for uci in (item["best_uci"], item["distractor_uci"]):
         move = chess.Move.from_uci(uci)
-        info = engine.analyse(
-            board, chess.engine.Limit(depth=DEPTH_DEEP), root_moves=[move]
-        )
+        info = engine.analyse(board, chess.engine.Limit(depth=DEPTH_DEEP), root_moves=[move])
         pvs.append(pv_text(info) or uci)
     return item["id"], pvs[0], pvs[1]
 

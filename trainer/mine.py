@@ -20,7 +20,7 @@ import argparse
 import io
 import json
 import sys
-from typing import Iterator
+from collections.abc import Iterable, Iterator
 
 import chess
 import chess.pgn
@@ -37,7 +37,7 @@ MAX_PER_GAME = 2
 MIN_PLY_SPACING = 10  # candidates from one game must be far apart
 
 
-def raw_games(stream: io.TextIOBase) -> Iterator[str]:
+def raw_games(stream: Iterable[str]) -> Iterator[str]:
     """Split a PGN stream into per-game text without parsing moves.
 
     A PGN game is a header section and a movetext section, each followed by a

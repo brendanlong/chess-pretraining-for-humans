@@ -16,7 +16,6 @@ from pydantic import BaseModel
 
 from . import rating
 from .db import DEFAULT_DB, connect
-from .winprob import score_to_winprob
 
 # Items are never repeated for a user: every trial is a first exposure, so
 # the answer (recorded before feedback arrives) is an uncontaminated
@@ -64,6 +63,8 @@ def san(fen: str, uci: str) -> str:
 def eval_display(cp: int | None, mate: int | None) -> str:
     if mate is not None:
         return f"#{mate}" if mate > 0 else f"#-{abs(mate)}"
+    if cp is None:  # neither score stored (shouldn't happen); don't 500 the trial
+        return "?"
     return f"{cp / 100:+.2f}"
 
 
@@ -180,8 +181,17 @@ def answer(a: Answer):
            (user_id, item_id, choice_uci, correct, response_ms,
             user_rating_before, user_rating_after, item_rating_before, item_rating_after)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (u["id"], item["id"], a.choice_uci, int(correct), a.response_ms,
-         u["rating"], new_user_r, item["rating"], new_item_r),
+        (
+            u["id"],
+            item["id"],
+            a.choice_uci,
+            int(correct),
+            a.response_ms,
+            u["rating"],
+            new_user_r,
+            item["rating"],
+            new_item_r,
+        ),
     )
     conn.execute(
         "UPDATE users SET rating = ?, calib_step = ?, attempts = attempts + 1 WHERE id = ?",
@@ -243,9 +253,7 @@ def stats(user: str = "default"):
         "SELECT COUNT(*) FROM responses WHERE user_id = ?", (u["id"],)
     ).fetchone()[0]
     last50 = rows[-50:]
-    n_items, n_learnable = conn.execute(
-        "SELECT COUNT(*), SUM(learnable) FROM items"
-    ).fetchone()
+    n_items, n_learnable = conn.execute("SELECT COUNT(*), SUM(learnable) FROM items").fetchone()
     return {
         "user_rating": round(u["rating"]),
         "attempts": total_attempts,

@@ -90,9 +90,7 @@ def label_candidate(cand: dict) -> dict | None:
             cp_d, mate_d = pov_parts(deep[1]["score"], board.turn)
             pv_d = pv_text(deep[1])
         else:
-            info = engine.analyse(
-                board, chess.engine.Limit(depth=DEPTH_DEEP), root_moves=[played]
-            )
+            info = engine.analyse(board, chess.engine.Limit(depth=DEPTH_DEEP), root_moves=[played])
             cp_d, mate_d = pov_parts(info["score"], board.turn)
             pv_d = pv_text(info) or played.uci()
     else:
@@ -113,9 +111,7 @@ def label_candidate(cand: dict) -> dict | None:
     # Learnability filter: does a shallow search see the same ordering?
     shallow_wp = {}
     for move in (best, distractor):
-        info = engine.analyse(
-            board, chess.engine.Limit(depth=DEPTH_SHALLOW), root_moves=[move]
-        )
+        info = engine.analyse(board, chess.engine.Limit(depth=DEPTH_SHALLOW), root_moves=[move])
         cp_s, mate_s = pov_parts(info["score"], board.turn)
         shallow_wp[move] = score_to_winprob(cp_s, mate_s)
     learnable = int(shallow_wp[best] > shallow_wp[distractor])
