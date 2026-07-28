@@ -11,6 +11,7 @@ from pathlib import Path
 
 import chess
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -29,10 +30,15 @@ app = FastAPI(title="chess-pretraining")
 conn = connect(DEFAULT_DB, check_same_thread=False)
 db_lock = threading.Lock()
 
-# Signup is the expensive-to-abuse one (it burns usernames); login is the one
-# worth guessing at. Neither is a captcha — see auth.RateLimiter.
+# Two gates per endpoint, neither a captcha (see auth.RateLimiter). The
+# attempt limits are charged for *every* request, because an attempt is what
+# costs us — an argon2 hash, and an answer to "is this username taken?". They
+# are loose enough that a person fumbling the form never reaches them. The
+# creation limit is charged only on success, and is what actually bounds how
+# many accounts one address can make.
+signup_attempt_limiter = auth.RateLimiter(limit=20, window_s=3600)
 signup_limiter = auth.RateLimiter(limit=5, window_s=3600)
-login_limiter = auth.RateLimiter(limit=10, window_s=900)
+login_limiter = auth.RateLimiter(limit=20, window_s=900)
 
 # Guests are swept periodically rather than on a timer; there is no scheduler
 # here and arrival rate is exactly the signal that we need one.
@@ -75,9 +81,7 @@ def queue_cookie(request: Request, token: str | None) -> None:
     request.state.session_cookie = "" if token is None else token
 
 
-@app.middleware("http")
-async def session_cookie_middleware(request: Request, call_next):
-    response = await call_next(request)
+def finalize(request: Request, response: Response) -> Response:
     token = getattr(request.state, "session_cookie", None)
     if token:
         set_session_cookie(request, response, token)
@@ -89,6 +93,19 @@ async def session_cookie_middleware(request: Request, call_next):
         response.headers["Cache-Control"] = "no-store"
         response.headers["Vary"] = "Cookie"
     return response
+
+
+@app.middleware("http")
+async def session_cookie_middleware(request: Request, call_next):
+    return finalize(request, await call_next(request))
+
+
+@app.exception_handler(Exception)
+def unhandled_error(request: Request, exc: Exception) -> Response:
+    """Errors that escape the router are handled outside our middleware, so
+    the cookie has to be re-applied here too — otherwise a crash while serving
+    a brand-new visitor strands the guest it just created, once per retry."""
+    return finalize(request, JSONResponse({"detail": "internal error"}, status_code=500))
 
 
 def current_user_id(request: Request) -> int:
@@ -390,14 +407,21 @@ def account(user_id: int = CurrentUserId):
 
 
 @app.post("/api/account/signup")
-def signup(body: Signup, request: Request, user_id: int = CurrentUserId):
+def signup(body: Signup, request: Request):
     """Claim the guest row this session has been playing on — no reset."""
     ip = client_key(request)
     try:
+        signup_attempt_limiter.consume(ip)
         signup_limiter.check(ip)
-        # Validate before hashing: an argon2 hash is ~50ms, and a typo
-        # shouldn't cost the user one of their few attempts.
+        # Everything cheap first: a typo, a taken name, or an already-claimed
+        # session must not cost an argon2 hash (~50ms and 64 MiB).
         username, email = auth.validate_signup(body.username, body.password, body.email)
+        # Identity is resolved here rather than by a dependency: dependencies
+        # run before the body, so a throttled flood would still mint a guest
+        # row per rejected attempt.
+        user_id = current_user_id(request)
+        with db_lock:
+            auth.check_claimable(conn, user_id, username)
         password_hash = auth.hash_password(body.password)  # slow; not under the lock
         with db_lock:
             u = auth.claim(conn, user_id, username, password_hash, email)
@@ -410,9 +434,10 @@ def signup(body: Signup, request: Request, user_id: int = CurrentUserId):
 
 @app.post("/api/account/login")
 def login(body: Login, request: Request):
-    ip = client_key(request)
     try:
-        login_limiter.check(ip)
+        # Charged per attempt, atomically: a check that only the *outcome*
+        # increments lets a burst of concurrent guesses all pass at once.
+        login_limiter.consume(client_key(request))
     except auth.AuthError as e:
         raise auth_error(e) from e
     with db_lock:
@@ -420,9 +445,17 @@ def login(body: Login, request: Request):
     # Verify outside the lock: argon2 is deliberately slow, and holding the
     # single database lock through it would stall every trial in flight.
     if not auth.verify_password(auth.credential_for(u), body.password) or u is None:
-        login_limiter.record(ip)  # only misses spend a slot
         raise HTTPException(400, "Wrong username or password.")
     with db_lock:
+        # The row was read before the verify; re-check that the credential we
+        # just matched is still the current one, so a password rotated away
+        # mid-login (trainer.account set-password) doesn't still open a session.
+        current = conn.execute(
+            "SELECT 1 FROM users WHERE id = ? AND password_hash = ?",
+            (u["id"], u["password_hash"]),
+        ).fetchone()
+        if current is None:
+            raise HTTPException(400, "Wrong username or password.")
         # Drop the session we arrived with (typically a fresh guest's) rather
         # than leaving a live token pointing at an abandoned row.
         reissue_session(request, u["id"])

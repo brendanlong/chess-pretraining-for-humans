@@ -14,6 +14,7 @@ import hashlib
 import re
 import secrets
 import sqlite3
+import threading
 import time
 
 from argon2 import PasswordHasher
@@ -36,6 +37,12 @@ _hasher = PasswordHasher()
 # Verified against when the username is unknown, so a miss costs the same as a
 # wrong password and timing can't enumerate accounts.
 _DUMMY_HASH = _hasher.hash("no such user")
+# argon2 is memory-hard on purpose — 64 MiB per hash at the default settings.
+# Endpoints no longer serialize on the database lock, so without a cap here a
+# burst of concurrent signups would each claim their own 64 MiB and take the
+# box out. Callers queue instead; the wait is bounded and the RAM isn't.
+HASH_CONCURRENCY = 4
+_hash_slots = threading.Semaphore(HASH_CONCURRENCY)
 
 
 class AuthError(Exception):
@@ -50,7 +57,8 @@ class RateLimited(AuthError):
 
 
 def hash_password(password: str) -> str:
-    return _hasher.hash(password)
+    with _hash_slots:
+        return _hasher.hash(password)
 
 
 def verify_password(password_hash: str | None, password: str) -> bool:
@@ -58,7 +66,9 @@ def verify_password(password_hash: str | None, password: str) -> bool:
     if len(password) > MAX_PASSWORD_LEN:
         return False  # nothing this long was ever hashed; don't pay to find out
     try:
-        return _hasher.verify(password_hash or _DUMMY_HASH, password) and bool(password_hash)
+        with _hash_slots:
+            verified = _hasher.verify(password_hash or _DUMMY_HASH, password)
+        return verified and bool(password_hash)
     except (VerifyMismatchError, VerificationError, InvalidHashError):
         return False
 
@@ -137,6 +147,17 @@ def validate_signup(username: str, password: str, email: str | None) -> tuple[st
     return username, check_email(email)
 
 
+def check_claimable(conn: sqlite3.Connection, user_id: int, username: str) -> None:
+    """The database half of signup validation, cheap enough to run before the
+    password hash — otherwise a taken name costs an argon2 each time it's
+    probed, which is both an enumeration oracle and free work for an attacker.
+    `claim` repeats it under the lock that writes, where it decides the race."""
+    if not is_guest(get_user(conn, user_id)):
+        raise AuthError("This session is already signed in.")
+    if find_by_username(conn, username):
+        raise AuthError("That username is taken.")
+
+
 def claim(
     conn: sqlite3.Connection, user_id: int, username: str, password_hash: str, email: str | None
 ) -> dict:
@@ -146,11 +167,7 @@ def claim(
     Takes an already-computed hash so the caller can do the slow part without
     holding the database lock; the taken-name check and the write stay
     together here, under whatever lock the caller holds."""
-    user = get_user(conn, user_id)
-    if not is_guest(user):
-        raise AuthError("This session is already signed in.")
-    if find_by_username(conn, username):
-        raise AuthError("That username is taken.")
+    check_claimable(conn, user_id, username)
     conn.execute(
         "UPDATE users SET name = ?, password_hash = ?, email = ? WHERE id = ?",
         (username, password_hash, email, user_id),
@@ -248,28 +265,42 @@ class RateLimiter:
     guess here should be a wait, not a lost signup. State is per-process and
     resets on restart, which is fine for the threat (casual scripted abuse).
 
-    `check` and `record` are separate on purpose. Only the outcomes worth
-    throttling — accounts actually created, passwords actually missed — spend
-    a slot, so someone fumbling their way through the form never locks
-    themselves out over a typo.
+    `consume` is the gate: one atomic check-and-record, so concurrent requests
+    can't all pass a check that none of them has incremented yet. `check` and
+    `record` exist for the second, narrower limit on outcomes — how many
+    accounts an address actually created — where the two halves are separated
+    by work we don't want to do twice.
     """
 
     def __init__(self, limit: int, window_s: float):
         self.limit = limit
         self.window_s = window_s
         self._hits: dict[str, list[float]] = {}
+        self._lock = threading.Lock()  # endpoints no longer serialize elsewhere
 
     def _live(self, key: str, now: float) -> list[float]:
         return [t for t in self._hits.get(key, []) if now - t < self.window_s]
 
-    def check(self, key: str, now: float | None = None) -> None:
-        now = time.monotonic() if now is None else now
-        if len(self._live(key, now)) >= self.limit:
-            raise RateLimited("Too many attempts. Wait a few minutes and try again.")
-
-    def record(self, key: str, now: float | None = None) -> None:
-        now = time.monotonic() if now is None else now
+    def _record(self, key: str, now: float) -> None:
         self._hits[key] = [*self._live(key, now), now]
         if len(self._hits) > 10_000:  # crude bound; stale keys are cheapest to lose
             for k in [k for k, v in self._hits.items() if not v or now - v[-1] > self.window_s]:
                 del self._hits[k]
+
+    def check(self, key: str, now: float | None = None) -> None:
+        now = time.monotonic() if now is None else now
+        with self._lock:
+            if len(self._live(key, now)) >= self.limit:
+                raise RateLimited("Too many attempts. Wait a few minutes and try again.")
+
+    def record(self, key: str, now: float | None = None) -> None:
+        now = time.monotonic() if now is None else now
+        with self._lock:
+            self._record(key, now)
+
+    def consume(self, key: str, now: float | None = None) -> None:
+        now = time.monotonic() if now is None else now
+        with self._lock:
+            if len(self._live(key, now)) >= self.limit:
+                raise RateLimited("Too many attempts. Wait a few minutes and try again.")
+            self._record(key, now)

@@ -173,12 +173,16 @@ def test_signup_typos_do_not_burn_attempts(client, monkeypatch):
     assert client.post("/api/account/signup", json=CREDS).status_code == 200
 
 
-def test_successful_logins_do_not_burn_attempts(client, monkeypatch):
+def test_login_attempts_are_counted_even_when_they_succeed(client, monkeypatch):
+    """Deliberate: only counting *failures* means the counter is read before
+    the ~50ms verify and written after, so a concurrent burst all passes at
+    once. The limit is loose enough that real logins never reach it."""
     client.post("/api/account/signup", json=CREDS)
-    monkeypatch.setattr(server, "login_limiter", auth.RateLimiter(1, 900))
-    for _ in range(3):
-        with TestClient(server.app) as other:
-            assert other.post("/api/account/login", json=CREDS).status_code == 200
+    monkeypatch.setattr(server, "login_limiter", auth.RateLimiter(2, 900))
+    with TestClient(server.app) as other:
+        assert other.post("/api/account/login", json=CREDS).status_code == 200
+        assert other.post("/api/account/login", json=CREDS).status_code == 200
+        assert other.post("/api/account/login", json=CREDS).status_code == 429
 
 
 def test_account_payloads_carry_no_credentials(client):
@@ -301,3 +305,90 @@ def test_api_responses_are_never_cacheable(client):
         r = client.get(path)
         assert r.headers["cache-control"] == "no-store", path
         assert r.headers["vary"] == "Cookie", path
+
+
+def test_failed_signups_are_throttled(client, monkeypatch):
+    """Rejections must cost something: each one buys an argon2 hash and an
+    answer to 'does this username exist?'."""
+    taken = {**CREDS, "username": "someoneelse"}
+    with TestClient(server.app) as owner:
+        owner.post("/api/account/signup", json=taken)
+    # Patched after the setup signup: TestClient reports one host for every
+    # client, so they all share a limiter key.
+    monkeypatch.setattr(server, "signup_attempt_limiter", auth.RateLimiter(3, 3600))
+    for _ in range(3):
+        assert client.post("/api/account/signup", json=taken).status_code == 400
+    assert client.post("/api/account/signup", json=taken).status_code == 429
+    # ...and a valid signup is refused too, rather than slipping past the gate.
+    assert client.post("/api/account/signup", json=CREDS).status_code == 429
+
+
+def test_taken_username_is_rejected_without_hashing(client, monkeypatch):
+    with TestClient(server.app) as owner:
+        owner.post("/api/account/signup", json=CREDS)
+    monkeypatch.setattr(
+        auth, "hash_password", lambda _: pytest.fail("hashed before checking the name")
+    )
+    assert client.post("/api/account/signup", json=CREDS).status_code == 400
+
+
+def test_concurrent_login_guesses_cannot_outrun_the_limit(client, monkeypatch):
+    """check-then-record with slow work in between lets every in-flight
+    request pass a counter none of them has incremented yet."""
+    client.post("/api/account/signup", json=CREDS)
+    limit = 5
+    monkeypatch.setattr(server, "login_limiter", auth.RateLimiter(limit, 900))
+    bad = {**CREDS, "password": "wrongwrongwrong"}
+    codes = []
+    with TestClient(server.app) as other:
+        threads = [
+            threading.Thread(
+                target=lambda: codes.append(other.post("/api/account/login", json=bad).status_code)
+            )
+            for _ in range(20)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+    assert codes.count(400) <= limit, codes
+    assert codes.count(429) == 20 - codes.count(400)
+
+
+def test_rate_limiter_consume_is_atomic_under_threads():
+    limiter = auth.RateLimiter(10, window_s=3600)
+    allowed = []
+
+    def attempt():
+        try:
+            limiter.consume("ip")
+            allowed.append(1)
+        except auth.RateLimited:
+            pass
+
+    threads = [threading.Thread(target=attempt) for _ in range(200)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(allowed) == 10
+
+
+def test_crash_still_hands_out_the_identity_it_created(client, db, monkeypatch):
+    """A 500 is handled outside our middleware; the cookie has to survive it."""
+    monkeypatch.setattr(server, "pick_item", lambda _: (_ for _ in ()).throw(RuntimeError("boom")))
+    with TestClient(server.app, raise_server_exceptions=False) as c:
+        for _ in range(3):
+            assert c.get("/api/next").status_code == 500
+        assert auth.COOKIE_NAME in c.cookies
+    assert db.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 1
+
+
+def test_throttled_signups_do_not_mint_guest_rows(db, monkeypatch):
+    """Identity is resolved after the gate, not by a dependency in front of
+    it — otherwise a rejected flood leaves one row per attempt behind."""
+    monkeypatch.setattr(server, "signup_attempt_limiter", auth.RateLimiter(0, 3600))
+    for _ in range(5):
+        with TestClient(server.app) as c:
+            assert c.post("/api/account/signup", json=CREDS).status_code == 429
+    assert db.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0

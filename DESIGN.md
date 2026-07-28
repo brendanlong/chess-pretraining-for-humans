@@ -38,8 +38,11 @@ history rather than a gate in front of it. Sessions are a table of hashed
 tokens, so a database read grants no logins; the token is rotated on every
 privilege change, and `SameSite=Lax` plus `no-store` on every API response
 is the CSRF-and-shared-cache story. Signup and login are rate-limited per IP
-in memory rather than captcha'd, charged only for accounts actually created
-and passwords actually missed so typos cost nothing. Because arriving is
+in memory rather than captcha'd: a loose per-attempt limit, because an
+attempt is what costs us (an argon2 hash, and an answer to "is this name
+taken?"), plus a tight limit on accounts actually created. argon2 runs
+outside the database lock but under a concurrency cap — it is memory-hard by
+design, so unbounded parallelism is an out-of-memory button. Because arriving is
 enough to mint a guest, guests that answered nothing and went cold are swept
 periodically; anything with a response or a password is never touched.
 `trainer/account.py` is the operator's way to put a password on a row the
@@ -49,9 +52,11 @@ Two ordering constraints are easy to get wrong. Identity resolution is a
 dependency, but it yields a user *id*: FastAPI finishes dependencies before
 the endpoint body, so a row read there would be a pre-lock snapshot and
 concurrent answers would overwrite each other's ratings. And the session
-cookie is applied by middleware rather than by the endpoint, so a request
-that mints a guest and then fails (503 on an empty bank) still hands the
-identity out instead of orphaning it.
+cookie is applied by middleware (and by the catch-all error handler, which
+sits outside it) rather than by the endpoint, so a request that mints a
+guest and then fails still hands the identity out instead of orphaning it.
+Signup resolves identity in its body rather than through the dependency, for
+the same reason in reverse: a throttled request should mint nothing at all.
 
 ## Frontend (`web/`)
 
