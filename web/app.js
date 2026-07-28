@@ -17,10 +17,11 @@ const BRUSH_DEFS = {
 const el = (id) => document.getElementById(id);
 const boardEl = el("board");
 const choiceEls = [el("choice-1"), el("choice-2")];
+const PROMPT_HTML = el("prompt").innerHTML;
 
 let cg = null;
 let trial = null; // current /api/next payload
-let phase = "loading"; // loading | choosing | submitting | revealed
+let phase = "loading"; // loading | choosing | submitting | revealed | error
 let shownAt = 0;
 let streak = 0;
 let accWindow = []; // local last-50 correctness (feedback trials only)
@@ -194,6 +195,7 @@ async function loadTrial() {
   el("feedback").hidden = true;
   el("repeat-note").hidden = true;
   el("ask").hidden = false;
+  el("prompt").innerHTML = PROMPT_HTML;
   choiceEls.forEach((b) => (b.disabled = false));
 
   trial = await api(`/api/next?user=${encodeURIComponent(USER)}`);
@@ -215,18 +217,41 @@ async function loadTrial() {
   shownAt = performance.now();
 }
 
+// A failed /api/next leaves no trial to interact with: park in an error
+// state that the prompt (tap) or space/enter can retry from.
+function showLoadError(e) {
+  phase = "error";
+  el("feedback").hidden = true;
+  el("ask").hidden = false;
+  choiceEls.forEach((b) => (b.disabled = true));
+  el("prompt").textContent = `${e.message} — tap here to retry`;
+}
+
+function nextTrial() {
+  loadTrial().catch(showLoadError);
+}
+
 async function choose(i) {
   if (phase !== "choosing") return;
   phase = "submitting";
   const choice = trial.moves[i];
   choiceEls.forEach((b) => (b.disabled = true));
 
-  const result = await api("/api/answer", {
-    item_id: trial.item_id,
-    choice_uci: choice.uci,
-    response_ms: Math.round(performance.now() - shownAt),
-    user: USER,
-  });
+  let result;
+  try {
+    result = await api("/api/answer", {
+      item_id: trial.item_id,
+      choice_uci: choice.uci,
+      response_ms: Math.round(performance.now() - shownAt),
+      user: USER,
+    });
+  } catch (err) {
+    // Submit failed: back to choosing so the same pick can be retried.
+    phase = "choosing";
+    choiceEls.forEach((b) => (b.disabled = false));
+    el("prompt").textContent = `${err.message} — pick again to retry`;
+    return;
+  }
 
   el("stat-rating").textContent = ratingLabel(result.user_rating, result.calibrating);
 
@@ -299,13 +324,19 @@ async function initStats() {
 
 // --- settings drawer ------------------------------------------------------
 
+let settingsReturnFocus = null;
+
 function openSettings() {
+  settingsReturnFocus = document.activeElement;
   el("user-input").value = USER;
   el("settings").hidden = false;
+  el("settings-close").focus();
 }
 
 function closeSettings() {
   el("settings").hidden = true;
+  if (settingsReturnFocus instanceof HTMLElement) settingsReturnFocus.focus();
+  settingsReturnFocus = null;
 }
 
 function switchUser(name) {
@@ -345,7 +376,6 @@ document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") closeSettings();
     return;
   }
-  if (e.target.tagName === "INPUT") return;
   if (phase === "choosing") {
     if (e.key === "1" || e.key === "ArrowLeft") choose(0);
     else if (e.key === "2" || e.key === "ArrowRight") choose(1);
@@ -360,21 +390,25 @@ document.addEventListener("keydown", (e) => {
     else if (e.key === "2") switchLine(1, true);
     else if (e.key === " " || e.key === "Enter") {
       e.preventDefault();
-      loadTrial();
+      nextTrial();
     }
+  } else if (phase === "error" && (e.key === " " || e.key === "Enter")) {
+    e.preventDefault();
+    nextTrial();
   }
 });
 choiceEls.forEach((b, i) => b.addEventListener("click", () => choose(i)));
 el("tab-0").addEventListener("click", () => switchLine(0, true));
 el("tab-1").addEventListener("click", () => switchLine(1, true));
-el("next").addEventListener("click", loadTrial);
+el("next").addEventListener("click", nextTrial);
 el("copy-btn").addEventListener("click", copyForClaude);
 el("ctl-reset").addEventListener("click", resetLine);
 el("ctl-back").addEventListener("click", () => stepLine(-1));
 el("ctl-fwd").addEventListener("click", () => stepLine(1));
+el("prompt").addEventListener("click", () => {
+  if (phase === "error") nextTrial();
+});
 
 el("user-name").textContent = USER;
 initStats();
-loadTrial().catch((e) => {
-  el("prompt").textContent = e.message;
-});
+nextTrial();
