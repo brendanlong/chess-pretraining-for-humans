@@ -42,6 +42,18 @@ def test_first_exposure_accuracy_excludes_repeats(client):
     assert len(stats["rating_history"]) == 2
 
 
+def test_legal_pages_are_served_and_reachable_before_signing_up(client):
+    """A guest records responses without ever opening the signup form, so the
+    first page it lands on has to link the terms and the policy itself."""
+    index = client.get("/")
+    assert index.status_code == 200
+    for page in ("terms.html", "privacy.html"):
+        assert f'href="{page}"' in index.text
+        served = client.get(f"/{page}")
+        assert served.status_code == 200
+        assert served.headers["content-type"].startswith("text/html")
+
+
 def test_separate_browsers_get_separate_identities(db):
     with TestClient(server.app) as a, TestClient(server.app) as b:
         answer(a, next_trial(a))

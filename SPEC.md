@@ -49,6 +49,11 @@ automatically.
   anonymously on arrival; an account is optional and, when created, claims
   the history already earned rather than starting a fresh one. A user's row
   must never be reachable by guessing a name.
+- **Responses are research data, and the user is told so before they
+  matter.** The published record is per-user random ids, answers and
+  timing, and (once Lichess linking exists) a rating band rather than a
+  number — never usernames or emails. What the privacy policy promises
+  is a constraint on what the analysis may export, not just prose.
 - **Explanations are grounded in engine output.** The engine lines are the
   authority; any prose (user's pasted questions today, generated
   narration later) sits next to them, never replaces them.
@@ -59,7 +64,7 @@ automatically.
   project grew out of) and Stroop-interference measurement of automaticity.
 - Automatic LLM narration of the engine lines.
 - Password reset (the optional email is stored for it but nothing sends
-  mail yet), and the terms/privacy pages the signup form should link.
+  mail yet), and account deletion in the app rather than by email.
 - Transfer measurement: in-app accuracy shares the item generator's
   biases; the real test is external (rated games, or items from a
   deliberately different distribution).

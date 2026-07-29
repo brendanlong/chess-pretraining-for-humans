@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacy policy — Move Trainer</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&%239822;</text></svg>">
+<link rel="stylesheet" href="style.css">
+</head>
+<body class="legal">
+<header id="topbar">
+  <div id="brand"><a href="./">&#9822;<span class="brand-name"> Move Trainer</span></a></div>
+  <nav id="legal-nav">
+    <a href="terms.html">Terms</a>
+    <a href="privacy.html" aria-current="page">Privacy</a>
+  </nav>
+</header>
+<main>
+  <article>
+    <h1>Privacy policy</h1>
+    <p class="updated">Last updated 29 July 2026</p>
+
+    <p>Move Trainer is a small research project run by Brendan Long. This page
+    says exactly what it stores and what happens to it. It is short because
+    the data footprint is small: there are no ads, no analytics, and no
+    third-party trackers.</p>
+
+    <h2>What we collect</h2>
+    <ul>
+      <li><b>An anonymous user record</b>, created the moment you first load
+      the page: an internal id, your trainer rating, and the state of the
+      calibration staircase. You aren't asked for a name and none is
+      guessable.</li>
+      <li><b>One row per trial you answer</b>: which position you saw, which
+      move you picked, whether it was correct, how long you took, and your
+      rating before and after. This is the research record, and it is
+      recorded whether or not you ever make an account.</li>
+      <li><b>Account details, if you make an account</b>: the username you
+      choose, a hash of your password (never the password itself), and an
+      email address only if you supply one. Email is optional and unverified;
+      its only purpose is resetting a forgotten password.</li>
+      <li><b>A session cookie</b>: one opaque token, HttpOnly, good for a
+      year. The server stores only a hash of it. That cookie is the whole of
+      how the site knows who you are.</li>
+      <li><b>Your Lichess username and rating history</b>, if and when you
+      choose to link a Lichess account. That feature isn't built yet; this
+      page will be updated before it ships, and linking will always be
+      optional.</li>
+    </ul>
+
+    <p>Settings like replay speed live in your browser's local storage and are
+    never sent to the server. The server writes ordinary request logs, which
+    include IP addresses, and the signup rate limiter counts recent attempts
+    per IP address in memory for a few minutes — neither is stored in the
+    database or tied to your responses.</p>
+
+    <h2>What it's for</h2>
+    <p>Two things: running the trainer for you, and the research it exists
+    for. The point of the project is to measure whether dense labeled practice
+    improves chess perception, and how fast — so your responses will be
+    analyzed in aggregate, and results based on that analysis may be
+    published.</p>
+
+    <h2>Sharing with other researchers</h2>
+    <p>We may share response data with other researchers or publish it as a
+    dataset. What that data contains:</p>
+    <ul>
+      <li>A random per-user id — unrelated to your username.</li>
+      <li>Your answers: the item, your choice, whether it was correct, timing,
+      and rating snapshots.</li>
+      <li>If you have linked Lichess, your rating as a band rather than a
+      number — 200-point bands, with everything above 2200 collapsed into a
+      single top band.</li>
+    </ul>
+    <p>It never contains usernames, email addresses, IP addresses, or password
+    hashes. We do not sell or rent data to anyone, for research or
+    otherwise.</p>
+
+    <h2>Where the data lives</h2>
+    <p>The app runs on <a href="https://fly.io/">Fly.io</a> in a United States
+    region, storing a single SQLite database on a volume there. Encrypted
+    backups are copied to Amazon S3 in the United States, and DNS is served by
+    Amazon Route 53. Fly.io and Amazon Web Services are the only third parties
+    that hold any of this data, and they hold it as infrastructure providers —
+    they do not get it for their own use.</p>
+
+    <h2>Cookies</h2>
+    <p>One cookie, the session token described above. No advertising or
+    analytics cookies, because there is no advertising or analytics. If you
+    clear it while playing as a guest, that guest record becomes unreachable
+    for good — there is no other way to find it, which is the same property
+    that keeps anyone else from finding it either.</p>
+
+    <h2>Keeping and deleting data</h2>
+    <p>Guest records that answered nothing and went idle are swept
+    automatically. Everything else is kept while the project runs.</p>
+    <p>To delete your account and every response attached to it, email
+    <a href="mailto:self@brendanlong.com">self@brendanlong.com</a> from the
+    address on the account, or with the username, and it will be deleted along
+    with your email address. One honest caveat: anonymized data already shared
+    with other researchers or included in published analysis can't be pulled
+    back — but it never contained anything identifying you.</p>
+
+    <h2>Children</h2>
+    <p>This isn't intended for children under 13, and accounts shouldn't be
+    created by them.</p>
+
+    <h2>Changes</h2>
+    <p>If what we collect or do with it changes, this page changes, with a new
+    date at the top. The page is versioned in the
+    <a href="https://github.com/brendanlong/chess-pretraining-for-humans">project
+    repository</a>, so its history is public.</p>
+
+    <h2>Contact</h2>
+    <p>Questions, deletion requests, or anything else:
+    <a href="mailto:self@brendanlong.com">self@brendanlong.com</a>.</p>
+  </article>
+</main>
+<footer id="legal-footer">
+  <a href="./">Back to the trainer</a> · <a href="terms.html">Terms of use</a>
+</footer>
+</body>
+</html>
