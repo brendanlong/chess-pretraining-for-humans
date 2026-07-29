@@ -442,14 +442,13 @@ kbd {
 }
 .legal h1 { font-size: 24px; margin: 24px 0 4px; }
 .legal h2 { font-size: 17px; margin: 28px 0 6px; }
-.legal p, .legal li { color: #c3bfb9; }
 .legal li { margin-bottom: 6px; }
 .legal .updated { font-size: 13px; color: var(--muted); margin-top: 0; }
 .legal a { color: var(--accent-1); }
 .legal #brand a { color: inherit; text-decoration: none; }
 
-#legal-nav { margin-left: auto; display: flex; gap: 14px; font-size: 13px; }
-#legal-nav a { color: var(--muted); text-decoration: none; }
+#legal-nav { margin-left: auto; display: flex; gap: 10px; font-size: 13px; }
+#legal-nav a { color: var(--muted); text-decoration: none; padding: 6px 4px; }
 #legal-nav a:hover, #legal-nav a[aria-current] { color: var(--text); }
 
 #legal-footer {

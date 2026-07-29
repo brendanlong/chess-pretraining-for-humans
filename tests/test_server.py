@@ -47,8 +47,12 @@ def test_legal_pages_are_served_and_reachable_before_signing_up(client):
     first page it lands on has to link the terms and the policy itself."""
     index = client.get("/")
     assert index.status_code == 200
+    # The links in the signup form and the drawer don't count: both sit behind
+    # a button the guest has no reason to press. The footer is the one that is
+    # on screen next to the board.
+    footer = index.text.split('id="page-footer"')[1].split("</footer>")[0]
     for page in ("terms.html", "privacy.html"):
-        assert f'href="{page}"' in index.text
+        assert f'href="{page}"' in footer
         served = client.get(f"/{page}")
         assert served.status_code == 200
         assert served.headers["content-type"].startswith("text/html")

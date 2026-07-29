@@ -9,7 +9,7 @@
 </head>
 <body class="legal">
 <header id="topbar">
-  <div id="brand"><a href="./">&#9822;<span class="brand-name"> Move Trainer</span></a></div>
+  <div id="brand"><a href="./" aria-label="Back to the trainer">&#9822;<span class="brand-name"> Move Trainer</span></a></div>
   <nav id="legal-nav">
     <a href="terms.html">Terms</a>
     <a href="privacy.html" aria-current="page">Privacy</a>
@@ -28,13 +28,14 @@
     <h2>What we collect</h2>
     <ul>
       <li><b>An anonymous user record</b>, created the moment you first load
-      the page: an internal id, your trainer rating, and the state of the
-      calibration staircase. You aren't asked for a name and none is
-      guessable.</li>
+      the page: an internal id, when it was made, how many trials you've
+      answered, your trainer rating, and the state of the calibration
+      staircase. You aren't asked for a name and none is guessable.</li>
       <li><b>One row per trial you answer</b>: which position you saw, which
-      move you picked, whether it was correct, how long you took, and your
-      rating before and after. This is the research record, and it is
-      recorded whether or not you ever make an account.</li>
+      move you picked, whether it was correct, how long you took, when you
+      answered, and your rating before and after. This is the research
+      record, and it is recorded whether or not you ever make an
+      account.</li>
       <li><b>Account details, if you make an account</b>: the username you
       choose, a hash of your password (never the password itself), and an
       email address only if you supply one. Email is optional and unverified;
@@ -50,9 +51,10 @@
 
     <p>Settings like replay speed live in your browser's local storage and are
     never sent to the server. The server writes ordinary request logs, which
-    include IP addresses, and the signup rate limiter counts recent attempts
-    per IP address in memory for a few minutes — neither is stored in the
-    database or tied to your responses.</p>
+    include IP addresses, and the signup rate limiter holds a count per IP
+    address in memory for up to an hour (until the process restarts, in the
+    worst case) — neither is written to the database or tied to your
+    responses.</p>
 
     <h2>What it's for</h2>
     <p>Two things: running the trainer for you, and the research it exists
@@ -77,29 +79,35 @@
     otherwise.</p>
 
     <h2>Where the data lives</h2>
-    <p>The app runs on <a href="https://fly.io/">Fly.io</a> in a United States
-    region, storing a single SQLite database on a volume there. Encrypted
-    backups are copied to Amazon S3 in the United States, and DNS is served by
-    Amazon Route 53. Fly.io and Amazon Web Services are the only third parties
-    that hold any of this data, and they hold it as infrastructure providers —
-    they do not get it for their own use.</p>
+    <p>The app runs on <a href="https://fly.io/">Fly.io</a> in their
+    <code>iad</code> region (Northern Virginia, USA), storing a single SQLite
+    database on a volume there. Encrypted backups are replicated to Amazon S3
+    in <code>us-east-1</code>, and DNS is served by Amazon Route 53. Fly.io and
+    Amazon Web Services are the only companies that hold the database, and they
+    hold it as infrastructure providers — they do not get it for their own
+    use.</p>
 
     <h2>Cookies</h2>
     <p>One cookie, the session token described above. No advertising or
     analytics cookies, because there is no advertising or analytics. If you
     clear it while playing as a guest, that guest record becomes unreachable
     for good — there is no other way to find it, which is the same property
-    that keeps anyone else from finding it either.</p>
+    that keeps anyone else from finding it either. It also means we can't
+    delete it on request: nobody, including you, can point at which record it
+    was. Make an account if you want that option.</p>
 
     <h2>Keeping and deleting data</h2>
     <p>Guest records that answered nothing and went idle are swept
     automatically. Everything else is kept while the project runs.</p>
     <p>To delete your account and every response attached to it, email
     <a href="mailto:self@brendanlong.com">self@brendanlong.com</a> from the
-    address on the account, or with the username, and it will be deleted along
-    with your email address. One honest caveat: anonymized data already shared
-    with other researchers or included in published analysis can't be pulled
-    back — but it never contained anything identifying you.</p>
+    address on the account. If the account has no email, say so and we'll agree
+    on a way for you to show it's yours — an account nobody can prove they own
+    is also an account anyone could ask us to delete. Two honest caveats:
+    deleted rows persist in encrypted backups for up to 30 days before those
+    expire, and anonymized data already shared with other researchers or
+    included in published analysis can't be pulled back — though it never
+    contained anything identifying you.</p>
 
     <h2>Children</h2>
     <p>This isn't intended for children under 13, and accounts shouldn't be

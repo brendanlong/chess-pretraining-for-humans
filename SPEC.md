@@ -49,11 +49,14 @@ automatically.
   anonymously on arrival; an account is optional and, when created, claims
   the history already earned rather than starting a fresh one. A user's row
   must never be reachable by guessing a name.
-- **Responses are research data, and the user is told so before they
-  matter.** The published record is per-user random ids, answers and
-  timing, and (once Lichess linking exists) a rating band rather than a
-  number — never usernames or emails. What the privacy policy promises
-  is a constraint on what the analysis may export, not just prose.
+- **Responses are research data, and the notice says so on the page that
+  records them** — nothing gates the first trial, so consent can't be
+  collected before it; what's owed is that a guest never has to go
+  looking to find out. The published record is per-user random ids,
+  answers and timing, and (once Lichess linking exists) a rating band
+  rather than a number — never usernames or emails. What the privacy
+  policy promises is a constraint on what the analysis may export, not
+  just prose.
 - **Explanations are grounded in engine output.** The engine lines are the
   authority; any prose (user's pasted questions today, generated
   narration later) sits next to them, never replaces them.
