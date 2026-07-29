@@ -34,8 +34,32 @@ engine line then auto-plays on the board. <kbd>1</kbd>/<kbd>2</kbd> or the
 tabs switch lines, <kbd>&larr;</kbd>/<kbd>&rarr;</kbd> or the buttons under
 the board step through, ⟲ returns to the choice, ⚙ sets replay speed.
 <kbd>space</kbd> for the next trial. "Copy for Claude" exports the position
-and both lines as text to ask an assistant about. `?user=name` keeps
-separate profiles.
+and both lines as text to ask an assistant about.
+
+You start answering immediately as an anonymous guest — the server issues
+the identity, no signup. Signing up (header chip → Settings → Account)
+attaches a username and password to the guest you've been playing on, so
+nothing resets; the email is optional, unverified, and only there for a
+future password reset. Signing in on another device picks the account up.
+
+Rows that predate accounts (the old `?user=name` profiles) have no guest
+session to claim them, so give them a password from the server's shell:
+
+```bash
+uv run python -m trainer.account list
+uv run python -m trainer.account set-password brendan
+```
+
+Behind a reverse proxy, terminate TLS there (the session cookie is marked
+`Secure` whenever the request arrives over https) and run uvicorn with
+`--proxy-headers` and a trusted `--forwarded-allow-ips`, so the signup limit
+sees real client addresses rather than counting the whole site as one. Login
+throttling is per account and unaffected either way.
+
+If you expose this publicly, put per-IP request limiting in the proxy
+(`limit_req` in nginx, or equivalent) rather than relying on the in-app
+counter: the proxy's is shared across workers, survives a restart, and sheds
+load before it reaches Python.
 
 ## Checks
 

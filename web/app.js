@@ -1,9 +1,8 @@
 import { Chessground } from "./vendor/chessground.min.js";
 
-// User identity: URL param wins (shareable/debug), then the sticky local
-// choice, then "default". Real accounts come later; see the settings drawer.
-const urlUser = new URLSearchParams(location.search).get("user");
-const USER = urlUser || localStorage.getItem("user") || "default";
+// Identity lives entirely in an HttpOnly session cookie the server sets on
+// the first request — there is nothing to type and nothing here to spoof.
+let account = { username: null, guest: true };
 
 const BRUSHES = ["blue", "purple"]; // arrow colors matching the two buttons
 // Custom brush set: chessground's yellow is invisible on the light squares.
@@ -183,7 +182,19 @@ async function api(path, body) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(`${path}: ${res.status} ${await res.text()}`);
+  if (!res.ok) {
+    const text = await res.text();
+    // FastAPI puts human-readable auth failures in {"detail": "..."}.
+    let detail = null;
+    try {
+      detail = JSON.parse(text).detail;
+    } catch {
+      // not JSON; fall through to the raw text
+    }
+    const err = new Error(typeof detail === "string" ? detail : `${path}: ${res.status} ${text}`);
+    err.status = res.status;
+    throw err;
+  }
   return res.json();
 }
 
@@ -198,7 +209,7 @@ async function loadTrial() {
   el("prompt").innerHTML = PROMPT_HTML;
   choiceEls.forEach((b) => (b.disabled = false));
 
-  trial = await api(`/api/next?user=${encodeURIComponent(USER)}`);
+  trial = await api("/api/next");
   el("turn-label").textContent = `${trial.side_to_move} to move`;
   el("turn-dot").className = trial.side_to_move;
   setBoard(
@@ -243,7 +254,6 @@ async function choose(i) {
       item_id: trial.item_id,
       choice_uci: choice.uci,
       response_ms: Math.round(performance.now() - shownAt),
-      user: USER,
     });
   } catch (err) {
     // Submit failed: back to choosing so the same pick can be retried.
@@ -314,7 +324,8 @@ async function choose(i) {
 
 async function initStats() {
   try {
-    const s = await api(`/api/stats?user=${encodeURIComponent(USER)}`);
+    const s = await api("/api/stats");
+    if (s.account) setAccount(s.account);
     if (s.accuracy_last_50 != null)
       el("stat-acc").textContent = Math.round(s.accuracy_last_50 * 100) + "%";
   } catch (e) {
@@ -322,15 +333,59 @@ async function initStats() {
   }
 }
 
+// --- account --------------------------------------------------------------
+
+function setAccount(a) {
+  account = a;
+  el("user-name").textContent = a.guest ? "Guest" : a.username;
+  el("user-btn").title = a.guest ? "Sign up or sign in" : `Signed in as ${a.username}`;
+  el("account-guest").hidden = !a.guest;
+  el("account-user").hidden = a.guest;
+  if (!a.guest) el("account-name").textContent = a.username;
+}
+
+function showAuthError(message) {
+  const box = el("auth-error");
+  box.textContent = message || "";
+  box.hidden = !message;
+}
+
+function showAuthForm(which) {
+  showAuthError(null);
+  el("signup-form").hidden = which !== "signup";
+  el("login-form").hidden = which !== "login";
+  el("tab-signup").classList.toggle("active", which === "signup");
+  el("tab-login").classList.toggle("active", which === "login");
+}
+
+// Guards double submits and gives the button something to say while argon2
+// works (deliberately slow, ~100ms+).
+async function submitAuth(btn, run) {
+  if (btn.disabled) return;
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "…";
+  showAuthError(null);
+  try {
+    await run();
+  } catch (e) {
+    showAuthError(e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+  }
+}
+
 // --- settings drawer ------------------------------------------------------
 
 let settingsReturnFocus = null;
 
-function openSettings() {
+function openSettings(focusAccount) {
   settingsReturnFocus = document.activeElement;
-  el("user-input").value = USER;
+  showAuthError(null);
   el("settings").hidden = false;
-  el("settings-close").focus();
+  const target = focusAccount && account.guest ? el("tab-signup") : el("settings-close");
+  target.focus();
 }
 
 function closeSettings() {
@@ -339,23 +394,49 @@ function closeSettings() {
   settingsReturnFocus = null;
 }
 
-function switchUser(name) {
-  localStorage.setItem("user", name);
-  // Drop any ?user= override so the stored name takes effect.
-  location.href = location.pathname;
-}
-
-el("settings-btn").addEventListener("click", openSettings);
-el("user-btn").addEventListener("click", openSettings);
+el("settings-btn").addEventListener("click", () => openSettings(false));
+el("user-btn").addEventListener("click", () => openSettings(true));
 el("settings-close").addEventListener("click", closeSettings);
 el("settings").addEventListener("click", (e) => {
   if (e.target === el("settings")) closeSettings();
 });
-el("user-form").addEventListener("submit", (e) => {
+
+el("tab-signup").addEventListener("click", () => showAuthForm("signup"));
+el("tab-login").addEventListener("click", () => showAuthForm("login"));
+
+el("signup-form").addEventListener("submit", (e) => {
   e.preventDefault();
-  const name = el("user-input").value.trim();
-  if (name && name !== USER) switchUser(name);
-  else closeSettings();
+  // Signing up claims the guest row this session has been playing on, so
+  // there is nothing to reload: same user, now with a name.
+  submitAuth(e.submitter ?? el("signup-form").querySelector("button"), async () => {
+    setAccount(
+      await api("/api/account/signup", {
+        username: el("signup-username").value,
+        password: el("signup-password").value,
+        email: el("signup-email").value || null,
+      }),
+    );
+    el("signup-password").value = "";
+  });
+});
+
+el("login-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  submitAuth(e.submitter ?? el("login-form").querySelector("button"), async () => {
+    await api("/api/account/login", {
+      username: el("login-username").value,
+      password: el("login-password").value,
+    });
+    // Different user, so rating, stats and the in-flight trial are all stale.
+    location.reload();
+  });
+});
+
+el("logout-btn").addEventListener("click", (e) => {
+  submitAuth(e.currentTarget, async () => {
+    await api("/api/account/logout", {});
+    location.reload();
+  });
 });
 
 document.querySelectorAll("#speed-menu button").forEach((b) => {
@@ -409,6 +490,20 @@ el("prompt").addEventListener("click", () => {
   if (phase === "error") nextTrial();
 });
 
-el("user-name").textContent = USER;
-initStats();
-nextTrial();
+// The first request is what mints a guest identity and its cookie, so it has
+// to land alone — parallel cold requests would each create their own row.
+async function boot() {
+  let a = { username: null, guest: true };
+  try {
+    a = await api("/api/account");
+  } catch (e) {
+    // Fall back to the guest view rather than leaving the drawer's account
+    // section blank: the forms still work, and a failing one says why.
+    console.warn(e);
+  }
+  setAccount(a);
+  initStats();
+  nextTrial();
+}
+
+boot();
