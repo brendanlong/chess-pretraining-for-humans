@@ -86,7 +86,15 @@ then replay controls with a primary Next, then the two engine lines as
 tappable cards; secondary detail sits below the fold. Desktop places the
 same panel beside the board. A settings drawer holds replay speed, the
 account controls (sign up / sign in / sign out, reached from the header
-chip), and session/debug counters like the fresh-item count.
+chip), session/debug counters like the fresh-item count, and the legal
+links.
+
+`terms.html` and `privacy.html` are plain pages beside `index.html`,
+sharing its stylesheet, so they ship and version with the app instead of
+living in a CMS. They are reachable three ways, because the
+notice has to reach a guest who never opens either: a page footer that
+says what the answers are for, the signup form's agreement line, and the
+drawer's About row.
 
 ## Storage
 

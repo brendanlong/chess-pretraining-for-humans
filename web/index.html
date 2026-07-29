@@ -68,6 +68,10 @@
     </div>
   </section>
 </main>
+<footer id="page-footer" class="legal-links">
+  Your answers are research data. <a href="privacy.html">Privacy policy</a> ·
+  <a href="terms.html">Terms of use</a>
+</footer>
 <div id="settings" hidden>
   <div id="settings-sheet" role="dialog" aria-modal="true" aria-label="Settings">
     <div id="settings-head">
@@ -95,6 +99,7 @@
           <input id="signup-password" type="password" placeholder="Password (8+ characters)" aria-label="Password" autocomplete="new-password" required>
           <input id="signup-email" type="email" placeholder="Email (optional)" aria-label="Email, optional" autocomplete="email">
           <button type="submit">Create account</button>
+          <p class="setting-note">By creating an account you agree to the <a href="terms.html" target="_blank" rel="noopener">terms of use</a> and <a href="privacy.html" target="_blank" rel="noopener">privacy policy</a>.</p>
           <p class="setting-note">Email is optional and never verified — its only job is resetting a forgotten password. Leave it out and there's no reset path for the account.</p>
         </form>
         <form id="login-form" class="auth-form" hidden>
@@ -117,6 +122,13 @@
         <span>streak</span><b id="stat-streak">0</b>
         <span>fresh items left</span><b id="stat-remaining">–</b>
       </div>
+    </div>
+    <div class="setting">
+      <span class="setting-label">About</span>
+      <p class="setting-note legal-links">Your answers are research data.
+        <a href="terms.html" target="_blank" rel="noopener">Terms of use</a> ·
+        <a href="privacy.html" target="_blank" rel="noopener">Privacy policy</a>
+      </p>
     </div>
   </div>
 </div>

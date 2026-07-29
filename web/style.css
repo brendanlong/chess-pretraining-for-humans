@@ -420,3 +420,42 @@ kbd {
   color: var(--muted);
 }
 #drawer-stats b { color: var(--text); text-align: right; }
+
+/* --- legal links and pages ------------------------------------------------ */
+
+.legal-links { font-size: 13px; color: var(--muted); }
+.setting-note a, .legal-links a { color: var(--accent-1); }
+
+#page-footer {
+  padding: 0 12px 16px;
+  text-align: center;
+}
+
+.legal main {
+  align-items: stretch;
+  padding: 0 16px 24px;
+}
+.legal article {
+  width: 100%;
+  max-width: 640px;
+  margin: 0 auto;
+}
+.legal h1 { font-size: 24px; margin: 24px 0 4px; }
+.legal h2 { font-size: 17px; margin: 28px 0 6px; }
+.legal li { margin-bottom: 6px; }
+.legal .updated { font-size: 13px; color: var(--muted); margin-top: 0; }
+.legal a { color: var(--accent-1); }
+.legal #brand a { color: inherit; text-decoration: none; }
+
+#legal-nav { margin-left: auto; display: flex; gap: 10px; font-size: 13px; }
+#legal-nav a { color: var(--muted); text-decoration: none; padding: 6px 4px; }
+#legal-nav a:hover, #legal-nav a[aria-current] { color: var(--text); }
+
+#legal-footer {
+  padding: 20px 16px 28px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--muted);
+  border-top: 1px solid var(--line);
+}
+#legal-footer a { color: var(--accent-1); }
