@@ -85,14 +85,20 @@ it would make those responses uninterpretable.
 ## Restoring
 
 Litestream restores on boot only when the database is missing, so recovering
-from a bad write means deliberately moving the live file aside first — on the
-machine, with the server stopped, since a whole-file replace under a running
-Litestream desyncs it.
+from a bad write means restoring alongside and then swapping — **with the
+machine stopped**. Replacing the file under a running Litestream is the one
+mistake with no feedback: it keeps reporting healthy syncs against a database
+it no longer understands (verified — copying over the file produced no error
+and no new transaction), so the replica quietly stops matching reality.
 
 ```bash
 fly ssh console -a chess-pretraining
 /usr/local/bin/litestream restore -o /data/restored.db \
   -timestamp 2026-07-28T12:00:00Z /data/items.db
+# inspect /data/restored.db, then, from your laptop:
+fly machine stop <id>
+# swap the files over sftp, clear /data/.items.db-litestream, and start it
+# again — the metadata directory describes the file you just replaced.
 ```
 
 Snapshot retention is 720h (`litestream.yml`); Litestream's own default is 24h,
