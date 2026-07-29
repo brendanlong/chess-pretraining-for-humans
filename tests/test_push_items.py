@@ -5,9 +5,12 @@ thing worth testing is that pushing a newly labeled bank at a live database
 adds positions without disturbing anything earned there.
 """
 
+import sqlite3
+
 import pytest
 
 from tests.conftest import FEN_TMPL, add_item
+from trainer import push_items
 from trainer.db import connect
 from trainer.push_items import export, merge
 
@@ -16,6 +19,16 @@ def bank(path, ranks):
     conn = connect(path)
     for rank in ranks:
         add_item(conn, FEN_TMPL.format(rank))
+    conn.commit()
+    conn.close()
+    return path
+
+
+def loose_bank(path):
+    """A bank whose items table predates the constraints the live one has."""
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE items (fen TEXT, best_uci TEXT, learnable INTEGER)")
+    conn.execute("INSERT INTO items VALUES ('8/8/8/8/8/8/8/K6k w - - 0 1', 'a1a2', NULL)")
     conn.commit()
     conn.close()
     return path
@@ -92,6 +105,39 @@ def test_merge_survives_a_source_missing_a_column(tmp_path):
     added = connect(live).execute("SELECT * FROM items WHERE id = 3").fetchone()
     assert added["mover_elo"] is None
     assert added["fen"] == FEN_TMPL.format("6P1")
+
+
+def test_a_bad_source_reports_itself_and_changes_nothing(tmp_path):
+    """The failure has to survive the cleanup that follows it.
+
+    SQLite won't detach inside a transaction, and the failed insert leaves one
+    open — so a careless `finally` raises a lock error over the top of the real
+    one, and the operator is left debugging the wrong thing.
+    """
+    live = live_db(tmp_path)
+    # The loose bank has none of the columns the live one requires.
+    with pytest.raises(sqlite3.IntegrityError):
+        merge(live, loose_bank(tmp_path / "bad.db"))
+
+    assert connect(live).execute("SELECT COUNT(*) FROM items").fetchone()[0] == 2
+
+
+def test_a_failed_export_leaves_no_file_to_trip_over(tmp_path, monkeypatch):
+    """Refusing to overwrite is only safe if a failure doesn't leave a file.
+
+    The realistic failure is the disk (the destination is created before it's
+    filled), so inject one rather than contrive a bad bank.
+    """
+    live = live_db(tmp_path)
+    out = tmp_path / "export.db"
+
+    def boom(*args):
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(push_items, "shared_columns", boom)
+    with pytest.raises(OSError):
+        push_items.export(live, out)
+    assert not out.exists()
 
 
 def test_roundtrip(tmp_path):

@@ -49,6 +49,18 @@ def shared_columns(conn: sqlite3.Connection, a: str, b: str) -> list[str]:
     return cols
 
 
+def detach(conn: sqlite3.Connection, schema: str) -> None:
+    """Detach, rolling back first.
+
+    SQLite refuses to detach inside a transaction, and a failed insert leaves
+    one open — so without the rollback the cleanup raises a lock error on the
+    way out and buries the failure that actually happened. After a commit the
+    rollback is a no-op.
+    """
+    conn.rollback()
+    conn.execute(f"DETACH DATABASE {schema}")
+
+
 def export(db: Path, out: Path) -> int:
     if out.exists():
         sys.exit(f"{out} exists; refusing to overwrite")
@@ -59,8 +71,13 @@ def export(db: Path, out: Path) -> int:
         cols = ", ".join(shared_columns(src, "main", "dest"))
         n = src.execute(f"INSERT INTO dest.items ({cols}) SELECT {cols} FROM main.items").rowcount
         src.commit()
+    except BaseException:
+        # Leaving the half-written file behind would be worse than useless:
+        # the next run refuses to overwrite it, so the retry fails too.
+        out.unlink(missing_ok=True)
+        raise
     finally:
-        src.execute("DETACH DATABASE dest")
+        detach(src, "dest")
         src.close()
     return n
 
@@ -85,7 +102,7 @@ def merge(db: Path, incoming: Path, dry_run: bool = False) -> tuple[int, int]:
         else:
             conn.commit()
     finally:
-        conn.execute("DETACH DATABASE inc")
+        detach(conn, "inc")
         conn.close()
     return added, offered - added
 
