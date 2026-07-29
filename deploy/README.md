@@ -91,7 +91,8 @@ Litestream desyncs it.
 
 ```bash
 fly ssh console -a chess-pretraining
-litestream restore -o /data/restored.db -timestamp 2026-07-28T12:00:00Z /data/items.db
+/usr/local/bin/litestream restore -o /data/restored.db \
+  -timestamp 2026-07-28T12:00:00Z /data/items.db
 ```
 
 Snapshot retention is 720h (`litestream.yml`); Litestream's own default is 24h,

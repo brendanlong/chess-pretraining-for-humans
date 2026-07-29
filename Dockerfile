@@ -22,7 +22,10 @@ COPY web/ web/
 COPY deploy/litestream.yml /etc/litestream.yml
 COPY deploy/entrypoint.sh /usr/local/bin/entrypoint.sh
 
-ENV PATH="/app/.venv/bin:$PATH" PYTHONUNBUFFERED=1 TRAINER_DB=/data/items.db
+# PYTHONPATH because the project isn't an installed package — it's imported
+# from the working directory, and `fly ssh console` doesn't promise to land in
+# one. Without it the item-bank refresh would fail on the remote half only.
+ENV PATH="/app/.venv/bin:$PATH" PYTHONPATH=/app PYTHONUNBUFFERED=1 TRAINER_DB=/data/items.db
 
 # Everything that can reach this port is either the Fly proxy or inside our own
 # private network, so the forwarded client address can be believed — which is
