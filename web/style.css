@@ -399,8 +399,10 @@ kbd {
   cursor: pointer;
 }
 .auth-form button { border-color: var(--accent-1); }
-/* Deletion erases responses with no undo, so it shouldn't look like Sign out. */
-button.danger { border-color: var(--bad); color: var(--bad); }
+/* Deletion erases responses with no undo, so it shouldn't look like Sign out.
+   Carries the #id so it outranks the shared block above, which has one too. */
+#delete-btn.danger,
+.auth-form button.danger { border-color: var(--bad); color: var(--bad); }
 .auth-form button:disabled,
 #logout-btn:disabled,
 #delete-btn:disabled { opacity: 0.6; cursor: default; }

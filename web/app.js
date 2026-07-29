@@ -456,7 +456,15 @@ el("delete-cancel").addEventListener("click", () => showDeleteConfirm(false));
 el("delete-form").addEventListener("submit", (e) => {
   e.preventDefault();
   submitAuth(e.submitter ?? el("delete-form").querySelector("button"), async () => {
-    await api("/api/account/delete", { password: el("delete-password").value });
+    // Cancel has to go down with the submit button: the request is already
+    // away, so collapsing the form back to its un-armed state would tell the
+    // user they'd called it off moments before the account disappears.
+    el("delete-cancel").disabled = true;
+    try {
+      await api("/api/account/delete", { password: el("delete-password").value });
+    } finally {
+      el("delete-cancel").disabled = false;
+    }
     // The row and its cookie are both gone; reloading picks up a fresh guest
     // rather than leaving a signed-in header over nothing.
     location.reload();

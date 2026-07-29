@@ -155,8 +155,12 @@ def test_delete_clears_the_cookie_and_lands_on_a_fresh_guest(client):
     answer(client, next_trial(client))
     client.post("/api/account/signup", json=CREDS)
 
-    client.post("/api/account/delete", json={"password": CREDS["password"]})
+    r = client.post("/api/account/delete", json={"password": CREDS["password"]})
 
+    # Deleting the sessions row already revoked the token, so assert on the
+    # header: without it this test would pass with the cookie clearing removed.
+    assert "Max-Age=0" in r.headers["set-cookie"]
+    assert auth.COOKIE_NAME not in client.cookies
     assert client.get("/api/account").json() == {"username": None, "guest": True}
     assert client.get("/api/stats").json()["attempts"] == 0
     # The name is free again, and claiming it inherits nothing from before.
@@ -196,6 +200,16 @@ def test_a_guest_cannot_delete_and_keeps_its_history(client, db):
     assert r.status_code == 400
     assert "clearing the cookie" in r.json()["detail"]
     assert row_counts(db) == (1, 1, 1)
+
+
+def test_a_cookieless_delete_mints_nothing(db):
+    """A deletion request with no session has nothing to delete, so it must not
+    write two rows on its way to being refused — the trap signup is shaped
+    around, and the reason this endpoint resolves the session itself."""
+    with TestClient(server.app) as cold:
+        for _ in range(3):
+            assert cold.post("/api/account/delete", json={"password": "x"}).status_code == 400
+    assert row_counts(db) == (0, 0, 0)
 
 
 def test_delete_leaves_other_users_alone(client, db):

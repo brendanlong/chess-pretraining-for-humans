@@ -63,7 +63,9 @@ automatically.
   thread; and keeping the answers while dropping the name would leave us
   holding data the user believes is gone. Losing some responses is
   cheaper than making "we deleted it" mean something narrower than a user
-  would read it as.
+  would read it as. What survives is each item's answered/correct counters
+  and the difficulty they feed: not reversible, not attributable to
+  anyone, and the policy says so rather than rounding it up to "erased".
 - **Explanations are grounded in engine output.** The engine lines are the
   authority; any prose (user's pasted questions today, generated
   narration later) sits next to them, never replaces them.

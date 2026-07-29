@@ -503,7 +503,7 @@ def logout(request: Request):
 
 
 @app.post("/api/account/delete")
-def delete_account(body: Deletion, request: Request, user_id: int = CurrentUserId):
+def delete_account(body: Deletion, request: Request):
     """Erase this account, its sessions, and every response it gave.
 
     Being signed in *is* the proof of ownership, which is why deletion belongs
@@ -515,11 +515,17 @@ def delete_account(body: Deletion, request: Request, user_id: int = CurrentUserI
     A guest has no password to check and so can't be authenticated at all;
     clearing the cookie is what deletion means for a row nobody — us included
     — can point at, which is what the privacy policy says.
+
+    Alone among the endpoints, this one resolves the session itself instead of
+    taking `CurrentUserId`. Minting a guest is what that dependency does for a
+    request without a cookie, and here it would mean writing two rows for a
+    request we are about to refuse — a deletion request that arrives with no
+    session has nothing to delete. Signup avoids the same trap the same way.
     """
     try:
         with db_lock:
-            u = auth.get_user(conn, user_id)
-        if auth.is_guest(u):
+            u = auth.session_user(conn, request.cookies.get(auth.COOKIE_NAME))
+        if u is None or auth.is_guest(u):
             raise HTTPException(
                 400,
                 "There's no account here to delete. A guest record is reachable only "
