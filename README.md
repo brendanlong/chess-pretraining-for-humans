@@ -42,12 +42,18 @@ attaches a username and password to the guest you've been playing on, so
 nothing resets; the email is optional, unverified, and only there for a
 future password reset. Signing in on another device picks the account up.
 
-Rows that predate accounts (the old `?user=name` profiles) have no guest
-session to claim them, so give them a password from the server's shell:
+The same drawer deletes the account, confirmed with your password: the row,
+its sessions, and all of its responses go in one transaction. That is the
+one place the app destroys research data on purpose — see the privacy policy.
+
+`trainer.account` is the operator's way into rows the app can't reach: the
+ones that predate accounts (the old `?user=name` profiles) have no guest
+session to claim them and no password to re-enter.
 
 ```bash
 uv run python -m trainer.account list
 uv run python -m trainer.account set-password brendan
+uv run python -m trainer.account delete brendan   # asks for the name back
 ```
 
 Behind a reverse proxy, terminate TLS there (the session cookie is marked

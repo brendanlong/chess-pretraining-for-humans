@@ -121,6 +121,44 @@ def test_set_password_cli_will_not_take_an_existing_name(tmp_path, monkeypatch):
     assert account.main(args) == 1
 
 
+def test_delete_cli_erases_a_legacy_row_and_its_responses(tmp_path, monkeypatch, capsys):
+    """The operator path exists for the rows the app can't reach — no password
+    to re-enter, so no in-app deletion."""
+    path = old_db(tmp_path)
+    conn = connect(path)
+    # A bystander with responses of their own, so a table wipe can't pass here.
+    conn.execute("INSERT INTO users (name, created_at) VALUES ('keeper', datetime('now'))")
+    conn.execute(
+        """INSERT INTO responses (user_id, item_id, choice_uci, correct)
+           SELECT id, 1, 'e2e4', 1 FROM users WHERE name = 'keeper'"""
+    )
+    conn.commit()
+    monkeypatch.setattr("builtins.input", lambda _: "brendan")
+
+    assert account.main(["--db", str(path), "delete", "brendan"]) == 0
+
+    conn = connect(path)
+    assert auth.find_by_username(conn, "brendan") is None
+    assert auth.find_by_username(conn, "keeper") is not None
+    assert conn.execute("SELECT COUNT(*) FROM responses").fetchone()[0] == 1
+    assert "2 responses" in capsys.readouterr().out
+
+
+def test_delete_cli_needs_the_name_typed_back(tmp_path, monkeypatch):
+    path = old_db(tmp_path)
+    monkeypatch.setattr("builtins.input", lambda _: "brendan-old")
+
+    assert account.main(["--db", str(path), "delete", "brendan"]) == 1
+
+    conn = connect(path)
+    assert auth.find_by_username(conn, "brendan") is not None
+    assert conn.execute("SELECT COUNT(*) FROM responses").fetchone()[0] == 2
+
+
+def test_delete_cli_refuses_an_unknown_user(tmp_path):
+    assert account.main(["--db", str(old_db(tmp_path)), "delete", "nobody", "--yes"]) == 1
+
+
 def test_list_cli_reports_accounts_and_guests(tmp_path, capsys):
     assert account.main(["--db", str(old_db(tmp_path)), "list"]) == 0
     out = capsys.readouterr().out

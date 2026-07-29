@@ -56,8 +56,21 @@ share a fixed thread pool and a caller merely waiting still holds a thread the
 trial flow needs. Because arriving is
 enough to mint a guest, guests that answered nothing and went cold are swept
 periodically; anything with a response or a password is never touched.
-`trainer/account.py` is the operator's way to put a password on a row the
-app can't reach (the pre-account `?user=` profiles).
+
+Deletion runs on the same reasoning as signup, in reverse: a signed-in session
+is the proof of ownership, which is what makes an in-app button the primary
+path rather than an email thread — the optional email is never verified, so for
+most accounts there is no address a request could arrive from. The password is
+re-entered anyway, because a shared browser holds the session; the attempt
+spends the same per-account budget as a login, since it checks a password and
+would otherwise be an unmetered guessing oracle. Guests have no password and so
+can't be authenticated at all: clearing the cookie is the only deletion
+available on a row nobody can point at. The write erases responses and sessions
+before the `users` row they reference, all in one transaction — a half-deleted
+account is a live session pointing at nothing. `trainer/account.py` is the
+operator's way in for what the app can't reach: putting a password on a
+pre-account `?user=` profile, and deleting a row that has no password to
+re-enter.
 
 Two ordering constraints are easy to get wrong. Identity resolution is a
 dependency, but it yields a user *id*: FastAPI finishes dependencies before
@@ -85,9 +98,11 @@ between the choice buttons and the reveal — verdict and rating delta,
 then replay controls with a primary Next, then the two engine lines as
 tappable cards; secondary detail sits below the fold. Desktop places the
 same panel beside the board. A settings drawer holds replay speed, the
-account controls (sign up / sign in / sign out, reached from the header
-chip), session/debug counters like the fresh-item count, and the legal
-links.
+account controls (sign up / sign in / sign out / delete, reached from the
+header chip), session/debug counters like the fresh-item count, and the legal
+links. Delete is two deliberate steps behind a password field, and collapses
+again whenever the drawer or the account changes — a destructive control
+should never be found already armed.
 
 `terms.html` and `privacy.html` are plain pages beside `index.html`,
 sharing its stylesheet, so they ship and version with the app instead of

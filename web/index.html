@@ -112,6 +112,13 @@
       <div id="account-user" hidden>
         <p class="setting-note">Signed in as <b id="account-name"></b>. Your rating and history follow this account.</p>
         <button id="logout-btn">Sign out</button>
+        <button id="delete-btn" class="danger">Delete account</button>
+        <form id="delete-form" class="auth-form" hidden>
+          <p class="setting-note">This erases the account, the email on it, and every answer you've given. There's no undo, and the answers are gone from the research data too. Encrypted backups expire on their own within 30 days.</p>
+          <input id="delete-password" type="password" placeholder="Password" aria-label="Password, to confirm deletion" autocomplete="current-password" required>
+          <button type="submit" class="danger">Delete everything</button>
+          <button id="delete-cancel" type="button">Cancel</button>
+        </form>
       </div>
       <p id="auth-error" role="alert" hidden></p>
     </div>

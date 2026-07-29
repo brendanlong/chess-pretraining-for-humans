@@ -408,6 +408,10 @@ class Login(BaseModel):
     password: str
 
 
+class Deletion(BaseModel):
+    password: str
+
+
 def reissue_session(request: Request, user_id: int) -> None:
     """Point this browser at `user_id` on a brand-new token.
 
@@ -496,6 +500,68 @@ def logout(request: Request):
     auth.end_session(conn, request.cookies.get(auth.COOKIE_NAME))
     queue_cookie(request, None)
     return {"ok": True}
+
+
+@app.post("/api/account/delete")
+def delete_account(body: Deletion, request: Request):
+    """Erase this account, its sessions, and every response it gave.
+
+    Being signed in *is* the proof of ownership, which is why deletion belongs
+    here rather than in an email thread: the optional email is never verified,
+    so for most accounts there is no address a request could arrive from. The
+    password is still asked for again, because a shared or unattended browser
+    shouldn't be able to wipe someone's history from a drawer.
+
+    A guest has no password to check and so can't be authenticated at all;
+    clearing the cookie is what deletion means for a row nobody — us included
+    — can point at, which is what the privacy policy says.
+
+    Alone among the endpoints, this one resolves the session itself instead of
+    taking `CurrentUserId`. Minting a guest is what that dependency does for a
+    request without a cookie, and here it would mean writing two rows for a
+    request we are about to refuse — a deletion request that arrives with no
+    session has nothing to delete. Signup avoids the same trap the same way.
+    """
+    try:
+        with db_lock:
+            u = auth.session_user(conn, request.cookies.get(auth.COOKIE_NAME))
+        if u is None or auth.is_guest(u):
+            raise HTTPException(
+                400,
+                "There's no account here to delete. A guest record is reachable only "
+                "through this browser's cookie, so clearing the cookie is what deleting "
+                "it means — after that nobody, including us, can find it again.",
+            )
+        # Same budget as login, keyed the same way, because this endpoint checks
+        # a password too and would otherwise be an unmetered guessing oracle.
+        # Charged before the verify, for the reason spelled out at the limiters.
+        spend(login_limiter, f"user:{u['id']}")
+        # Outside the lock: argon2 is deliberately slow and every trial in
+        # flight shares that lock.
+        if not auth.verify_password(auth.credential_for(u), body.password):
+            raise HTTPException(400, "Wrong password.")
+        with db_lock:
+            # The row was read before the verify, so re-check that the hash we
+            # matched is still the current one — a password rotated away
+            # mid-request must not authorize destroying the account.
+            current = conn.execute(
+                "SELECT 1 FROM users WHERE id = ? AND password_hash = ?",
+                (u["id"], u["password_hash"]),
+            ).fetchone()
+            if current is None:
+                raise HTTPException(400, "Wrong password.")
+            counts = auth.delete_user(conn, u["id"])
+            # Deleting the sessions already revoked this cookie server-side;
+            # clear it too so the browser lands on a fresh guest rather than
+            # presenting a token for a row that no longer exists.
+            queue_cookie(request, None)
+        # Ids are reused by SQLite once the highest row goes, so don't leave a
+        # spent counter behind for whoever gets this one next. Reachable only by
+        # knowing the password, exactly as in login.
+        login_limiter.clear(f"user:{u['id']}")
+    except auth.AuthError as e:
+        raise auth_error(e) from e
+    return {"deleted": True, "responses_deleted": counts["responses"]}
 
 
 app.mount("/", StaticFiles(directory=WEB_DIR, html=True), name="web")

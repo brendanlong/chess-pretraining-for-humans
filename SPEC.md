@@ -57,6 +57,15 @@ automatically.
   rather than a number — never usernames or emails. What the privacy
   policy promises is a constraint on what the analysis may export, not
   just prose.
+- **A deletion request erases the responses too**, and is reachable from
+  inside the app. Being signed in is the proof of ownership the optional,
+  unverified email can't supply, so deletion can't depend on an email
+  thread; and keeping the answers while dropping the name would leave us
+  holding data the user believes is gone. Losing some responses is
+  cheaper than making "we deleted it" mean something narrower than a user
+  would read it as. What survives is each item's answered/correct counters
+  and the difficulty they feed: not reversible, not attributable to
+  anyone, and the policy says so rather than rounding it up to "erased".
 - **Explanations are grounded in engine output.** The engine lines are the
   authority; any prose (user's pasted questions today, generated
   narration later) sits next to them, never replaces them.
@@ -67,7 +76,7 @@ automatically.
   project grew out of) and Stroop-interference measurement of automaticity.
 - Automatic LLM narration of the engine lines.
 - Password reset (the optional email is stored for it but nothing sends
-  mail yet), and account deletion in the app rather than by email.
+  mail yet).
 - Transfer measurement: in-app accuracy shares the item generator's
   biases; the real test is external (rated games, or items from a
   deliberately different distribution).
