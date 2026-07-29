@@ -342,6 +342,17 @@ function setAccount(a) {
   el("account-guest").hidden = !a.guest;
   el("account-user").hidden = a.guest;
   if (!a.guest) el("account-name").textContent = a.username;
+  showDeleteConfirm(false); // a just-claimed account shouldn't open on this
+}
+
+// Deletion is irreversible, so it takes two deliberate steps: reveal the
+// form, then re-enter the password the server will check anyway.
+function showDeleteConfirm(open) {
+  showAuthError(null);
+  el("delete-form").hidden = !open;
+  el("delete-btn").hidden = open;
+  el("delete-password").value = "";
+  if (open) el("delete-password").focus();
 }
 
 function showAuthError(message) {
@@ -382,7 +393,7 @@ let settingsReturnFocus = null;
 
 function openSettings(focusAccount) {
   settingsReturnFocus = document.activeElement;
-  showAuthError(null);
+  showDeleteConfirm(false); // also clears any error left from last time
   el("settings").hidden = false;
   const target = focusAccount && account.guest ? el("tab-signup") : el("settings-close");
   target.focus();
@@ -435,6 +446,19 @@ el("login-form").addEventListener("submit", (e) => {
 el("logout-btn").addEventListener("click", (e) => {
   submitAuth(e.currentTarget, async () => {
     await api("/api/account/logout", {});
+    location.reload();
+  });
+});
+
+el("delete-btn").addEventListener("click", () => showDeleteConfirm(true));
+el("delete-cancel").addEventListener("click", () => showDeleteConfirm(false));
+
+el("delete-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  submitAuth(e.submitter ?? el("delete-form").querySelector("button"), async () => {
+    await api("/api/account/delete", { password: el("delete-password").value });
+    // The row and its cookie are both gone; reloading picks up a fresh guest
+    // rather than leaving a signed-in header over nothing.
     location.reload();
   });
 });

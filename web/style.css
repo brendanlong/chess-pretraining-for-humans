@@ -387,7 +387,8 @@ kbd {
   color: var(--text);
 }
 .auth-form button,
-#logout-btn {
+#logout-btn,
+#delete-btn {
   font: inherit;
   font-size: 14px;
   padding: 9px 14px;
@@ -398,9 +399,12 @@ kbd {
   cursor: pointer;
 }
 .auth-form button { border-color: var(--accent-1); }
+/* Deletion erases responses with no undo, so it shouldn't look like Sign out. */
+button.danger { border-color: var(--bad); color: var(--bad); }
 .auth-form button:disabled,
-#logout-btn:disabled { opacity: 0.6; cursor: default; }
-#logout-btn { align-self: flex-start; }
+#logout-btn:disabled,
+#delete-btn:disabled { opacity: 0.6; cursor: default; }
+#logout-btn, #delete-btn, #delete-cancel { align-self: flex-start; }
 
 #account-guest, #account-user { display: flex; flex-direction: column; gap: 8px; }
 #account-guest[hidden], #account-user[hidden] { display: none; }

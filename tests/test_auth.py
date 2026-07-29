@@ -1,3 +1,4 @@
+import sqlite3
 import threading
 import time
 
@@ -119,6 +120,128 @@ def test_logout_revokes_the_session_and_lands_on_a_fresh_guest(client, db):
     assert auth.session_user(db, token) is None  # revoked server-side, not just cleared
     assert client.get("/api/account").json()["guest"] is True
     assert client.get("/api/stats").json()["attempts"] == 0
+
+
+# --- deletion -------------------------------------------------------------
+#
+# The privacy policy promises that deleting an account takes its responses with
+# it, so these tests are that promise: the rows are gone rather than merely
+# detached, and only the password can trigger it.
+
+
+def row_counts(conn) -> tuple[int, ...]:
+    return tuple(
+        conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+        for t in ("users", "sessions", "responses")
+    )
+
+
+def test_delete_erases_the_user_its_sessions_and_its_responses(client, db):
+    answer(client, next_trial(client))
+    client.post("/api/account/signup", json=CREDS)
+    token = client.cookies[auth.COOKIE_NAME]
+    assert row_counts(db) == (1, 1, 1)
+
+    r = client.post("/api/account/delete", json={"password": CREDS["password"]})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"deleted": True, "responses_deleted": 1}
+
+    assert row_counts(db) == (0, 0, 0)  # erased, not detached
+    assert auth.find_by_username(db, CREDS["username"]) is None
+    assert auth.session_user(db, token) is None
+
+
+def test_delete_clears_the_cookie_and_lands_on_a_fresh_guest(client):
+    answer(client, next_trial(client))
+    client.post("/api/account/signup", json=CREDS)
+
+    client.post("/api/account/delete", json={"password": CREDS["password"]})
+
+    assert client.get("/api/account").json() == {"username": None, "guest": True}
+    assert client.get("/api/stats").json()["attempts"] == 0
+    # The name is free again, and claiming it inherits nothing from before.
+    assert client.post("/api/account/signup", json=CREDS).status_code == 200
+    assert client.get("/api/stats").json()["attempts"] == 0
+
+
+def test_delete_needs_the_right_password(client, db):
+    answer(client, next_trial(client))
+    client.post("/api/account/signup", json=CREDS)
+
+    r = client.post("/api/account/delete", json={"password": "wrongwrongwrong"})
+    assert r.status_code == 400
+    assert r.json()["detail"] == "Wrong password."
+    assert row_counts(db) == (1, 1, 1)
+    assert client.get("/api/account").json()["username"] == CREDS["username"]
+
+
+def test_delete_guesses_are_throttled_like_logins(client, monkeypatch):
+    """A shared browser holds the session, so the password is the only guard —
+    and a password check with no limit on it is a guessing oracle."""
+    client.post("/api/account/signup", json=CREDS)
+    monkeypatch.setattr(server, "login_limiter", auth.RateLimiter(2, 900))
+    bad = {"password": "wrongwrongwrong"}
+    assert client.post("/api/account/delete", json=bad).status_code == 400
+    assert client.post("/api/account/delete", json=bad).status_code == 400
+    # Out of tries, even with the right password.
+    assert client.post("/api/account/delete", json=CREDS).status_code == 429
+
+
+def test_a_guest_cannot_delete_and_keeps_its_history(client, db):
+    """No password means nothing to authenticate against, and the cookie is the
+    only handle on the row — so clearing it is what deletion means here."""
+    answer(client, next_trial(client))
+
+    r = client.post("/api/account/delete", json={"password": "anything at all"})
+    assert r.status_code == 400
+    assert "clearing the cookie" in r.json()["detail"]
+    assert row_counts(db) == (1, 1, 1)
+
+
+def test_delete_leaves_other_users_alone(client, db):
+    answer(client, next_trial(client))
+    client.post("/api/account/signup", json=CREDS)
+    with TestClient(server.app) as other:
+        answer(other, next_trial(other))
+        other.post("/api/account/signup", json={**CREDS, "username": "bystander"})
+
+        client.post("/api/account/delete", json={"password": CREDS["password"]})
+
+        assert row_counts(db) == (1, 1, 1)
+        assert other.get("/api/stats").json()["attempts"] == 1
+
+
+def test_delete_is_all_or_nothing(client, db):
+    """Responses go before the user row they reference. A failure partway must
+    not leave the account still standing with its answers already erased."""
+    answer(client, next_trial(client))
+    client.post("/api/account/signup", json=CREDS)
+    user = auth.find_by_username(db, CREDS["username"])
+    assert user is not None
+    # Fail the second statement of the three, from inside SQLite.
+    db.execute(
+        "CREATE TRIGGER wedge BEFORE DELETE ON sessions BEGIN SELECT RAISE(ABORT, 'no'); END"
+    )
+    db.commit()
+
+    with pytest.raises(sqlite3.IntegrityError):
+        auth.delete_user(db, user["id"])
+
+    db.execute("DROP TRIGGER wedge")
+    db.commit()
+    assert row_counts(db) == (1, 1, 1)  # rolled back whole, responses included
+
+
+def test_deleting_an_account_frees_its_throttle_counter(client, monkeypatch):
+    """SQLite reuses the highest id once its row goes, so a spent counter left
+    behind would throttle whoever signs up next."""
+    monkeypatch.setattr(server, "login_limiter", auth.RateLimiter(2, 900))
+    client.post("/api/account/signup", json=CREDS)
+    client.post("/api/account/delete", json={"password": "wrongwrongwrong"})
+    client.post("/api/account/delete", json={"password": CREDS["password"]})
+
+    client.post("/api/account/signup", json=CREDS)
+    assert client.post("/api/account/delete", json=CREDS).status_code == 200
 
 
 def test_repeated_wrong_passwords_are_throttled(client, monkeypatch):

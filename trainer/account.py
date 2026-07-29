@@ -1,16 +1,19 @@
-"""Set a password on an existing user row, from the server's shell.
+"""Operator access to user rows, from the server's shell.
 
-Signup in the app claims the guest row you are currently playing on, which
-leaves nothing to attach to for rows that predate accounts (the old
-`?user=name` profiles) or for a password nobody remembers. This is the
-operator's way in:
+The app covers anyone who can sign in: signup claims the guest row you are
+currently playing on, and the settings drawer deletes the account you are
+signed into. This is for the rows the app can't reach — the ones that predate
+accounts (the old `?user=name` profiles), a password nobody remembers, and an
+emailed deletion request from the address on the account:
 
     uv run python -m trainer.account list
     uv run python -m trainer.account set-password brendan
+    uv run python -m trainer.account delete brendan
 """
 
 import argparse
 import getpass
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -18,32 +21,9 @@ from . import auth
 from .db import DEFAULT_DB, connect
 
 
-def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--db", type=Path, default=DEFAULT_DB)
-    sub = ap.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("list", help="show users, trial counts, and whether they have a password")
-    sp = sub.add_parser("set-password", help="give a user a password so they can sign in")
-    sp.add_argument("name")
-    sp.add_argument("--rename-to", help="also give the row a login-friendly username")
-    args = ap.parse_args(argv)
-
-    conn = connect(args.db)
-
-    if args.cmd == "list":
-        for row in conn.execute(
-            "SELECT name, attempts, password_hash IS NOT NULL AS claimed FROM users ORDER BY id"
-        ):
-            kind = "account" if row["claimed"] else "guest"
-            print(f"{row['name']:<40} {row['attempts']:>6} trials  {kind}")
-        return 0
-
-    user = auth.find_by_username(conn, args.name)
-    if user is None:
-        print(f"no user named {args.name!r}", file=sys.stderr)
-        return 1
+def set_password(conn: sqlite3.Connection, user: dict, rename_to: str | None) -> int:
     try:
-        name = auth.check_username(args.rename_to or user["name"])
+        name = auth.check_username(rename_to or user["name"])
         if name.lower() != user["name"].lower() and auth.find_by_username(conn, name):
             raise auth.AuthError(f"username {name!r} is taken")
         password = getpass.getpass("New password: ")
@@ -60,6 +40,68 @@ def main(argv: list[str] | None = None) -> int:
     conn.commit()
     print(f"{name} can now sign in ({user['attempts']} trials preserved)")
     return 0
+
+
+def delete(conn: sqlite3.Connection, user: dict, assume_yes: bool) -> int:
+    """Erase a user and everything attached to them.
+
+    This destroys responses, which is the experimental record — so say what is
+    about to go and make confirming it deliberate. Typing the name back is the
+    guard: `delete brendan` a line above `delete brendan-old` in a terminal is
+    exactly how the wrong row gets erased.
+    """
+    responses = conn.execute(
+        "SELECT COUNT(*) FROM responses WHERE user_id = ?", (user["id"],)
+    ).fetchone()[0]
+    kind = "guest" if auth.is_guest(user) else "account"
+    print(
+        f"{user['name']} ({kind}): {responses} responses, {user['attempts']} trials, "
+        f"email {user['email'] or 'none'}"
+    )
+    if not assume_yes:
+        typed = input("Erase all of it? Type the username to confirm: ").strip()
+        if typed.lower() != user["name"].lower():
+            print("not confirmed; nothing deleted", file=sys.stderr)
+            return 1
+    counts = auth.delete_user(conn, user["id"])
+    print(
+        f"deleted {user['name']}: {counts['responses']} responses, "
+        f"{counts['sessions']} sessions, {counts['users']} user row"
+    )
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--db", type=Path, default=DEFAULT_DB)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("list", help="show users, trial counts, and whether they have a password")
+    sp = sub.add_parser("set-password", help="give a user a password so they can sign in")
+    sp.add_argument("name")
+    sp.add_argument("--rename-to", help="also give the row a login-friendly username")
+    dp = sub.add_parser("delete", help="erase a user, their sessions, and all their responses")
+    dp.add_argument("name")
+    dp.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
+    args = ap.parse_args(argv)
+
+    conn = connect(args.db)
+
+    if args.cmd == "list":
+        for row in conn.execute(
+            "SELECT name, attempts, password_hash IS NOT NULL AS claimed FROM users ORDER BY id"
+        ):
+            kind = "account" if row["claimed"] else "guest"
+            print(f"{row['name']:<40} {row['attempts']:>6} trials  {kind}")
+        return 0
+
+    user = auth.find_by_username(conn, args.name)
+    if user is None:
+        print(f"no user named {args.name!r}", file=sys.stderr)
+        return 1
+
+    if args.cmd == "delete":
+        return delete(conn, user, args.yes)
+    return set_password(conn, user, args.rename_to)
 
 
 if __name__ == "__main__":

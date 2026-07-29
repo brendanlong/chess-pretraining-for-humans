@@ -202,6 +202,30 @@ def claim(
     return get_user(conn, user_id)
 
 
+def delete_user(conn: sqlite3.Connection, user_id: int) -> dict[str, int]:
+    """Erase a user row and everything that points at it. Returns row counts.
+
+    The one place in the app that destroys research data on purpose. The
+    privacy policy promises that deleting an account takes its responses with
+    it, and keeping the answers while dropping the name would leave us holding
+    data a user believes is gone — cheaper to lose the rows than to redefine
+    the word.
+
+    `sessions` and `responses` both reference `users(id)`, so the row itself
+    goes last, and all of it goes in one transaction: a half-deleted account
+    is a live session pointing at nothing.
+    """
+    with conn:  # commits on success, rolls the whole thing back on failure
+        counts = {
+            "responses": conn.execute(
+                "DELETE FROM responses WHERE user_id = ?", (user_id,)
+            ).rowcount,
+            "sessions": conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,)).rowcount,
+        }
+        counts["users"] = conn.execute("DELETE FROM users WHERE id = ?", (user_id,)).rowcount
+    return counts
+
+
 def credential_for(user: dict | None) -> str | None:
     """The hash to check a login against — None for unknown or guest rows,
     which `verify_password` still spends a full verify on."""
