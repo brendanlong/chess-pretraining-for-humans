@@ -285,6 +285,33 @@ def test_signup_rate_limit_is_per_ip(db, monkeypatch):
         assert b.post("/api/account/signup", json={**CREDS, "username": "sec"}).status_code == 429
 
 
+def test_signup_limit_is_keyed_on_a_header_the_caller_cant_pick(db, monkeypatch):
+    """Behind a proxy, the socket address is the caller's to choose.
+
+    uvicorn's `--forwarded-allow-ips '*'` believes the leftmost
+    `X-Forwarded-For` entry, and a proxy appends to what the client sent rather
+    than replacing it — so a flooder who varies that header gets a fresh
+    counter every request. Only a header the proxy overwrites can be charged.
+    """
+    monkeypatch.setattr(server, "signup_limiter", auth.RateLimiter(1, 3600))
+    monkeypatch.setattr(server, "CLIENT_IP_HEADER", "fly-client-ip")
+
+    def signup(client, username, real_ip, forwarded_lie):
+        return client.post(
+            "/api/account/signup",
+            json={**CREDS, "username": username},
+            headers={"Fly-Client-IP": real_ip, "X-Forwarded-For": forwarded_lie},
+        ).status_code
+
+    with TestClient(server.app) as a, TestClient(server.app) as b, TestClient(server.app) as c:
+        assert signup(a, "one", "203.0.113.7", "10.0.0.1") == 200
+        # Same real address, a fresh lie: one flooder, one counter.
+        assert signup(b, "two", "203.0.113.7", "10.0.0.2") == 429
+        # A genuinely different address is still unaffected — the limit has to
+        # remain per-address, not become global.
+        assert signup(c, "three", "198.51.100.4", "10.0.0.1") == 200
+
+
 def test_rate_limiter_window_expires():
     limiter = auth.RateLimiter(2, window_s=60)
     limiter.consume("ip", now=0)

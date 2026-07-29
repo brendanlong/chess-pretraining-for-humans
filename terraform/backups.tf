@@ -49,6 +49,12 @@ resource "aws_s3_bucket_lifecycle_configuration" "backups" {
     noncurrent_version_expiration {
       noncurrent_days = var.backup_retention_days
     }
+    # Every one of those retirements leaves a delete marker behind, and
+    # Litestream lists this prefix on every sync. Without this the listing
+    # slowly fills with tombstones for objects that no longer exist.
+    expiration {
+      expired_object_delete_marker = true
+    }
     abort_incomplete_multipart_upload {
       days_after_initiation = 7
     }

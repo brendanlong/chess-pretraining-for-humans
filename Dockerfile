@@ -27,11 +27,11 @@ COPY deploy/entrypoint.sh /usr/local/bin/entrypoint.sh
 # one. Without it the item-bank refresh would fail on the remote half only.
 ENV PATH="/app/.venv/bin:$PATH" PYTHONPATH=/app PYTHONUNBUFFERED=1 TRAINER_DB=/data/items.db
 
-# Everything that can reach this port is either the Fly proxy or inside our own
-# private network, so the forwarded client address can be believed — which is
-# what makes the signup limiter count real addresses instead of counting the
-# whole site as one, and lets the session cookie pick `Secure` up from the
-# scheme the browser actually used.
+# This is about the *scheme*, not the address: it lets the session cookie pick
+# `Secure` up from the request the browser actually made, and a caller can only
+# lie about that for its own cookie. The address uvicorn derives from the same
+# headers is not trustworthy (see client_key), which is why the rate limiter
+# reads CLIENT_IP_HEADER rather than the socket.
 ENV FORWARDED_ALLOW_IPS="*"
 
 EXPOSE 8080

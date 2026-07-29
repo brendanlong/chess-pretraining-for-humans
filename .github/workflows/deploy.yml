@@ -30,8 +30,23 @@ jobs:
           # workflow_run runs against the default branch's tip; pin to the
           # commit CI actually tested.
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
-      - uses: superfly/flyctl-actions/setup-flyctl@master
+      # CI runs finish in whatever order they finish, not in commit order, so
+      # an older commit's run can complete after a newer one's and deploy
+      # backwards over it. Nothing fails when that happens — production just
+      # quietly stops matching main.
+      - name: Skip if main has moved on
+        run: |
+          git fetch --quiet origin main
+          # FETCH_HEAD, not origin/main: checkout@v7 clones shallow and doesn't
+          # necessarily leave a remote-tracking ref behind.
+          [ "$(git rev-parse HEAD)" = "$(git rev-parse FETCH_HEAD)" ] || {
+            echo "HEAD is behind origin/main; a newer deploy supersedes this one"
+            echo "superseded=true" >> "$GITHUB_ENV"
+          }
+      - if: env.superseded != 'true'
+        uses: superfly/flyctl-actions/setup-flyctl@master
       # --ha=false: a second machine would fork the database. See fly.toml.
-      - run: flyctl deploy --remote-only --ha=false
+      - if: env.superseded != 'true'
+        run: flyctl deploy --remote-only --ha=false
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

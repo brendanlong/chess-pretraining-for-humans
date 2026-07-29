@@ -56,8 +56,11 @@ fly secrets set -a chess-pretraining \
 **The secret key is stored in the Terraform state in clear text.** There is no
 write-only variant of a generated attribute, so protecting the state bucket is
 the whole defence — keep it private, versioned, and out of any shared account.
-Rotating is `terraform taint aws_iam_access_key.litestream && terraform apply`,
-followed by setting the secret on Fly again.
+Rotating is `terraform apply -replace=aws_iam_access_key.litestream`, followed
+by setting the secret on Fly again. That apply destroys the old key as it
+creates the new one, so replication gets 403s until the `fly secrets set`
+lands and the machine restarts — it catches up afterwards, but don't rotate
+and then walk away.
 
 ## Why a CNAME rather than A + AAAA
 

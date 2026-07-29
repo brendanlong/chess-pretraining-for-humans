@@ -13,6 +13,11 @@ kill_timeout = 30
 
 [env]
 TRAINER_DB = "/data/items.db"
+# fly-proxy sets this one itself. X-Forwarded-For would be the obvious choice
+# and is the wrong one: the proxy appends to whatever the caller sent, so the
+# entry uvicorn reads is the caller's to invent, and the signup limiter would
+# be counting a value the flooder picks.
+CLIENT_IP_HEADER = "fly-client-ip"
 
 # SQLite has one writer, so this app has exactly one machine. Deploy with
 # --ha=false: a second machine would need its own volume (a fork of the

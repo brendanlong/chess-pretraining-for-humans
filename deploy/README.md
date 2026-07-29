@@ -32,7 +32,9 @@ terraform apply
 ```
 
 **2. Fly.** `-s` is in GB, and it's the volume, not the machine, that has to be
-big enough for the bank plus its WAL.
+sized: the bank, its WAL, and — during a refresh — a second full copy of the
+bank uploaded next to it. Budget twice the bank and then some; a volume that
+fills mid-merge gives the live database `SQLITE_FULL`.
 
 ```bash
 fly apps create chess-pretraining --org personal
@@ -91,15 +93,29 @@ mistake with no feedback: it keeps reporting healthy syncs against a database
 it no longer understands (verified — copying over the file produced no error
 and no new transaction), so the replica quietly stops matching reality.
 
+Do the swap from inside the machine and let the restart reuse the boot-time
+restore — `fly ssh` talks to an agent *in* the machine, so anything that needs
+a shell has to happen before you stop it.
+
 ```bash
 fly ssh console -a chess-pretraining
-/usr/local/bin/litestream restore -o /data/restored.db \
-  -timestamp 2026-07-28T12:00:00Z /data/items.db
-# inspect /data/restored.db, then, from your laptop:
-fly machine stop <id>
-# swap the files over sftp, clear /data/.items.db-litestream, and start it
-# again — the metadata directory describes the file you just replaced.
+  # Restore beside the live file and check it's the state you wanted:
+  /usr/local/bin/litestream restore -config /etc/litestream.yml \
+    -o /data/restored.db -timestamp 2026-07-28T12:00:00Z /data/items.db
+  # (no sqlite3 CLI in the image — it's a server, not a toolbox)
+  /app/.venv/bin/python -c "import sqlite3; print(sqlite3.connect(
+    '/data/restored.db').execute('SELECT COUNT(*) FROM responses').fetchone())"
+  # Then take the live file out of the way. The metadata directory describes
+  # the file you're removing, so it goes too.
+  mv /data/items.db /data/items.db.bad && rm -rf /data/.items.db-litestream
+  exit
+fly machine restart <id>   # boots into the entrypoint's restore
 ```
+
+Restarting rather than moving `restored.db` into place is deliberate: it goes
+through the same path a lost volume does, which is the path that gets
+exercised. Keep `items.db.bad` until you're satisfied, then delete it — it's
+on the volume and Litestream is not replicating it.
 
 Snapshot retention is 720h (`litestream.yml`); Litestream's own default is 24h,
 which would have meant a Friday mistake was unrecoverable by Monday.

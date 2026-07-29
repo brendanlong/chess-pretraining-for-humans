@@ -44,7 +44,11 @@ rotating addresses is a line of script, while several real users share one
 address routinely. The price is that a known account can be held locked while
 someone keeps guessing at it — inherent to per-account throttling, with the
 short window as the mitigation. Signup is throttled per address only because
-there is no account to key on yet; per-IP volume really belongs in a reverse
+there is no account to key on yet — and "address" behind a proxy means a
+header the proxy overwrites (`CLIENT_IP_HEADER`), never the socket: trusting
+forwarded headers makes uvicorn believe the *leftmost* `X-Forwarded-For`
+entry, which a proxy appends to rather than replaces, so it is the caller's to
+invent and a flood keyed on it would get a fresh counter every request; per-IP volume really belongs in a reverse
 proxy, which sees the true client, is shared across workers and survives a
 restart, so treat that counter as insurance rather than a defence. Counters
 are charged before the slow work and never refunded — read-before/write-after

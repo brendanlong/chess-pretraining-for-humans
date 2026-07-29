@@ -67,18 +67,23 @@ def export(db: Path, out: Path) -> int:
     src = connect(db)
     connect(out).close()  # same schema, same migrations
     src.execute("ATTACH DATABASE ? AS dest", (str(out),))
+    done = False
     try:
         cols = ", ".join(shared_columns(src, "main", "dest"))
         n = src.execute(f"INSERT INTO dest.items ({cols}) SELECT {cols} FROM main.items").rowcount
         src.commit()
-    except BaseException:
-        # Leaving the half-written file behind would be worse than useless:
-        # the next run refuses to overwrite it, so the retry fails too.
-        out.unlink(missing_ok=True)
-        raise
+        done = True
     finally:
         detach(src, "dest")
         src.close()
+        if not done:
+            # Leaving the half-written file behind would be worse than useless:
+            # the next run refuses to overwrite it, so the retry fails too. The
+            # sidecars have to go with it, or the retry opens a fresh database
+            # next to a stale WAL. Removing them after the close, so there's
+            # nothing left to write them back.
+            for path in (out, Path(f"{out}-wal"), Path(f"{out}-shm")):
+                path.unlink(missing_ok=True)
     return n
 
 

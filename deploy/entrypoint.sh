@@ -21,4 +21,10 @@ litestream restore -if-db-not-exists -if-replica-exists "$DB"
 # waits for it to exit, and takes a final sync on the way out (which is why
 # fly.toml raises kill_timeout past Fly's 5s default). If the server dies,
 # Litestream exits too, and the platform restarts the machine.
+#
+# `-exec` takes one string, which Litestream re-splits itself (no shell), so
+# joining the arguments here round-trips only while none of them contains a
+# space or a quote. That holds for the image's CMD; it's the reason the
+# forwarded-IP setting is an env var rather than a `--forwarded-allow-ips '*'`
+# argument, which would not have survived the trip.
 exec litestream replicate -exec "$*"

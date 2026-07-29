@@ -137,7 +137,9 @@ def test_a_failed_export_leaves_no_file_to_trip_over(tmp_path, monkeypatch):
     monkeypatch.setattr(push_items, "shared_columns", boom)
     with pytest.raises(OSError):
         push_items.export(live, out)
-    assert not out.exists()
+    # Including the WAL sidecars: a retry would otherwise open a fresh database
+    # on top of a stale one's journal.
+    assert [p.name for p in tmp_path.glob("export.db*")] == []
 
 
 def test_roundtrip(tmp_path):
