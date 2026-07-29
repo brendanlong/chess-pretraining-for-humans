@@ -118,3 +118,21 @@ One SQLite database: `items` (positions, moves, evals, lines, difficulty),
 (hashed cookie tokens), `responses` (every answer, timed, with rating
 snapshots). The item bank is disposable and rebuildable from the pipeline;
 responses are the experimental record.
+
+## Deployment (`deploy/`, `terraform/`)
+
+One Fly machine with the database on a volume — SQLite has one writer, so a
+second machine would be a second fork of the history rather than redundancy.
+The image carries the server only; Stockfish and zstd belong to the pipeline,
+which stays on a laptop. Litestream supervises uvicorn and streams the file to
+S3 continuously, because a volume is one disk on one host and `responses`
+can't be regenerated from anything. AWS holds the backup bucket, Litestream's
+IAM user, and the DNS record, in Terraform; Fly's own provider is archived, so
+that side is `fly.toml` and `flyctl`.
+
+The consequence worth naming is that a refreshed item bank can't arrive as a
+file: the bank and the record share a file, so `trainer/push_items.py` carries
+items across as their own database and merges them in, matching on position
+rather than on row id. Positions already present are skipped — relabelling an
+item under the answers already given to it would make those answers
+uninterpretable.

@@ -145,6 +145,14 @@ vite.config.ts.timestamp-*
 # project
 data/
 .playwright-mcp/
+
+# terraform: local state and anything holding a key. .terraform.lock.hcl is
+# committed on purpose — it's what actually pins the provider build.
+.terraform/
+*.tfstate
+*.tfstate.*
+terraform/backend.hcl
+terraform/terraform.tfvars
 __pycache__/
 *.pyc
 .venv/

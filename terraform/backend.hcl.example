@@ -1,0 +1,6 @@
+# cp backend.hcl.example backend.hcl, fill in, then:
+#   terraform init -backend-config=backend.hcl
+# The bucket has to exist before init — see README.md for the one-liner.
+bucket = "REPLACE-ME-terraform-state"
+key    = "chess-pretraining/terraform.tfstate"
+region = "us-east-1"

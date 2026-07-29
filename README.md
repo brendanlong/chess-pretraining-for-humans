@@ -27,6 +27,9 @@ uv run python -m trainer.label data/candidates.jsonl
 uv run uvicorn trainer.server:app --host 0.0.0.0 --port 8000
 ```
 
+The database is `data/items.db` unless `TRAINER_DB` says otherwise — which is
+how the container finds it on its volume.
+
 ## Using it
 
 Press <kbd>1</kbd>/<kbd>2</kbd> (or tap) to answer; the chosen move's
@@ -66,6 +69,16 @@ If you expose this publicly, put per-IP request limiting in the proxy
 (`limit_req` in nginx, or equivalent) rather than relying on the in-app
 counter: the proxy's is shared across workers, survives a restart, and sheds
 load before it reaches Python.
+
+## Deploying it
+
+One Fly machine, SQLite on a volume, Litestream replicating to S3, DNS and the
+bucket in Terraform. Bootstrap and runbooks in **[deploy/README.md](deploy/README.md)**;
+the AWS side in [terraform/README.md](terraform/README.md).
+
+Mining and labeling stay local, so a refreshed bank is pushed to the
+deployment rather than deployed with it — `./deploy/push-items.sh` merges the
+new positions in without touching the responses that share the file.
 
 ## Checks
 

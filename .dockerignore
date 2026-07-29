@@ -1,0 +1,11 @@
+# The image needs the app and its lock file, nothing else. `data/` in
+# particular must never be baked in: the live database lives on a volume, and
+# a copy inside the image would shadow an empty mount and look like the bank.
+*
+!pyproject.toml
+!uv.lock
+!trainer/
+!web/
+!deploy/
+**/__pycache__/
+**/*.pyc

@@ -213,6 +213,18 @@ def pick_item(user: dict) -> tuple[dict | None, bool]:
     return (dict(row), True) if row else (None, False)
 
 
+@app.get("/healthz")
+def healthz():
+    """Liveness for the platform's health check.
+
+    Deliberately outside `/api/`: it takes no identity dependency, so a probe
+    every few seconds doesn't mint (and then sweep) a guest row, and it doesn't
+    take the database lock, so a slow query can't make a healthy machine look
+    dead and get it restarted mid-answer.
+    """
+    return {"ok": True}
+
+
 @app.get("/api/next")
 @locked
 def next_item(user_id: int = CurrentUserId):
