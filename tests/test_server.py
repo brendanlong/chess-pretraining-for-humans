@@ -232,8 +232,6 @@ def test_an_answer_must_be_to_the_trial_that_was_served(client, db):
     assert r.status_code == 409
     assert "best" not in r.json()  # nothing about the item comes back
 
-    # The shared counters that drive difficulty for everyone are untouched.
-    assert db.execute("SELECT attempts FROM items WHERE id = ?", (other,)).fetchone()[0] == 0
     assert db.execute("SELECT COUNT(*) FROM responses").fetchone()[0] == 0
     # ...and the trial actually in progress still answers fine.
     assert answer(client, served)["correct"] in (True, False)
@@ -318,22 +316,23 @@ def test_an_answer_is_spent_once(client, db):
     assert db.execute("SELECT COUNT(*) FROM responses").fetchone()[0] == 1
 
 
-def test_a_repeat_does_not_move_the_shared_item_counters(client, db):
-    """Item difficulty is fed by `attempts`/`correct`, which are global and
-    survive account deletion. SPEC excludes repeats from ratings and accuracy for
-    the same reason they should be excluded here: a remembered answer measures
-    nothing, and counting it skews difficulty for everyone."""
+def test_answering_never_writes_to_the_item_bank(client, db):
+    """Difficulty is a property of the position, so no answer — first exposure
+    or repeat, right or wrong — may change what any other user is served. That
+    guarantee is now the whole of it: the `items` rows come out identical."""
+
+    def items():
+        return [tuple(row) for row in db.execute("SELECT * FROM items ORDER BY id")]
+
+    before = items()
     for _ in range(2):  # exhaust the bank, so repeats become legitimate
         answer(client, next_trial(client))
-    before = dict(db.execute("SELECT SUM(attempts) a, SUM(correct) c FROM items").fetchone())
-
     repeat = next_trial(client)
     assert repeat["repeat"] is True
     assert answer(client, repeat)["repeat"] is True
 
-    after = dict(db.execute("SELECT SUM(attempts) a, SUM(correct) c FROM items").fetchone())
-    assert after == before
-    # The response is still recorded — it just isn't evidence about the item.
+    assert items() == before
+    # The responses are still recorded — they just aren't evidence about items.
     assert db.execute("SELECT COUNT(*) FROM responses").fetchone()[0] == 3
 
 
@@ -350,9 +349,8 @@ def test_responses_carry_security_headers(client):
 
 def test_answering_is_rate_limited_but_arriving_is_free(client, db, monkeypatch):
     """Answering is the only unauthenticated write left, and the only thing that
-    moves the counters every user's difficulty reads — so that's where the volume
-    gate belongs. Arriving stays free, because a limit there is a gate in front
-    of the first trial."""
+    mints rows — so that's where the volume gate belongs. Arriving stays free,
+    because a limit there is a gate in front of the first trial."""
     monkeypatch.setattr(server, "answer_limiter", auth.RateLimiter(1, 900))
     answer(client, next_trial(client))  # spends the only slot
     refused = client.post("/api/answer", json=answer_body(next_trial(client)))
@@ -391,16 +389,12 @@ def test_nothing_about_an_item_is_reflected_without_a_valid_token(client, db):
 
 
 def test_one_anonymous_token_cannot_be_replayed_into_many_first_exposures(client, db):
-    """The attack the ledger exists for. Redeeming an anonymous token *creates*
-    the identity that records it, so without the ledger every replay is a brand
-    new row seeing the item for the first time — and first exposures are exactly
-    what moves the item's shared counters. One captured token would skew one
-    item's difficulty as far as the volume limit allows, which is far worse than
-    the diffuse noise `next`→`answer` can already make."""
+    """The case the ledger exists for. Redeeming an anonymous token *creates*
+    the identity that records it, so every replay would be a brand new row
+    seeing the item for the first time — and the `responses` row that makes a
+    spent trial unanswerable for an authenticated caller is never there to find.
+    The ledger is what stands in for it."""
     trial = next_trial(client)
-    before = db.execute("SELECT attempts FROM items WHERE id = ?", (trial["item_id"],)).fetchone()[
-        0
-    ]
 
     codes = []
     for _ in range(6):
@@ -408,8 +402,8 @@ def test_one_anonymous_token_cannot_be_replayed_into_many_first_exposures(client
             codes.append(fresh.post("/api/answer", json=answer_body(trial)).status_code)
 
     assert codes == [200, 409, 409, 409, 409, 409]
-    after = db.execute("SELECT attempts FROM items WHERE id = ?", (trial["item_id"],)).fetchone()[0]
-    assert after == before + 1  # one answer, not six
+    # One answer, not six — and so one identity minted, not six.
+    assert db.execute("SELECT COUNT(*) FROM responses").fetchone()[0] == 1
     assert db.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 1
 
 

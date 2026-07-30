@@ -5,6 +5,8 @@ import os
 import sqlite3
 from pathlib import Path
 
+from .rating import difficulty_rating
+
 log = logging.getLogger(__name__)
 
 # In a container the database lives on a mounted volume, not in the checkout,
@@ -31,9 +33,7 @@ CREATE TABLE IF NOT EXISTS items (
     learnable INTEGER NOT NULL,       -- shallow search agrees which move is better
     depth_deep INTEGER NOT NULL,
     depth_shallow INTEGER NOT NULL,
-    rating REAL NOT NULL,             -- adaptive difficulty rating, seeded from gap_wp
-    attempts INTEGER NOT NULL DEFAULT 0,
-    correct INTEGER NOT NULL DEFAULT 0,
+    rating REAL NOT NULL,             -- difficulty: gap_wp via label.difficulty_rating
     ply INTEGER,
     game_url TEXT,
     mover_elo INTEGER,
@@ -73,8 +73,9 @@ CREATE TABLE IF NOT EXISTS responses (
     response_ms INTEGER,
     user_rating_before REAL,
     user_rating_after REAL,
+    -- The item's difficulty as served. Recorded rather than joined so a row
+    -- stays interpretable if difficulty_rating's constants are ever retuned.
     item_rating_before REAL,
-    item_rating_after REAL,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -144,6 +145,32 @@ def connect(path: Path = DEFAULT_DB, check_same_thread: bool = True) -> sqlite3.
     for col in ("pv_best", "pv_distractor"):
         if col not in item_cols:
             conn.execute(f"ALTER TABLE items ADD COLUMN {col} TEXT")
+    # Difficulty is a function of the item alone, so the columns that existed to
+    # carry answers back into it go. `items.attempts`/`correct` were a global
+    # tally no query reads now. `responses.item_rating_after` recorded a move
+    # that no longer happens; recovering one from an old row needs the K-factor
+    # and the branch that froze it during calibration, neither of which is in
+    # the tree any more, so `deploy/README.md` says to copy it out first.
+    for col in ("attempts", "correct"):
+        if col in item_cols:
+            conn.execute(f"ALTER TABLE items DROP COLUMN {col}")
+    response_cols = {row[1] for row in conn.execute("PRAGMA table_info(responses)")}
+    if "item_rating_after" in response_cols:
+        conn.execute("ALTER TABLE responses DROP COLUMN item_rating_after")
+    # And difficulty is re-derived, because "a pure function of `gap_wp`" has to
+    # be true of the rows, not just of the code that writes new ones. Two kinds
+    # of row disagree: ones an older server's Elo moved, and ones labeled when
+    # the rating was computed from the full-precision gap before the gap itself
+    # was rounded for storage. Registering the function rather than repeating
+    # the formula in SQL keeps one definition of difficulty.
+    conn.create_function("difficulty_rating", 1, difficulty_rating, deterministic=True)
+    if conn.execute(
+        "SELECT 1 FROM items WHERE rating != difficulty_rating(gap_wp) LIMIT 1"
+    ).fetchone():
+        conn.execute(
+            "UPDATE items SET rating = difficulty_rating(gap_wp)"
+            " WHERE rating != difficulty_rating(gap_wp)"
+        )
     # `sessions` gained ON DELETE CASCADE after databases existed, and SQLite
     # can't add a constraint in place, so an old table is rebuilt once. Orphan
     # rows from before the foreign key was enforced are shed on the way — the

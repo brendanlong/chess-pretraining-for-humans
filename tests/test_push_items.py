@@ -42,7 +42,9 @@ def live_db(tmp_path):
     conn.execute(
         "INSERT INTO responses (user_id, item_id, choice_uci, correct) VALUES (1, 1, 'e2e4', 1)"
     )
-    conn.execute("UPDATE items SET rating = 1800, attempts = 1, correct = 1 WHERE id = 1")
+    # An off-formula rating, purely so a row that merge must not rewrite is
+    # distinguishable from an incoming one.
+    conn.execute("UPDATE items SET rating = 1800 WHERE id = 1")
     conn.commit()
     conn.close()
     return path
@@ -55,9 +57,6 @@ def test_export_carries_items_and_nothing_else(tmp_path):
     assert conn.execute("SELECT COUNT(*) FROM items").fetchone()[0] == 2
     assert conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM responses").fetchone()[0] == 0
-    # The tally of answers given on the source deployment doesn't travel: the
-    # answers themselves aren't in the export.
-    assert tuple(conn.execute("SELECT attempts, correct FROM items").fetchone()) == (0, 0)
 
 
 def test_export_refuses_to_overwrite(tmp_path):
@@ -69,6 +68,7 @@ def test_export_refuses_to_overwrite(tmp_path):
 
 def test_merge_adds_new_positions_and_leaves_the_record_alone(tmp_path):
     live = live_db(tmp_path)
+    before = tuple(connect(live).execute("SELECT * FROM items WHERE id = 1").fetchone())
     incoming = bank(tmp_path / "fresh.db", ["8", "7P", "6P1"])  # two overlap, one is new
 
     added, skipped = merge(live, incoming)
@@ -76,10 +76,10 @@ def test_merge_adds_new_positions_and_leaves_the_record_alone(tmp_path):
 
     conn = connect(live)
     assert conn.execute("SELECT COUNT(*) FROM items").fetchone()[0] == 3
-    # Ids the responses point at are untouched, and so is the difficulty the
-    # live deployment's answers earned for that item.
-    item = conn.execute("SELECT * FROM items WHERE id = 1").fetchone()
-    assert (item["rating"], item["attempts"], item["correct"]) == (1800, 1, 1)
+    # Ids the responses point at are untouched, and so is the row itself:
+    # relabelling an item under the answers already given to it would make
+    # those answers uninterpretable.
+    assert tuple(conn.execute("SELECT * FROM items WHERE id = 1").fetchone()) == before
     assert conn.execute("SELECT COUNT(*) FROM responses").fetchone()[0] == 1
     assert conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 1
 

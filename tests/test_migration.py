@@ -9,6 +9,7 @@ import sqlite3
 
 from trainer import account, auth
 from trainer.db import connect
+from trainer.rating import difficulty_rating
 
 from .conftest import FEN_RANKS, FEN_TMPL, add_item
 
@@ -60,6 +61,61 @@ def test_migration_preserves_users_and_responses(tmp_path):
     assert user["password_hash"] is None  # a legacy row is just a guest
     assert user["created_at"] is not None  # backfilled, not left NULL
     assert conn.execute("SELECT COUNT(*) FROM responses").fetchone()[0] == 2
+
+
+def test_migration_drops_the_columns_that_carried_answers_into_difficulty(tmp_path):
+    """Difficulty is a function of the item now, so the counters answers used to
+    feed and the post-answer item rating go — without disturbing the responses
+    sitting beside them, which are the experimental record."""
+    path = old_db(tmp_path)
+    conn = connect(path)  # brings the schema up to date, then we age it back
+    add_item(conn, FEN_TMPL.format(FEN_RANKS[0]))
+    conn.execute("ALTER TABLE items ADD COLUMN attempts INTEGER NOT NULL DEFAULT 7")
+    conn.execute("ALTER TABLE items ADD COLUMN correct INTEGER NOT NULL DEFAULT 5")
+    conn.commit()
+    conn.close()
+
+    conn = connect(path)
+    item_cols = {row[1] for row in conn.execute("PRAGMA table_info(items)")}
+    assert {"attempts", "correct"}.isdisjoint(item_cols)
+    assert "rating" in item_cols  # the difficulty itself stays
+    response_cols = {row[1] for row in conn.execute("PRAGMA table_info(responses)")}
+    assert "item_rating_after" not in response_cols
+    assert "item_rating_before" in response_cols
+    assert conn.execute("SELECT COUNT(*) FROM responses").fetchone()[0] == 2
+    assert conn.execute("SELECT COUNT(*) FROM items").fetchone()[0] == 1
+
+
+def test_migration_re_derives_difficulty_that_drifted_off_the_formula(tmp_path):
+    """`items.rating` is a pure function of `gap_wp` — a claim about the rows,
+    not just about the code that writes new ones. Two kinds of row disagreed: a
+    rating an older server's Elo had moved, and one computed from the
+    full-precision gap before the gap was rounded for storage."""
+    path = old_db(tmp_path)
+    conn = connect(path)
+    add_item(conn, FEN_TMPL.format(FEN_RANKS[0]))
+    conn.execute("UPDATE items SET gap_wp = 0.2, rating = 1234.5")  # as Elo left it
+    conn.commit()
+    conn.close()
+
+    conn = connect(path)
+    item = conn.execute("SELECT gap_wp, rating FROM items").fetchone()
+    assert item["rating"] == difficulty_rating(item["gap_wp"]) == 1400
+
+
+def test_migration_is_idempotent_and_takes_no_write_lock_when_current(tmp_path):
+    """Connecting to an up-to-date database must not write: the labeler can be
+    holding the write lock, and opening the server should still just work."""
+    path = old_db(tmp_path)
+    connect(path).close()
+
+    blocker = sqlite3.connect(path, isolation_level=None)
+    blocker.execute("BEGIN IMMEDIATE")  # hold the write lock, as the labeler does
+    try:
+        connect(path).close()
+    finally:
+        blocker.execute("ROLLBACK")
+        blocker.close()
 
 
 def test_legacy_rows_cannot_be_logged_into_by_guessing_the_name(tmp_path):

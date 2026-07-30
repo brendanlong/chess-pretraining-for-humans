@@ -168,6 +168,19 @@ change first, if it should change.
   proxy won't stop below, so the machine stays up instead of idling out while
   someone thinks over a position. It counts only machines in `primary_region`,
   which is fine while that's where the volume forces the machine to live.
+- **Schema migrations run on connect, and one of them drops columns — which
+  makes that release one-way.** The deploy that makes item difficulty static
+  drops `items.attempts`, `items.correct` and `responses.item_rating_after` the
+  first time the new server opens the database. Every response row is kept; what
+  goes is the per-item tally of answers, which nothing recomputes because it
+  counted answers from users who have since deleted their accounts. Copy it out
+  of a Litestream restore *before* deploying if you want it — after, the 30-day
+  backup window is the only place it exists.
+
+  The sharper half is the rollback: the previous release writes those columns on
+  every answer, and its own migrations won't put them back, so it boots happily
+  and then 500s on `/api/answer` for every user. Rolling back past this release
+  means restoring the database too, not just `flyctl releases rollback`.
 - **`VACUUM` breaks replication.** It rewrites every page and invalidates
   Litestream's tracking. `VACUUM INTO` a new file and treat it as a new
   database (stop Litestream, clear `/data/.items.db-litestream`, re-snapshot).

@@ -12,9 +12,10 @@ For each candidate position:
    disagrees with the deep search about which move is better, the item's
    answer hinges on deep calculation rather than surface features, so it is
    marked not learnable and never served (label is correct, item is noise).
-4. The deep evals are converted to win probability and the gap seeds the
-   item's difficulty rating (small gap = hard = high rating); per-item Elo
-   updates from real responses correct this prior over time.
+4. The deep evals are converted to win probability and the gap fixes the
+   item's difficulty (small gap = hard = high rating). That mapping is all
+   difficulty is: nothing downstream revises it, so an item means the same
+   thing to every user and on every deployment.
 
 Usage:
     uv run python -m trainer.label data/candidates.jsonl [--limit N]
@@ -31,21 +32,20 @@ import chess
 import chess.engine
 
 from .db import DEFAULT_DB, connect
-from .rating import RATING_MAX, RATING_MIN
+from .rating import difficulty_rating
 from .winprob import score_to_winprob
 
 DEPTH_DEEP = 18
 DEPTH_SHALLOW = 8
 PV_PLIES = 8  # how much of each line to keep for the reveal replay
 MIN_GAP_WP = 0.015
-MAX_GAP_WP = 0.40
+# The easy end stops where `difficulty_rating` does: past a 0.36 gap the formula
+# is below RATING_MIN and every item clamps to the same difficulty, which
+# selection then cannot tell apart. Banks already hold a block of those — see
+# issue #29 — but there is no reason to mine more.
+MAX_GAP_WP = 0.35
 ENGINE_WORKERS = 8
 ENGINE_THREADS = 2
-
-
-def seed_rating(gap_wp: float) -> float:
-    """Difficulty prior: a 2% win-prob gap is expert-hard, 35% is trivial."""
-    return max(RATING_MIN, min(RATING_MAX, 2400 - 5000 * gap_wp))
 
 
 _local = threading.local()
@@ -104,7 +104,9 @@ def label_candidate(cand: dict) -> dict | None:
 
     wp_best = score_to_winprob(cp_best, mate_best)
     wp_d = score_to_winprob(cp_d, mate_d)
-    gap_wp = wp_best - wp_d
+    # Rounded before anything derives from it, so that the gap the row stores
+    # is the gap its difficulty was computed from.
+    gap_wp = round(wp_best - wp_d, 4)
     if not (MIN_GAP_WP <= gap_wp <= MAX_GAP_WP):
         return None
 
@@ -127,13 +129,13 @@ def label_candidate(cand: dict) -> dict | None:
         "mate_distractor": mate_d,
         "wp_best": round(wp_best, 4),
         "wp_distractor": round(wp_d, 4),
-        "gap_wp": round(gap_wp, 4),
+        "gap_wp": gap_wp,
         "pv_best": pv_best,
         "pv_distractor": pv_d,
         "learnable": learnable,
         "depth_deep": DEPTH_DEEP,
         "depth_shallow": DEPTH_SHALLOW,
-        "rating": seed_rating(gap_wp),
+        "rating": difficulty_rating(gap_wp),
         "ply": cand["ply"],
         "game_url": cand["game_url"],
         "mover_elo": cand["mover_elo"],

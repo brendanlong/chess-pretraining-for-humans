@@ -3,6 +3,7 @@ from fastapi.testclient import TestClient
 
 from trainer import auth, server
 from trainer.db import connect
+from trainer.rating import difficulty_rating
 
 ITEM = {
     "best_uci": "e2e4",
@@ -18,7 +19,9 @@ ITEM = {
     "learnable": 1,
     "depth_deep": 18,
     "depth_shallow": 8,
-    "rating": 1500,
+    # Derived, not chosen: `db.connect` re-derives `rating` from `gap_wp`, so a
+    # fixture that picked its own would be rewritten out from under the test.
+    "rating": difficulty_rating(0.10),
     "ply": 20,
     "game_url": "",
     "mover_elo": 1500,
