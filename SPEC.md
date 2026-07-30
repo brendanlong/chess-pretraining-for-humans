@@ -75,6 +75,15 @@ automatically.
   measurement and a training trial. Repeats (bank exhausted) are flagged
   and excluded from ratings and accuracy. The remedy for exhaustion is
   mining more games.
+- **Adapting difficulty is a promise about the bank, not just about
+  selection.** Selection cannot fail — it serves the nearest items it
+  holds, however far off they are — so a difficulty the bank is thin at
+  produces no error and no signal, only users quietly held at the wrong
+  accuracy. Every rating a user can occupy has to have enough items near
+  it to spend a session inside, which is a thing to measure rather than
+  assume. Where it can't be met it is named: the top of the scale asks for
+  gaps below what the labeler will admit, and a gap that small is engine
+  noise rather than a difference anyone could see.
 - **New users are assumed to be beginners** — no strength question; the
   rating system must instead climb fast for experienced players.
 - **Nothing gates the first trial.** Arriving is a read: no name to type, and
