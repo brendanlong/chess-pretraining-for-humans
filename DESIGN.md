@@ -70,8 +70,10 @@ its owner's erase button, and answering — the one unauthenticated write, and
 the one that moves the item counters every user's difficulty targeting
 reads — per address, far above human pace. Limits are charged before the
 slow work and never refunded; argon2 runs outside the database lock under a
-small concurrency cap; guest rows that answered nothing and went cold are
-swept. "Address" behind a proxy means a header the proxy overwrites
+small concurrency cap. A guest row commits atomically with the answer that
+earns it and foreign keys are enforced, so the only garbage collection is a
+periodic sweep of expired session rows — user rows are always history worth
+keeping. "Address" behind a proxy means a header the proxy overwrites
 (`CLIENT_IP_HEADER`), never a forwarded header the caller can seed, and the
 in-app counters are insurance — real per-IP volume belongs in the proxy. The
 full reasoning for each choice sits beside the limiters in

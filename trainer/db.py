@@ -56,13 +56,16 @@ CREATE TABLE IF NOT EXISTS users (
 
 CREATE TABLE IF NOT EXISTS sessions (
     token_hash TEXT PRIMARY KEY,  -- sha256 of the cookie token; a DB leak grants no logins
-    user_id INTEGER NOT NULL REFERENCES users(id),
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     last_seen TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS responses (
     id INTEGER PRIMARY KEY,
+    -- No ON DELETE CASCADE here, deliberately: responses are the experimental
+    -- record, so erasing them must be an explicit act (auth.delete_user),
+    -- never the quiet side effect of a user row going away.
     user_id INTEGER NOT NULL REFERENCES users(id),
     item_id INTEGER NOT NULL REFERENCES items(id),
     choice_uci TEXT NOT NULL,
@@ -85,6 +88,13 @@ def connect(path: Path = DEFAULT_DB, check_same_thread: bool = True) -> sqlite3.
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, check_same_thread=check_same_thread)
     conn.row_factory = sqlite3.Row
+    # Enforced, not just declared: SQLite ships with foreign keys off, and the
+    # setting is per-connection. On, a session or response can never point at a
+    # user that isn't there — deletion still has to order its statements, but
+    # getting the order wrong is now an error instead of an orphan. Rows that
+    # violated the constraint before it was enforced are tolerated (SQLite only
+    # checks writes) and age out through the session sweep.
+    conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(SCHEMA)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=10000")
@@ -134,5 +144,30 @@ def connect(path: Path = DEFAULT_DB, check_same_thread: bool = True) -> sqlite3.
     for col in ("pv_best", "pv_distractor"):
         if col not in item_cols:
             conn.execute(f"ALTER TABLE items ADD COLUMN {col} TEXT")
+    # `sessions` gained ON DELETE CASCADE after databases existed, and SQLite
+    # can't add a constraint in place, so an old table is rebuilt once. Orphan
+    # rows from before the foreign key was enforced are shed on the way — the
+    # constraint would refuse them, and `session_user` could never resolve
+    # them anyway.
+    fk = conn.execute("PRAGMA foreign_key_list(sessions)").fetchone()
+    if fk is not None and fk["on_delete"] != "CASCADE":
+        conn.executescript(
+            """
+            BEGIN;
+            CREATE TABLE sessions_cascade (
+                token_hash TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                last_seen TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            INSERT INTO sessions_cascade
+                SELECT token_hash, user_id, created_at, last_seen FROM sessions
+                WHERE user_id IN (SELECT id FROM users);
+            DROP TABLE sessions;
+            ALTER TABLE sessions_cascade RENAME TO sessions;
+            CREATE INDEX idx_sessions_user ON sessions(user_id);
+            COMMIT;
+            """
+        )
     conn.commit()  # migrations include a write; don't leave the file locked
     return conn

@@ -10,6 +10,8 @@ import sqlite3
 from trainer import account, auth
 from trainer.db import connect
 
+from .conftest import FEN_RANKS, FEN_TMPL, add_item
+
 # The `users` table as it stood before this branch, plus the one column the
 # earlier calib_step migration added.
 PRE_ACCOUNTS_SCHEMA = """
@@ -75,6 +77,36 @@ def test_migration_is_idempotent(tmp_path):
     assert conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 1
 
 
+def test_sessions_table_is_rebuilt_with_cascade(tmp_path):
+    """ON DELETE CASCADE arrived after databases existed, and SQLite can't add
+    a constraint in place — so connect() rebuilds the table, keeping resolvable
+    sessions and shedding orphans left from before the key was enforced."""
+    path = tmp_path / "precascade.db"
+    raw = sqlite3.connect(path)
+    raw.executescript(
+        PRE_ACCOUNTS_SCHEMA
+        + """
+        CREATE TABLE sessions (
+            token_hash TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            last_seen TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        INSERT INTO sessions (token_hash, user_id) VALUES ('kept', 1);
+        INSERT INTO sessions (token_hash, user_id) VALUES ('orphan', 999);
+        """
+    )
+    raw.commit()
+    raw.close()
+
+    conn = connect(path)
+
+    fk = conn.execute("PRAGMA foreign_key_list(sessions)").fetchone()
+    assert fk["on_delete"] == "CASCADE"
+    assert [r[0] for r in conn.execute("SELECT token_hash FROM sessions")] == ["kept"]
+    connect(path).close()  # and the rebuild doesn't run twice
+
+
 def test_sweep_never_touches_a_legacy_row_with_responses(tmp_path):
     conn = connect(old_db(tmp_path))
     conn.execute("UPDATE users SET created_at = datetime('now', '-99 days')")
@@ -127,6 +159,9 @@ def test_delete_cli_erases_a_legacy_row_and_its_responses(tmp_path, monkeypatch,
     path = old_db(tmp_path)
     conn = connect(path)
     # A bystander with responses of their own, so a table wipe can't pass here.
+    # (The bystander's response needs a real item — foreign keys are enforced —
+    # unlike the legacy rows, which predate enforcement and are tolerated.)
+    add_item(conn, FEN_TMPL.format(FEN_RANKS[0]))
     conn.execute("INSERT INTO users (name, created_at) VALUES ('keeper', datetime('now'))")
     conn.execute(
         """INSERT INTO responses (user_id, item_id, choice_uci, correct)

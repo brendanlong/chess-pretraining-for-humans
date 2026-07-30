@@ -456,58 +456,68 @@ def test_signup_rotates_the_session_token(client):
     assert client.cookies[auth.COOKIE_NAME] != before
 
 
-def test_sweep_drops_empty_guests_but_never_history(client, db):
-    answer(client, next_trial(client))  # this guest has a response
-    # An answerless row: legacy data from when arriving minted one, or the gap
-    # between minting an identity and recording the answer that earned it.
-    auth.start_session(db, auth.create_guest(db, 700, 250)["id"])
-    db.execute("UPDATE users SET created_at = datetime('now', '-30 days')")
-    db.execute("UPDATE sessions SET last_seen = datetime('now', '-30 days')")
+def test_sweep_drops_expired_sessions_but_never_users(client, db):
+    answer(client, next_trial(client))
+    db.execute("UPDATE sessions SET last_seen = datetime('now', '-400 days')")
     db.commit()
 
     auth.sweep(db)
 
-    names = [r[0] for r in db.execute("SELECT name FROM users")]
-    assert len(names) == 1  # the idle guest is gone
+    assert db.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+    assert db.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 1
     assert db.execute("SELECT COUNT(*) FROM responses").fetchone()[0] == 1
 
 
-def test_a_guest_that_answered_nothing_is_reclaimed_within_hours(db):
-    """This is what lets the arrival limit be loose enough that a real
-    first-time visitor never meets it: a flood an address can send is bounded by
-    its rate times this window, not by everything it ever sent. If reclamation
-    took a day, the limit would have to be a gate instead."""
-    with TestClient(server.app) as arrival:
-        arrival.get("/api/account")
-    # A fixed age, deliberately not derived from GUEST_TTL_HOURS: computing it
-    # from the constant would make this pass at any TTL, including the day-long
-    # one it exists to rule out.
-    db.execute("UPDATE users SET created_at = datetime('now', '-4 hours')")
-    db.execute("UPDATE sessions SET last_seen = datetime('now', '-4 hours')")
-    db.commit()
-
-    auth.sweep(db)
-
-    assert db.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0
-
-
-def test_the_sweep_never_reclaims_a_row_whose_session_is_still_warm(db):
-    """`session_user` only refreshes `last_seen` once an hour, so a session in
-    continuous use can look up to an hour stale. The TTL has to clear that gap,
-    or the sweep pulls a live identity out from under its owner — who then gets
-    silently re-identified, losing whatever rating they had climbed to."""
-    assert auth.GUEST_TTL_HOURS > 1
+def test_the_sweep_only_takes_sessions_no_request_could_use(db):
+    """The sweep's conditions mirror `session_user`'s, so a session it deletes
+    is one every request would already have refused — there is no window where
+    a live identity gets pulled out from under its owner."""
     token = auth.start_session(db, auth.create_guest(db, 700, 250)["id"])
-    # Old enough to be a sweep candidate...
-    db.execute("UPDATE users SET created_at = datetime('now', '-2 days')")
-    # ...with the stalest `last_seen` an actively-used session can have. Just
-    # past the refresh interval is the case a one-hour TTL would get wrong.
-    db.execute("UPDATE sessions SET last_seen = datetime('now', '-61 minutes')")
+    db.execute("UPDATE sessions SET last_seen = datetime('now', '-364 days')")
     db.commit()
 
     auth.sweep(db)
 
     assert auth.session_user(db, token) is not None
+
+
+def test_a_failed_answer_mints_no_identity(db, monkeypatch):
+    """The guest row, its session, and the response commit together, so a
+    failure while recording the answer rolls the identity back instead of
+    leaving a row that answered nothing — which nothing sweeps."""
+
+    def boom(*args):
+        raise RuntimeError("simulated failure after the mint")
+
+    monkeypatch.setattr(server.rating, "calibrate", boom)
+    with TestClient(server.app, raise_server_exceptions=False) as c:
+        trial = next_trial(c)
+        assert c.post("/api/answer", json=answer_body(trial)).status_code == 500
+    for table in ("users", "sessions", "responses"):
+        assert db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0, table
+
+
+def test_a_session_can_never_point_at_a_missing_user(db):
+    """The foreign key is enforced (SQLite leaves it off by default), which is
+    what lets deletion rely on statement order and the sweep not chase
+    orphans."""
+    with pytest.raises(sqlite3.IntegrityError):
+        db.execute("INSERT INTO sessions (token_hash, user_id) VALUES ('x', 12345)")
+
+
+def test_deleting_a_user_takes_its_sessions_but_never_its_responses(client, db):
+    """Sessions cascade — worthless without their user — but responses
+    deliberately don't: erasing the experimental record must be an explicit
+    act (`delete_user`), not the side effect of a user row going away."""
+    answer(client, next_trial(client))
+    (user_id,) = db.execute("SELECT id FROM users").fetchone()
+
+    with pytest.raises(sqlite3.IntegrityError):
+        db.execute("DELETE FROM users WHERE id = ?", (user_id,))
+
+    db.execute("DELETE FROM responses WHERE user_id = ?", (user_id,))
+    db.execute("DELETE FROM users WHERE id = ?", (user_id,))
+    assert db.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
 
 
 def test_sweep_keeps_claimed_accounts_even_when_idle(client, db):
