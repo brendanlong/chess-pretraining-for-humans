@@ -49,6 +49,10 @@ def _load_secret() -> bytes:
     return secrets.token_bytes(32)
 
 
+# Read once per process. One uvicorn worker today (see the Dockerfile CMD), and
+# a configured key would keep several in agreement anyway — but an *ephemeral*
+# key plus `--workers N` would hand out tokens each worker alone can verify, so
+# the two changes have to arrive together.
 SECRET = _load_secret()
 
 

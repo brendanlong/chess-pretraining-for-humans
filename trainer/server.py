@@ -77,8 +77,11 @@ delete_limiter = auth.RateLimiter(limit=10, window_s=900)
 # this is where the volume gate belongs.
 #
 # Deliberately far above any human pace, because it sits on the core loop and
-# several real users share one address routinely. Like the others it is
-# insurance, not a defence — real per-address volume is a reverse proxy's job.
+# several real users share one address routinely: 1200/15min is 80 answers a
+# minute *aggregated over the address*, so it takes something like eight
+# simultaneous fast players behind one NAT to notice it. That ceiling is the
+# thing to raise if a shared address ever does. Like the others it is insurance,
+# not a defence — real per-address volume is a reverse proxy's job.
 answer_limiter = auth.RateLimiter(
     limit=1200,
     window_s=900,
