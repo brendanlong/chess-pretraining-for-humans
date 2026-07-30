@@ -1,5 +1,5 @@
 {
-  "name": "chess-pretraining-web",
+  "name": "chess-pretraining",
   "private": true,
   "description": "Lint config for the static frontend in web/ (no build step)",
   "type": "module",
