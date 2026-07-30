@@ -5,9 +5,16 @@ import os
 import sqlite3
 from pathlib import Path
 
+from . import rating
 from .rating import difficulty_rating
 
 log = logging.getLogger(__name__)
+
+
+def _schema_version(conn: sqlite3.Connection) -> int:
+    row = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
+    return int(row["value"]) if row else 0
+
 
 # In a container the database lives on a mounted volume, not in the checkout,
 # and the server has no argv to take a path from.
@@ -77,6 +84,14 @@ CREATE TABLE IF NOT EXISTS responses (
     -- stays interpretable if difficulty_rating's constants are ever retuned.
     item_rating_before REAL,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Migrations that can't tell from the data whether they already ran need
+-- somewhere to say so. Everything else here is guarded by a read of the thing
+-- it changes, which is cheaper and can't get out of step with reality.
+CREATE TABLE IF NOT EXISTS meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_items_rating ON items(rating);
@@ -171,6 +186,21 @@ def connect(path: Path = DEFAULT_DB, check_same_thread: bool = True) -> sqlite3.
             "UPDATE items SET rating = difficulty_rating(gap_wp)"
             " WHERE rating != difficulty_rating(gap_wp)"
         )
+    # Regrading users is the one migration that can't be guarded by a read: a
+    # rating carries no mark of which scale produced it, and applying the
+    # transform twice would move someone who was already correct. Hence `meta`.
+    #
+    # It has to happen in the same breath as the item re-derivation above,
+    # because the two are one change: a rating means nothing except against the
+    # difficulties it selects, so moving the items without moving the users
+    # would silently re-aim everyone.
+    if _schema_version(conn) < 1:
+        for row in conn.execute("SELECT id, rating FROM users").fetchall():
+            conn.execute(
+                "UPDATE users SET rating = ? WHERE id = ?",
+                (rating.regraded_user_rating(row["rating"]), row["id"]),
+            )
+        conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '1')")
     # `sessions` gained ON DELETE CASCADE after databases existed, and SQLite
     # can't add a constraint in place, so an old table is rebuilt once. Orphan
     # rows from before the foreign key was enforced are shed on the way — the

@@ -59,6 +59,14 @@ automatically.
   every user's difficulty a function of every other user's answers, which
   costs more — in coupling, and in a feedback loop that biases the very
   estimate it produces — than the targeting accuracy is worth.
+- **Any two items a bank can hold must be orderable by difficulty.** The
+  gap-to-rating curve may be approximate, but it may not be flat: a range
+  of gaps that all map to one rating is a range selection cannot aim
+  inside, and it lands on whichever users sit there. What the curve is
+  worth is measured, from the strength of the humans whose real errors the
+  items record — and only over the gaps where that measurement has any
+  power. Outside those, it must still separate items, on the grounds that a
+  wrong ordering is recoverable and no ordering is not.
 - **Items must be learnable**: if shallow and deep search disagree about
   which move is better, the answer isn't reachable from the surface and
   the item is never served.

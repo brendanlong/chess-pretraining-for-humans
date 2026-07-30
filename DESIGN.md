@@ -14,8 +14,11 @@ frontend. Data flows one way:
 - **Labeling** (`trainer/label.py`) runs local Stockfish per candidate:
   a deep multipv search provides ground truth (best move, both evals,
   8-ply lines for both moves); a shallow pass implements the learnability
-  filter; the win-probability gap fixes the item's difficulty for good.
-  Gap-range flags allow mining specific difficulty bands.
+  filter; the win-probability gap fixes the item's difficulty for good,
+  through the curve on `rating.difficulty_rating` — whose slope is measured
+  from the strength of the humans whose errors the items are, and whose
+  reasoning sits beside the constants. Gap-range flags allow mining
+  specific difficulty bands.
   (`trainer/backfill_pvs.py` retrofits lines onto older items.)
 
 ## Server (`trainer/server.py`)
@@ -179,7 +182,9 @@ can't ship without it.
 One SQLite database: `items` (positions, moves, evals, lines, difficulty),
 `users` (rating, calibration state, optional credentials), `sessions`
 (hashed cookie tokens), `responses` (every answer, timed, with rating
-snapshots). The item bank is disposable and rebuildable from the pipeline —
+snapshots), `meta` (schema version, for the migrations that can't tell from
+the data whether they already ran — everything else is guarded by a read).
+The item bank is disposable and rebuildable from the pipeline —
 literally so, since nothing the app does writes to it; responses are the
 experimental record.
 
