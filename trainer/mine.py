@@ -38,10 +38,18 @@ MIN_PLY = 12  # skip opening-book territory
 MAX_PLY = 90
 MAX_ABS_EVAL_CP = 500  # position not already decided (white POV)
 MIN_GAP_WP = 0.03  # played move must lose at least this much win prob...
-# ...but not be an absurd blunder nobody would consider. This is the shallow
-# server gap, and it does not bound item difficulty: the deep search in `label`
-# routinely scores the same position wider, which is how a bank mined under
-# this cap holds gaps up to 0.648. `label.MAX_GAP_WP` is the one that binds.
+# ...but not be an absurd blunder nobody would consider. This is the server's
+# shallow gap, not the deep one that fixes an item's difficulty — but the two
+# track each other closely enough to aim with (r = 0.95 over 2,431 labeled
+# candidates; deep minus server centred on 0.000, sd 0.019), so narrowing this
+# window really does select a difficulty band, and about 70% of a window lands
+# in the matching band after labeling. That is what makes filling a thin band
+# affordable: the alternative is labeling everything and keeping a fourteenth
+# of it.
+#
+# What the window does not do is *bound* difficulty — `label.MAX_GAP_WP` is the
+# one that binds, and the bank reaches to a 0.648 gap because its easy end was
+# mined with this raised on the command line, which is what the flags are for.
 MAX_GAP_WP = 0.35
 MIN_BASE_TIME_S = 180  # blitz and slower; bullet errors are mostly mouse slips
 MAX_PER_GAME = 2

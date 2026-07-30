@@ -30,6 +30,39 @@ uv run uvicorn trainer.server:app --host 0.0.0.0 --port 8000
 The database is `data/items.db` unless `TRAINER_DB` says otherwise — which is
 how the container finds it on its volume.
 
+Labeling is the slow step and its defaults are laptop-sized. On a bigger box
+raise `--workers` toward the core count before `--threads`: Stockfish scales
+better as independent searches than as one wide one.
+
+### Keeping the bank full
+
+Selection can't fail — it takes the nearest items whatever their difficulty —
+so a thin patch in the bank shows up as users being served the wrong difficulty,
+silently. `trainer.supply` is what makes it visible:
+
+```bash
+uv run python -m trainer.supply           # per user rating: what its band holds
+uv run python -m trainer.supply --gaps    # the same shortfall, in mining units
+```
+
+Refilling a thin band is the ordinary two steps with a gap window on each. The
+server evals mining filters on and the deep evals labeling scores with track
+each other closely, so a mined window really does aim at a difficulty — it just
+doesn't bound it, since the deep search scores some positions wider.
+
+```bash
+curl -s -r 0-4000000000 https://database.lichess.org/standard/lichess_db_standard_rated_2026-06.pgn.zst \
+  | zstdcat 2>/dev/null \
+  | uv run python -m trainer.mine --min-gap-wp 0.20 --max-gap-wp 0.25 \
+      --max-candidates 2000 > data/band.jsonl
+uv run python -m trainer.label data/band.jsonl --workers 20 --threads 1
+```
+
+Mining is cheap next to labeling, so mine a window generously and label what
+the shortfall asks for. Different months are independent streams and can run at
+once; `trainer.label` skips positions the bank already holds, so overlapping
+mines cost nothing but disk.
+
 ## Using it
 
 Press <kbd>1</kbd>/<kbd>2</kbd> (or tap) to answer; the chosen move's

@@ -20,6 +20,11 @@ frontend. Data flows one way:
   reasoning sits beside the constants. Gap-range flags allow mining
   specific difficulty bands.
   (`trainer/backfill_pvs.py` retrofits lines onto older items.)
+- **Supply** (`trainer/supply.py`) reports what the bank can serve at each
+  user rating, and the same shortfall in the gap units mining filters on.
+  Selection can't fail — it takes the nearest items however far away they
+  are — so a hole in the bank is invisible from inside the app. This is what
+  makes it visible, and what a refill run is sized from.
 
 ## Server (`trainer/server.py`)
 
