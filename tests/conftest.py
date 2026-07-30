@@ -62,6 +62,11 @@ def db(tmp_path, monkeypatch, item_count):
     for name, limiter in (
         ("signup_limiter", auth.RateLimiter(20, 3600)),
         ("login_limiter", auth.RateLimiter(20, 900)),
+        ("login_ip_limiter", auth.RateLimiter(200, 900)),
+        ("delete_limiter", auth.RateLimiter(20, 900)),
+        # Every client in a test shares one address, and some tests mint
+        # hundreds of guests on purpose. The real limit gets its own test.
+        ("guest_limiter", auth.RateLimiter(100_000, 3600)),
     ):
         monkeypatch.setattr(server, name, limiter)
     return conn

@@ -25,30 +25,58 @@ from .db import DEFAULT_DB, connect
 # out, mine more games rather than recycling.
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
+# Which of the two moves is the correct one is decided by a coin flip, and that
+# flip is the answer to the trial. The default `random` module is a Mersenne
+# Twister whose state is recoverable from enough observed output, and a client
+# observes the shuffle on every trial — so take the bit from the OS instead. A
+# CSPRNG costs nothing here and removes the question entirely.
+rng = random.SystemRandom()
+
 app = FastAPI(title="Chess Pretraining")
 # FastAPI runs sync endpoints in a threadpool; share one connection behind a
 # lock (small tool, contention is irrelevant).
 conn = connect(DEFAULT_DB, check_same_thread=False)
 db_lock = threading.Lock()
 
-# Not a captcha (see auth.RateLimiter). Two limits, keyed on different things
-# on purpose, because they defend different things.
+# Not a captcha (see auth.RateLimiter). Several limits, keyed on different
+# things on purpose, because they defend different things.
 #
-# Login is keyed on the *account*, not the address. What we're protecting is
-# one account's password, and an address is not what attacks it: guessing from
-# a hundred addresses is one line of script, while several legitimate users
-# routinely share one (NAT, or a proxy started without --proxy-headers). The
-# cost of keying this way is that someone can hold a known account locked for
-# as long as they keep guessing at it; that is inherent to per-account
-# throttling, and the short window is the mitigation.
+# The password endpoints are metered twice over, and both halves are load-
+# bearing. Per *name* is what protects one account's password: guessing from a
+# hundred addresses is one line of script, so an address is not what attacks a
+# password. Per *address* is what protects the box: argon2 is 64 MiB and ~50ms
+# by design, `auth.HASH_CONCURRENCY` slots deep, so a few concurrent requests
+# hold every slot and answer real users 503 — an unmetered password check is a
+# denial-of-service primitive whether or not the name it names exists.
 #
-# Signup is keyed on the address because there is no account to key on yet.
-# It's a blunt volume gate, and per-IP volume is really a reverse proxy's job
-# (nginx limit_req and friends see the true client, are shared across workers,
-# and survive a restart — this counter is per-process and in memory). Keep it
-# as insurance for a deployment without one; don't mistake it for a defence.
+# Which is why the name key is the *submitted* name rather than the row it
+# resolves to. Keying on a row id means a name nobody registered has no
+# counter, and then the presence of a 429 is itself the answer to "does this
+# account exist?" — an enumeration oracle that costs eleven requests and no
+# credentials, and which the careful constant-time verify against a dummy hash
+# was there to deny. Both cases hit the same counter with the same limit, so
+# the boundary says nothing about which side of it you're on.
+#
+# Keying on a name the caller chooses does hand them the key space, which is
+# what `RateLimiter._prune` guards; the per-address budget in front is what
+# makes filling it expensive.
+#
+# The cost of per-name throttling is that a known account can be held locked
+# by someone who keeps guessing at it. That is inherent, the short window is
+# the mitigation, and deletion is deliberately keyed *separately* so the one
+# irreversible thing a user might urgently need to do — the privacy policy's
+# erase button — can't be blocked from outside by guessing at their password.
 signup_limiter = auth.RateLimiter(limit=20, window_s=3600)
 login_limiter = auth.RateLimiter(limit=10, window_s=900)
+login_ip_limiter = auth.RateLimiter(limit=60, window_s=900)
+delete_limiter = auth.RateLimiter(limit=10, window_s=900)
+# Arriving is enough to write a `users` row and a `sessions` row, which makes
+# the unauthenticated write path the cheapest one in the app — and the sweep
+# can't reclaim a row until GUEST_TTL_DAYS has passed, so a flood is not
+# self-healing inside the attack window. Loose enough that a shared address
+# behind NAT never notices; tight enough that filling the volume takes more
+# addresses than it's worth.
+guest_limiter = auth.RateLimiter(limit=60, window_s=3600)
 
 # Guests are swept periodically rather than on a timer; there is no scheduler
 # here and arrival rate is exactly the signal that we need one. The counter is
@@ -57,6 +85,49 @@ login_limiter = auth.RateLimiter(limit=10, window_s=900)
 # a while. Bounded either way — growth between sweeps is ~100 guests.
 SWEEP_EVERY_GUESTS = 100
 guests_minted = 0
+
+# Which header, if any, carries an address the client can't choose for itself.
+# Empty means "believe the socket", which is right when nothing is in front.
+CLIENT_IP_HEADER = os.environ.get("CLIENT_IP_HEADER", "").lower()
+
+
+def client_key(request: Request) -> str:
+    """The address to charge a rate-limit slot to.
+
+    Not `request.client.host`, when a proxy is in front. uvicorn's
+    `--forwarded-allow-ips '*'` takes the *leftmost* `X-Forwarded-For` entry,
+    and a proxy appends to whatever the client sent rather than replacing it —
+    so that address is the caller's to choose, and a signup flood keyed on it
+    would get a fresh counter per request. Name a header the proxy overwrites
+    (`fly-client-ip` on Fly) and charge that instead.
+    """
+    if CLIENT_IP_HEADER:
+        forwarded = request.headers.get(CLIENT_IP_HEADER)
+        if forwarded:
+            return forwarded
+        # Configured but absent: we are being reached by something that didn't
+        # come through the proxy, so the socket address is the caller's to
+        # choose too. One shared key is a blunt answer, but it is the honest
+        # one — better to over-throttle a path nothing legitimate uses than to
+        # hand out a fresh counter per request.
+        return "no-forwarded-header"
+    return request.client.host if request.client else "unknown"
+
+
+def auth_error(e: auth.AuthError) -> HTTPException:
+    if isinstance(e, auth.RateLimited):
+        return HTTPException(429, str(e))
+    if isinstance(e, auth.AuthBusy):
+        return HTTPException(503, str(e))
+    return HTTPException(400, str(e))
+
+
+def spend(limiter: auth.RateLimiter, key: str) -> None:
+    """Take a rate-limit slot or refuse the request."""
+    try:
+        limiter.consume(key)
+    except auth.AuthError as e:
+        raise auth_error(e) from e
 
 
 def locked(fn):
@@ -94,12 +165,34 @@ def queue_cookie(request: Request, token: str | None) -> None:
     request.state.session_cookie = "" if token is None else token
 
 
+# Everything the app loads is its own: one module script, local stylesheets, a
+# vendored chessground, and favicons as inline data: URIs (which is what
+# `img-src data:` is for, along with the piece sprites in the chessground CSS).
+# So the policy needs no allowlist, and the reason to bother is that the reveal
+# builds one string from mined game data — a CSP is what keeps a bad `Site`
+# header in some future PGN from being script instead of a broken link.
+CSP = (
+    "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
+    "connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+)
+
+
 def finalize(request: Request, response: Response) -> Response:
     token = getattr(request.state, "session_cookie", None)
     if token:
         set_session_cookie(request, response, token)
     elif token == "":
         response.delete_cookie(auth.COOKIE_NAME, path="/")
+    response.headers["Content-Security-Policy"] = CSP
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "same-origin"
+    if request.url.scheme == "https":
+        # Only over https, and worth having because Fly's `force_https` is a
+        # *redirect*: the first navigation is still a plaintext hop, which this
+        # removes on every visit after it. No `includeSubDomains` — the app is
+        # itself a subdomain and nothing lives under it, so that directive would
+        # only commit names we don't have to a policy they don't need.
+        response.headers["Strict-Transport-Security"] = "max-age=63072000"
     if request.url.path.startswith("/api/"):
         # Every API response is specific to one session's cookie, and one of
         # them hands out that cookie. A shared cache must never serve either.
@@ -138,6 +231,10 @@ def current_user_id(request: Request) -> int:
         user = auth.session_user(conn, request.cookies.get(auth.COOKIE_NAME))
         if user is not None:
             return user["id"]
+    # Charged only on the minting path, so a returning session never spends a
+    # slot; taken outside the lock because refusing is the cheap answer.
+    spend(guest_limiter, client_key(request))
+    with db_lock:
         guests_minted += 1
         if guests_minted % SWEEP_EVERY_GUESTS == 1:
             auth.sweep(conn)
@@ -204,7 +301,7 @@ def pick_item(user: dict) -> tuple[dict | None, bool]:
         (user["id"], target),
     ).fetchall()
     if rows:
-        return dict(random.choice(rows)), False
+        return dict(rng.choice(rows)), False
     # Bank exhausted. Serve the least-recently-answered item so the app stays
     # usable, but flag it: repeat answers aren't clean measurements.
     row = conn.execute(
@@ -238,7 +335,12 @@ def next_item(user_id: int = CurrentUserId):
     if item is None:
         raise HTTPException(503, "no items in bank — run the mining/labeling pipeline")
     moves = [item["best_uci"], item["distractor_uci"]]
-    random.shuffle(moves)
+    rng.shuffle(moves)
+    # This is the item /api/answer will accept, and the only one. Recorded
+    # before the payload goes out, so there is no window where a trial is on
+    # screen but unanswerable.
+    conn.execute("UPDATE users SET pending_item_id = ? WHERE id = ?", (item["id"], u["id"]))
+    conn.commit()
     return {
         "item_id": item["id"],
         "fen": item["fen"],
@@ -265,6 +367,16 @@ def answer(a: Answer, user_id: int = CurrentUserId):
     # calibration updates below are read-modify-write, so a snapshot taken
     # before the lock would let two overlapping answers clobber each other.
     u = auth.get_user(conn, user_id)
+    # An answer is only ever to the trial this user was last served. The
+    # response below is the answer key — best move, both evals, both lines —
+    # and item ids are small sequential integers, so without this an
+    # unauthenticated caller could read the whole bank by counting, or read the
+    # answer to the trial currently on their own screen before committing to
+    # it, which is the one thing SPEC says nothing may do. It also stops
+    # `items.attempts`/`correct`/`rating` — global, shared by every user, and
+    # surviving account deletion — from being writable by anyone with curl.
+    if a.item_id != u["pending_item_id"]:
+        raise HTTPException(409, "no trial in progress for this item — fetch a new one")
     item = conn.execute("SELECT * FROM items WHERE id = ?", (a.item_id,)).fetchone()
     if item is None:
         raise HTTPException(404, "unknown item")
@@ -310,7 +422,10 @@ def answer(a: Answer, user_id: int = CurrentUserId):
         ),
     )
     conn.execute(
-        "UPDATE users SET rating = ?, calib_step = ?, attempts = attempts + 1 WHERE id = ?",
+        # Clearing the pending trial spends it: a resubmitted answer gets the
+        # 409 above rather than a second rating movement for the same trial.
+        """UPDATE users SET rating = ?, calib_step = ?, attempts = attempts + 1,
+                            pending_item_id = NULL WHERE id = ?""",
         (new_user_r, new_step, u["id"]),
     )
     conn.execute(
@@ -392,42 +507,11 @@ def stats(user_id: int = CurrentUserId):
 # none of them can leak which move is better.
 
 
-# Which header, if any, carries an address the client can't choose for itself.
-# Empty means "believe the socket", which is right when nothing is in front.
-CLIENT_IP_HEADER = os.environ.get("CLIENT_IP_HEADER", "").lower()
-
-
-def client_key(request: Request) -> str:
-    """The address to charge a rate-limit slot to.
-
-    Not `request.client.host`, when a proxy is in front. uvicorn's
-    `--forwarded-allow-ips '*'` takes the *leftmost* `X-Forwarded-For` entry,
-    and a proxy appends to whatever the client sent rather than replacing it —
-    so that address is the caller's to choose, and a signup flood keyed on it
-    would get a fresh counter per request. Name a header the proxy overwrites
-    (`fly-client-ip` on Fly) and charge that instead.
-    """
-    if CLIENT_IP_HEADER:
-        forwarded = request.headers.get(CLIENT_IP_HEADER)
-        if forwarded:
-            return forwarded
-    return request.client.host if request.client else "unknown"
-
-
-def spend(limiter: auth.RateLimiter, ip: str) -> None:
-    """Take a rate-limit slot or refuse the request."""
-    try:
-        limiter.consume(ip)
-    except auth.AuthError as e:
-        raise auth_error(e) from e
-
-
-def auth_error(e: auth.AuthError) -> HTTPException:
-    if isinstance(e, auth.RateLimited):
-        return HTTPException(429, str(e))
-    if isinstance(e, auth.AuthBusy):
-        return HTTPException(503, str(e))
-    return HTTPException(400, str(e))
+def login_key(username: str) -> str:
+    """The login counter's key: the name as typed, case-folded because that is
+    how the lookup compares it. Names that resolve to the same row must not get
+    two budgets, and a name that resolves to nothing must still get one."""
+    return f"name:{username.strip().casefold()}"
 
 
 class Signup(BaseModel):
@@ -491,19 +575,21 @@ def signup(body: Signup, request: Request):
 
 @app.post("/api/account/login")
 def login(body: Login, request: Request):
+    name = body.username.strip()
+    # Both counters are charged before the verify and before the lookup, and
+    # both are charged whether or not the name exists — see the limiters for
+    # why either omission is a hole rather than a nicety. Charged before the
+    # work rather than incremented after it: a counter read before the ~50ms
+    # hash and written after is one a concurrent burst walks straight past.
+    spend(login_ip_limiter, client_key(request))
+    spend(login_limiter, login_key(name))
     try:
         with db_lock:
-            u = auth.find_by_username(conn, body.username.strip())
-        if u is not None:
-            # Charged before the verify, not incremented after it: a counter
-            # read before the ~50ms hash and written after is one a concurrent
-            # burst walks straight past. Keyed on the row id, so the key space
-            # is the set of real accounts — a name nobody has registered has no
-            # password to protect, and letting those through unmetered keeps an
-            # attacker from evicting a real account's counter with junk names.
-            spend(login_limiter, f"user:{u['id']}")
+            u = auth.find_by_username(conn, name)
         # Verify outside the lock: argon2 is deliberately slow, and holding the
         # single database lock through it would stall every trial in flight.
+        # An unknown name still pays for a verify against a dummy hash, so the
+        # timing says nothing either.
         if not auth.verify_password(auth.credential_for(u), body.password) or u is None:
             raise HTTPException(400, "Wrong username or password.")
         with db_lock:
@@ -521,7 +607,7 @@ def login(body: Login, request: Request):
             reissue_session(request, u["id"])
         # Only reachable by knowing the password, so an attacker can't use it
         # to reset the count — and forgetting it would only over-throttle.
-        login_limiter.clear(f"user:{u['id']}")
+        login_limiter.clear(login_key(name))
     except auth.AuthError as e:  # a saturated hasher; the guess never happened
         raise auth_error(e) from e
     return account_payload(u)
@@ -565,10 +651,17 @@ def delete_account(body: Deletion, request: Request):
                 "through this browser's cookie, so clearing the cookie is what deleting "
                 "it means — after that nobody, including us, can find it again.",
             )
-        # Same budget as login, keyed the same way, because this endpoint checks
-        # a password too and would otherwise be an unmetered guessing oracle.
-        # Charged before the verify, for the reason spelled out at the limiters.
-        spend(login_limiter, f"user:{u['id']}")
+        # Metered like login, because this endpoint checks a password too and
+        # would otherwise be an unmetered guessing oracle. Charged before the
+        # verify, for the reason spelled out at the limiters.
+        #
+        # Its own key, though, not login's. Reaching here already required a
+        # signed-in session, so there is nothing to enumerate and no reason for
+        # someone guessing at this account's password from outside to be able
+        # to spend the budget its owner needs to erase it. Erasure is the one
+        # promise the privacy policy makes that a user might need urgently.
+        spend(login_ip_limiter, client_key(request))
+        spend(delete_limiter, f"delete:{u['id']}")
         # Outside the lock: argon2 is deliberately slow and every trial in
         # flight shares that lock.
         if not auth.verify_password(auth.credential_for(u), body.password):
@@ -591,7 +684,8 @@ def delete_account(body: Deletion, request: Request):
         # Ids are reused by SQLite once the highest row goes, so don't leave a
         # spent counter behind for whoever gets this one next. Reachable only by
         # knowing the password, exactly as in login.
-        login_limiter.clear(f"user:{u['id']}")
+        delete_limiter.clear(f"delete:{u['id']}")
+        login_limiter.clear(login_key(u["name"]))
     except auth.AuthError as e:
         raise auth_error(e) from e
     return {"deleted": True, "responses_deleted": counts["responses"]}

@@ -216,3 +216,80 @@ def test_separate_browsers_get_separate_identities(db):
         assert a.get("/api/stats").json()["attempts"] == 1
         assert b.get("/api/stats").json()["attempts"] == 0
         assert next_trial(b)["repeat"] is False  # b's bank is untouched
+
+
+def test_an_answer_must_be_to_the_trial_that_was_served(client, db):
+    """The /api/answer payload *is* the answer key — best move, both evals,
+    both lines — and item ids are small sequential integers. Without this,
+    reading the answer to the trial on your own screen before committing to it
+    is one request, which is the one thing SPEC says nothing may do; and the
+    whole bank can be dumped by counting.
+    """
+    served = next_trial(client)
+    other = db.execute("SELECT id FROM items WHERE id != ?", (served["item_id"],)).fetchone()[0]
+
+    r = client.post("/api/answer", json={"item_id": other, "choice_uci": "e2e4"})
+    assert r.status_code == 409
+    assert "best" not in r.json()  # nothing about the item comes back
+
+    # The shared counters that drive difficulty for everyone are untouched.
+    assert db.execute("SELECT attempts FROM items WHERE id = ?", (other,)).fetchone()[0] == 0
+    assert db.execute("SELECT COUNT(*) FROM responses").fetchone()[0] == 0
+    # ...and the trial actually in progress still answers fine.
+    assert answer(client, served)["correct"] in (True, False)
+
+
+def test_an_unserved_item_is_unanswerable_even_by_a_fresh_client(db):
+    """The interesting caller isn't the one playing — it's a second, cookieless
+    client asking about the item id the first one is looking at."""
+    with TestClient(server.app) as player, TestClient(server.app) as prober:
+        trial = next_trial(player)
+        r = prober.post(
+            "/api/answer",
+            json={"item_id": trial["item_id"], "choice_uci": trial["moves"][0]["uci"]},
+        )
+        assert r.status_code == 409
+    assert db.execute("SELECT COUNT(*) FROM responses").fetchone()[0] == 0
+
+
+def test_an_answer_is_spent_once(client, db):
+    """Answering clears the pending trial, so a resubmitted POST — a double tap,
+    a retry after a slow response — can't move the rating twice."""
+    trial = next_trial(client)
+    answer(client, trial)
+    r = client.post(
+        "/api/answer", json={"item_id": trial["item_id"], "choice_uci": trial["moves"][0]["uci"]}
+    )
+    assert r.status_code == 409
+    assert db.execute("SELECT COUNT(*) FROM responses").fetchone()[0] == 1
+
+
+def test_responses_carry_security_headers(client):
+    """A CSP is what keeps a hostile string in mined game data from being
+    script rather than a broken link; the rest is close-the-door hardening."""
+    for path in ("/", "/api/account"):
+        h = client.get(path).headers
+        assert "default-src 'self'" in h["content-security-policy"]
+        assert "frame-ancestors 'none'" in h["content-security-policy"]
+        assert h["x-content-type-options"] == "nosniff"
+        assert h["referrer-policy"] == "same-origin"
+
+
+def test_guest_minting_is_rate_limited(db, monkeypatch):
+    """Arriving is enough to write two rows, and the sweep can't reclaim them
+    for a day — so the cheapest write in the app is the unauthenticated one."""
+    monkeypatch.setattr(server, "guest_limiter", auth.RateLimiter(2, 3600))
+    codes = []
+    for _ in range(4):
+        with TestClient(server.app) as c:
+            codes.append(c.get("/api/next").status_code)
+    assert codes == [200, 200, 429, 429]
+    assert db.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 2
+
+
+def test_a_returning_session_never_spends_a_guest_slot(client, monkeypatch):
+    """Otherwise the limit would log real users out of their own history."""
+    monkeypatch.setattr(server, "guest_limiter", auth.RateLimiter(1, 3600))
+    next_trial(client)  # spends the only slot minting this guest
+    for _ in range(5):
+        assert client.get("/api/account").status_code == 200

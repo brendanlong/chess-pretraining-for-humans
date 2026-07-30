@@ -25,7 +25,10 @@ automatically.
 
 - **Nothing may leak the answer before the user commits.** No UI element,
   API payload, or (future) overlay cue may distinguish the two moves
-  pre-answer.
+  pre-answer — and that has to hold against a caller who isn't using the UI,
+  so the answer key is reachable only by answering the trial you were served.
+  Which of the two moves is correct is a coin flip, so it comes from a CSPRNG:
+  a predictable one is a leak with extra steps.
 - **Which arrow belongs to which button is said only in colour**, so that
   pair has to survive red-green colour blindness and the warm filters
   night-mode displays apply, and has to stay free of any hint that one

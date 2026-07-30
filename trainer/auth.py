@@ -23,6 +23,12 @@ from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatc
 
 COOKIE_NAME = "sid"
 SESSION_DAYS = 365
+# A second, absolute bound. The sliding window above is refreshed on every
+# request, so a token that is used once a year never expires at all — a stolen
+# cookie is a permanent credential unless something ends it. This caps the
+# total life of one token regardless of use; it's generous because the stakes
+# are a chess rating, but "generous" and "unbounded" are different claims.
+SESSION_MAX_DAYS = 730
 # Anyone can mint a guest just by arriving, so untouched ones are swept: a
 # guest that answered nothing and whose session has gone cold is indexable
 # noise, not history. Anything with a response or a password is never touched.
@@ -161,8 +167,23 @@ def display_name(user: dict) -> str | None:
 
 
 def find_by_username(conn: sqlite3.Connection, name: str) -> dict | None:
-    row = conn.execute("SELECT * FROM users WHERE name = ? COLLATE NOCASE", (name,)).fetchone()
-    return dict(row) if row else None
+    """The row a typed username refers to, or None.
+
+    Raises rather than picking one when two rows answer to the same name. That
+    only happens on a database whose case-insensitive unique index couldn't be
+    created (see db.connect, which logs it), and picking silently is worse than
+    failing: `trainer.account set-password kim` resolving to `Kim`'s row hands
+    one user another's account and history.
+    """
+    rows = conn.execute(
+        "SELECT * FROM users WHERE name = ? COLLATE NOCASE ORDER BY id", (name,)
+    ).fetchall()
+    if len(rows) > 1:
+        raise AuthError(
+            f"{name!r} matches {len(rows)} rows case-insensitively; "
+            "the collision has to be resolved before this name can be used."
+        )
+    return dict(rows[0]) if rows else None
 
 
 def validate_signup(username: str, password: str, email: str | None) -> tuple[str, str | None]:
@@ -257,7 +278,8 @@ def session_user(conn: sqlite3.Connection, token: str | None) -> dict | None:
     row = conn.execute(
         f"""SELECT users.* FROM sessions JOIN users ON users.id = sessions.user_id
             WHERE sessions.token_hash = ?
-              AND sessions.last_seen > datetime('now', '-{SESSION_DAYS} days')""",
+              AND sessions.last_seen > datetime('now', '-{SESSION_DAYS} days')
+              AND sessions.created_at > datetime('now', '-{SESSION_MAX_DAYS} days')""",
         (th,),
     ).fetchone()
     if row is None:
@@ -276,6 +298,20 @@ def end_session(conn: sqlite3.Connection, token: str | None) -> None:
     if token:
         conn.execute("DELETE FROM sessions WHERE token_hash = ?", (_token_hash(token),))
         conn.commit()
+
+
+def revoke_sessions(conn: sqlite3.Connection, user_id: int) -> int:
+    """Sign a user out everywhere. Returns the number of sessions dropped.
+
+    What a password change is *for*, when the reason for it is that someone
+    else knows the old one. Rotating the hash alone stops them signing in
+    again while leaving the session they already have working, which makes the
+    only recovery path this app has (`trainer.account set-password`, since no
+    reset email exists yet) unable to actually recover anything.
+    """
+    cur = conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+    conn.commit()
+    return cur.rowcount
 
 
 def sweep(conn: sqlite3.Connection) -> None:
@@ -345,11 +381,18 @@ class RateLimiter:
         for key in [k for k, v in self._hits.items() if not v or now - v[-1] >= self.window_s]:
             del self._hits[key]
         if len(self._hits) > self.MAX_KEYS:
-            # Still over, so the traffic is spread across more addresses than
-            # we will track. Forget the least recently active: dropping a key
-            # forgives an address early, it can never block a legitimate one.
-            by_age = sorted(self._hits, key=lambda k: self._hits[k][-1])
-            for key in by_age[: len(self._hits) - self.MAX_KEYS * 3 // 4]:
+            # Still over, so the traffic is spread across more keys than we
+            # will track and something has to be forgiven early. Forgive the
+            # keys with the *fewest* live hits, not the least recently active
+            # ones. Keys are cheap for an attacker to manufacture — a login key
+            # is whatever username they typed — and evicting by age lets a
+            # flood of one-hit junk push out the nearly-exhausted counter of
+            # the account they are actually guessing at, handing themselves a
+            # fresh budget. Fewest-first inverts that: evicting a key with N
+            # hits means spending N requests on each of thousands of decoys,
+            # which is what the per-address budget in front makes expensive.
+            ranked = sorted(self._hits, key=lambda k: (len(self._live(k, now)), self._hits[k][-1]))
+            for key in ranked[: len(self._hits) - self.MAX_KEYS * 3 // 4]:
                 del self._hits[key]
 
     def _record(self, key: str, now: float) -> None:

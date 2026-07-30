@@ -27,6 +27,16 @@ unseen learnable item near the rating where the user's expected score is
 staircase first (start low, big steps, halve on miss). All responses are
 recorded with timing for later analysis.
 
+An answer is only accepted for the trial that was last served to that user —
+`users.pending_item_id`, set when the trial goes out and spent when it comes
+back. The answer payload *is* the answer key, and item ids are small sequential
+integers, so without the binding the whole bank could be dumped by counting, and
+the answer to the trial on your own screen was one request away. It also keeps
+`items.attempts`/`correct`/`rating` — global, shared by every user, surviving
+account deletion — from being writable by anyone with curl. The cost is that a
+second tab moves the first one on; the client treats the resulting 409 as "fetch
+the current trial" rather than an error.
+
 ## Identity (`trainer/auth.py`)
 
 Anonymous-first. The first request mints a guest `users` row and an opaque
@@ -36,30 +46,51 @@ username, an argon2 password hash, and an optional unverified email (kept
 only for a future reset) to *that same row*, so an account is a claim on
 history rather than a gate in front of it. Sessions are a table of hashed
 tokens, so a database read grants no logins; the token is rotated on every
-privilege change, and `SameSite=Lax` plus `no-store` on every API response
-is the CSRF-and-shared-cache story. Signup and login are rate-limited per IP
-in memory rather than captcha'd. Login is throttled **per account**, not per
-address: what an attacker is guessing at is one account's password, and
-rotating addresses is a line of script, while several real users share one
-address routinely. The price is that a known account can be held locked while
-someone keeps guessing at it — inherent to per-account throttling, with the
-short window as the mitigation. Signup is throttled per address only because
-there is no account to key on yet — and "address" behind a proxy means a
-header the proxy overwrites (`CLIENT_IP_HEADER`), never the socket: trusting
-forwarded headers makes uvicorn believe the *leftmost* `X-Forwarded-For`
-entry, which a proxy appends to rather than replaces, so it is the caller's to
-invent and a flood keyed on it would get a fresh counter every request; per-IP volume really belongs in a reverse
-proxy, which sees the true client, is shared across workers and survives a
-restart, so treat that counter as insurance rather than a defence. Counters
-are charged before the slow work and never refunded — read-before/write-after
-is what a burst walks past, and per-outcome refunds need every exit path to be
-right. argon2 runs outside the database lock, under a concurrency cap because
-it is memory-hard by design (unbounded parallelism is an out-of-memory button)
-and with a short wait rather than an unbounded one, because sync endpoints
-share a fixed thread pool and a caller merely waiting still holds a thread the
-trial flow needs. Because arriving is
-enough to mint a guest, guests that answered nothing and went cold are swept
-periodically; anything with a response or a password is never touched.
+privilege change and expires both on idleness and absolutely, so a token that
+keeps being used still stops being a credential eventually. `SameSite=Lax`
+plus `no-store` on every API response is the CSRF-and-shared-cache story, and a
+CSP with no allowlist (everything the page loads is ours) is what stops a
+future hostile string in mined data from being script.
+
+Rate limiting, not captchas: the cost of a wrong guess here should be a wait,
+not a lost signup. Every password check is metered twice, and each half stops
+something the other can't. **Per name typed** is what protects one account's
+password — rotating addresses is a line of script, while several real users
+share one address routinely. **Per address** is what protects the box: argon2
+is memory-hard on purpose and only a few run at once, so an unmetered password
+check is a way to answer every real user 503, whether or not the name it names
+exists. Which is also why the name key is the name *submitted* rather than the
+row it resolves to: key on a row id and a name nobody registered has no
+counter, so the presence of a 429 becomes the answer to "does this account
+exist?" — an enumeration oracle that costs eleven requests and undoes the
+careful dummy-hash verify that keeps the *timing* from saying the same thing.
+Handing the key space to the caller is the price, which is why the limiter
+evicts its least-throttled keys rather than its oldest when full, and why the
+per-address budget in front makes filling it expensive.
+
+Per-name throttling means a known account can be held locked by someone who
+keeps guessing at it — inherent, with the short window as the mitigation — so
+deletion is keyed separately: the one irreversible thing a user might need to
+do *because* they're under attack must not be blockable from outside.
+
+Signup is keyed on address alone because there is no account to key on yet, and
+so is guest minting, because arriving is enough to write two rows and the sweep
+can't reclaim them for a day. "Address" behind a proxy means a header the proxy
+overwrites (`CLIENT_IP_HEADER`), never the socket: trusting forwarded headers
+makes uvicorn believe the *leftmost* `X-Forwarded-For` entry, which a proxy
+appends to rather than replaces, so it is the caller's to invent and a flood
+keyed on it would get a fresh counter every request. Per-IP volume really
+belongs in a reverse proxy, which sees the true client, is shared across
+workers and survives a restart, so treat these counters as insurance rather
+than a defence. They are charged before the slow work and never refunded —
+read-before/write-after is what a burst walks past, and per-outcome refunds
+need every exit path to be right. argon2 runs outside the database lock, under
+a concurrency cap because it is memory-hard by design (unbounded parallelism is
+an out-of-memory button) and with a short wait rather than an unbounded one,
+because sync endpoints share a fixed thread pool and a caller merely waiting
+still holds a thread the trial flow needs. Guests that answered nothing and
+went cold are swept periodically; anything with a response or a password is
+never touched.
 
 Deletion runs on the same reasoning as signup, in reverse: a signed-in session
 is the proof of ownership, which is what makes an in-app button the primary
@@ -74,7 +105,13 @@ before the `users` row they reference, all in one transaction — a half-deleted
 account is a live session pointing at nothing. `trainer/account.py` is the
 operator's way in for what the app can't reach: putting a password on a
 pre-account `?user=` profile, and deleting a row that has no password to
-re-enter.
+re-enter. Setting a password there signs that account's existing sessions out.
+With no reset email yet, that command is the only recovery path there is, so it
+has to assume the reason it's being run is that someone else knows the old
+password — and rotating the hash while leaving their session live recovers
+nothing. It also refuses to act on a name that matches two rows, which a
+database missing the case-insensitive unique index allows: guessing there is how
+one user's password ends up on another user's history.
 
 Two ordering constraints are easy to get wrong. Identity resolution is a
 dependency, but it yields a user *id*: FastAPI finishes dependencies before
@@ -159,7 +196,10 @@ responses are the experimental record.
 One Fly machine with the database on a volume — SQLite has one writer, so a
 second machine would be a second fork of the history rather than redundancy.
 The image carries the server only; Stockfish and zstd belong to the pipeline,
-which stays on a laptop. Litestream supervises uvicorn and streams the file to
+which stays on a laptop. The entrypoint drops to an unprivileged uid before
+starting anything, which is why it isn't a `USER` line: only root can chown a
+volume the platform mounts after the build, and Litestream is the supervisor, so
+the drop has to wrap it rather than the server. Litestream supervises uvicorn and streams the file to
 S3 continuously, because a volume is one disk on one host and `responses`
 can't be regenerated from anything. AWS holds the backup bucket, Litestream's
 IAM user, and the DNS record, in Terraform; Fly's own provider is archived, so
