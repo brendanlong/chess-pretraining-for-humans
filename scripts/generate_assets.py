@@ -18,6 +18,7 @@ bump can change rasterization. Neither is worth pinning a font file for; just
 don't be surprised, and don't commit a card you only meant to look at.
 """
 
+import re
 import struct
 from base64 import b64encode
 from pathlib import Path
@@ -26,6 +27,19 @@ from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parent.parent
 WEB = ROOT / "web"
+
+
+def app_palette() -> str:
+    """The app's own `:root` block, to render the card with.
+
+    The card is an advertisement for the app, so it has to be showing the
+    app's current colors rather than a copy taken whenever it was last drawn.
+    """
+    root = re.search(r":root\s*\{.*?\}", (WEB / "style.css").read_text(), re.S)
+    if root is None:
+        raise SystemExit("no :root block in web/style.css")
+    return root.group(0)
+
 
 # A light square with a dark piece on it. Rendered at 16px this beat the
 # inverse and beat a colored tile: it is the highest-contrast pairing, and it
@@ -131,6 +145,8 @@ def main() -> None:
         # favicon just written) resolve against its own directory.
         page.set_viewport_size({"width": 1200, "height": 630})
         page.goto((ROOT / "scripts" / "social-preview.html").as_uri())
+        # Appended to <head>, so it outranks the mock's own :root on order.
+        page.add_style_tag(content=app_palette())
         page.screenshot(path=WEB / "social-preview.png")
         written.append(WEB / "social-preview.png")
 

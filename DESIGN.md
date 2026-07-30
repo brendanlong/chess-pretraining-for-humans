@@ -139,9 +139,12 @@ drawer's About row.
 The icons and the social-card image are committed files in `web/`, generated
 by `scripts/generate_assets.py` screenshotting Chromium — so the art has a
 source that can be edited and re-run, and serving it stays a static file
-read. Every page carries its own copy of the card metadata, since there is
-no template to share one; a test globs `web/*.html` and holds each copy
-against the page it sits on, so a new page can't ship without it.
+read. The card mock declares no colours of its own: the generator injects
+the app's `:root`, because a card advertising the app shouldn't be showing
+a palette the app has since moved off. Every page carries its own copy of
+the card metadata, since there is no template to share one; a test globs
+`web/*.html` and holds each copy against the page it sits on, so a new page
+can't ship without it.
 
 ## Storage
 
