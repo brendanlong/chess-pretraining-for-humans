@@ -2,7 +2,7 @@
 hostname      = "chess-pretraining.brendanlong.com"
 zone_name     = "brendanlong.com"
 fly_hostname  = "chess-pretraining.fly.dev" # `fly apps list` — the app's name plus .fly.dev
-backup_bucket = "REPLACE-ME-chess-pretraining-backups"
+backup_bucket = "chess-pretraining-backups"
 
 # Only if `fly certs check <hostname>` asks for a DNS challenge.
 # acme_challenge_target = "<value>.flydns.net"

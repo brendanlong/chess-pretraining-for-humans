@@ -25,9 +25,8 @@ rest. Then:
 
 ```bash
 cd terraform
-cp backend.hcl.example backend.hcl && cp terraform.tfvars.example terraform.tfvars
-$EDITOR backend.hcl terraform.tfvars     # bucket names, the Fly app's hostname
-terraform init -backend-config=backend.hcl
+cp terraform.tfvars.example terraform.tfvars   # already the live values
+terraform init
 terraform apply
 ```
 
@@ -66,6 +65,11 @@ If `check` asks for a DNS challenge instead, put the target it prints into
 **4. Continuous deploys.** `fly tokens create deploy` prints an app-scoped
 token; add it as the `FLY_API_TOKEN` repository secret. Pushes to main then
 deploy once CI passes.
+
+The default expiry is 20 years, so `-x 8760h` is worth passing — but a token
+that expires is a deploy that starts failing in CI rather than a site that goes
+down, and nothing warns you beforehand. `fly tokens list -a chess-pretraining`
+prints the expiry; the live one runs to 2027-07-30.
 
 **5. Fill the bank.** A fresh deployment has no items and `/api/next` answers
 503 until it does — see below.

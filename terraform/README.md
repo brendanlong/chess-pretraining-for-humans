@@ -19,11 +19,13 @@ plus `flyctl` is the supported path. See [../deploy/README.md](../deploy/README.
 
 ## Running it
 
-The state bucket has to exist before `init` can lock against it. Create it once
-by hand — versioning is the only undo you get for a bad state write:
+The state bucket (`chess-pretraining-state`, named in `versions.tf`) has to
+exist before `init` can lock against it. It already does; these are the
+commands that made it, kept for the next account or region — versioning is the
+only undo you get for a bad state write:
 
 ```bash
-B=your-terraform-state-bucket; R=us-east-1
+B=chess-pretraining-state; R=us-east-1
 aws s3api create-bucket --bucket "$B" --region "$R"
 aws s3api put-bucket-versioning --bucket "$B" --versioning-configuration Status=Enabled
 aws s3api put-public-access-block --bucket "$B" --public-access-block-configuration \
@@ -35,13 +37,12 @@ aws s3api put-bucket-encryption --bucket "$B" --server-side-encryption-configura
 (Outside `us-east-1`, `create-bucket` also needs
 `--create-bucket-configuration LocationConstraint="$R"`.)
 
-Then:
+Then — `terraform.tfvars` is the only file to fill in, and the committed
+example is already the live configuration, so a copy is usually enough:
 
 ```bash
-cp backend.hcl.example backend.hcl
 cp terraform.tfvars.example terraform.tfvars
-$EDITOR backend.hcl terraform.tfvars
-terraform init -backend-config=backend.hcl
+terraform init
 terraform plan
 terraform apply
 ```
