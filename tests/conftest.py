@@ -64,9 +64,9 @@ def db(tmp_path, monkeypatch, item_count):
         ("login_limiter", auth.RateLimiter(20, 900)),
         ("login_ip_limiter", auth.RateLimiter(200, 900)),
         ("delete_limiter", auth.RateLimiter(20, 900)),
-        # Every client in a test shares one address, and some tests mint
-        # hundreds of guests on purpose. The real limit gets its own test.
-        ("guest_limiter", auth.RateLimiter(100_000, 3600)),
+        # Every client in a test shares one address, and some tests answer in
+        # bulk on purpose. The real limit gets its own test.
+        ("answer_limiter", auth.RateLimiter(100_000, 900)),
     ):
         monkeypatch.setattr(server, name, limiter)
     return conn
@@ -85,10 +85,17 @@ def next_trial(client):
     return r.json()
 
 
-def answer(client, trial):
-    r = client.post(
-        "/api/answer",
-        json={"item_id": trial["item_id"], "choice_uci": trial["moves"][0]["uci"]},
-    )
+def answer(client, trial, choice: int = 0):
+    r = client.post("/api/answer", json=answer_body(trial, choice))
     assert r.status_code == 200, r.text
     return r.json()
+
+
+def answer_body(trial, choice: int = 0) -> dict:
+    """What the client sends back. The token is the server's own proof that it
+    offered this trial, so an answer without it isn't answering anything."""
+    return {
+        "item_id": trial["item_id"],
+        "trial_token": trial["trial_token"],
+        "choice_uci": trial["moves"][choice]["uci"],
+    }

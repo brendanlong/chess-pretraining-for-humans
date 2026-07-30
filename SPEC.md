@@ -26,9 +26,12 @@ automatically.
 - **Nothing may leak the answer before the user commits.** No UI element,
   API payload, or (future) overlay cue may distinguish the two moves
   pre-answer — and that has to hold against a caller who isn't using the UI,
-  so the answer key is reachable only by answering the trial you were served.
-  Which of the two moves is correct is a coin flip, so it comes from a CSPRNG:
-  a predictable one is a leak with extra steps.
+  so the answer key is reachable only by answering a trial the server actually
+  offered. Which of the two moves is correct is a coin flip, so it comes from a
+  CSPRNG: a predictable one is a leak with extra steps. Enforcement stops at
+  making the answer cost an answer, though — someone determined to fool
+  themselves through the ordinary API always can, and spending much to prevent
+  that would be spending it on the wrong threat.
 - **Which arrow belongs to which button is said only in colour**, so that
   pair has to survive red-green colour blindness and the warm filters
   night-mode displays apply, and has to stay free of any hint that one
@@ -54,10 +57,12 @@ automatically.
   mining more games.
 - **New users are assumed to be beginners** — no strength question; the
   rating system must instead climb fast for experienced players.
-- **Nothing gates the first trial.** Identity is issued automatically and
-  anonymously on arrival; an account is optional and, when created, claims
-  the history already earned rather than starting a fresh one. A user's row
-  must never be reachable by guessing a name.
+- **Nothing gates the first trial.** Arriving is a read: no name to type, and
+  nothing written, so there is nothing about arriving that could need
+  rationing. Identity is issued anonymously by the first *answer* — which is
+  also the first thing worth keeping — and an account is optional and, when
+  created, claims the history already earned rather than starting a fresh one.
+  A user's row must never be reachable by guessing a name.
 - **Responses are research data, and the notice says so on the page that
   records them** — nothing gates the first trial, so consent can't be
   collected before it; what's owed is that a guest never has to go

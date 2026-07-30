@@ -29,18 +29,16 @@ SESSION_DAYS = 365
 # total life of one token regardless of use; it's generous because the stakes
 # are a chess rating, but "generous" and "unbounded" are different claims.
 SESSION_MAX_DAYS = 730
-# Anyone can mint a guest just by arriving, so untouched ones are swept: a
-# guest that answered nothing and whose session has gone cold is indexable
-# noise, not history. Anything with a response or a password is never touched.
+# A row that answered nothing and whose session has gone cold is noise, not
+# history, so it is swept. Anything with a response or a password is never
+# touched. Answering is what creates a row now, so this mostly reclaims two
+# things: the guests that arrival-minting left behind, and the gap between
+# minting an identity and recording the answer that earned it.
 #
-# Hours rather than days, because this number is what decides whether a flood
-# of arrivals is self-healing. Reclaim within hours and the arrival limit can
-# be loose enough that a real first-time visitor never meets it, which is what
-# "nothing gates the first trial" requires; reclaim in a day and the limit has
-# to be tight enough to be a gate. Comfortably more than the hour that
-# `session_user` waits before refreshing `last_seen`, so a visitor who is
-# reading rather than answering always looks warm and is never swept from
-# under themselves.
+# Comfortably longer than the hour `session_user` waits before refreshing
+# `last_seen`, because a session in continuous use can look that stale — and
+# sweeping a live identity would silently re-identify its owner, losing whatever
+# rating they had climbed to.
 GUEST_TTL_HOURS = 3
 # Guest rows carry a random name so nothing about them is guessable, and the
 # prefix is reserved so a signup can never collide with one.
@@ -203,6 +201,35 @@ def validate_signup(username: str, password: str, email: str | None) -> tuple[st
     return username, check_email(email)
 
 
+def check_name_free(conn: sqlite3.Connection, username: str) -> None:
+    if find_by_username(conn, username):
+        raise AuthError("That username is taken.")
+
+
+def create_account(
+    conn: sqlite3.Connection,
+    username: str,
+    password_hash: str,
+    email: str | None,
+    start_rating: float,
+    calib_step: float,
+) -> dict:
+    """Sign up with no history to claim.
+
+    Nothing writes a `users` row until the first answer, so someone who opens
+    the drawer before answering anything has no guest row for `claim` to attach
+    credentials to. Same row shape either way — this one just starts empty.
+    """
+    check_name_free(conn, username)
+    cur = conn.execute(
+        """INSERT INTO users (name, rating, calib_step, password_hash, email, created_at)
+           VALUES (?, ?, ?, ?, ?, datetime('now'))""",
+        (username, start_rating, calib_step, password_hash, email),
+    )
+    conn.commit()
+    return get_user(conn, cur.lastrowid)  # pyright: ignore[reportArgumentType]
+
+
 def check_claimable(conn: sqlite3.Connection, user_id: int, username: str) -> None:
     """The database half of signup validation, cheap enough to run before the
     password hash — otherwise a taken name costs an argon2 each time it's
@@ -210,8 +237,7 @@ def check_claimable(conn: sqlite3.Connection, user_id: int, username: str) -> No
     `claim` repeats it under the lock that writes, where it decides the race."""
     if not is_guest(get_user(conn, user_id)):
         raise AuthError("This session is already signed in.")
-    if find_by_username(conn, username):
-        raise AuthError("That username is taken.")
+    check_name_free(conn, username)
 
 
 def claim(

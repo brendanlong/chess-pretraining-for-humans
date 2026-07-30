@@ -51,12 +51,7 @@ CREATE TABLE IF NOT EXISTS users (
     attempts INTEGER NOT NULL DEFAULT 0,
     password_hash TEXT,  -- NULL means guest
     email TEXT,          -- optional and unverified; only ever used for password reset
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    -- The item this user was last served. /api/answer accepts only this one,
-    -- so an answer is always to a trial that was actually shown: item ids are
-    -- global and sequential, and without the binding anyone could read the
-    -- whole bank's answer key — and move every item's difficulty — with curl.
-    pending_item_id INTEGER REFERENCES items(id)
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -102,7 +97,6 @@ def connect(path: Path = DEFAULT_DB, check_same_thread: bool = True) -> sqlite3.
         # No datetime('now') default: SQLite rejects non-constant defaults in
         # ALTER TABLE, and pre-auth rows have no signup date to record anyway.
         ("created_at", "TEXT"),
-        ("pending_item_id", "INTEGER"),
     ):
         if col not in user_cols:
             conn.execute(f"ALTER TABLE users ADD COLUMN {col} {decl}")

@@ -27,23 +27,41 @@ unseen learnable item near the rating where the user's expected score is
 staircase first (start low, big steps, halve on miss). All responses are
 recorded with timing for later analysis.
 
-An answer is only accepted for the trial that was last served to that user —
-`users.pending_item_id`, set when the trial goes out and spent when it comes
-back. The answer payload *is* the answer key, and item ids are small sequential
-integers, so without the binding the whole bank could be dumped by counting, and
-the answer to the trial on your own screen was one request away. It also keeps
-`items.attempts`/`correct`/`rating` — global, shared by every user, surviving
-account deletion — from being writable by anyone with curl. The cost is that a
-second tab moves the first one on; the client treats the resulting 409 as "fetch
-the current trial" rather than an error.
+An answer is only accepted for a trial the server actually offered, which
+`trainer/trials.py` carries in an HMAC-signed token rather than a row: the answer
+payload *is* the answer key, and item ids are small sequential integers, so
+otherwise the whole bank reads out by counting and the trial on your own screen
+is one request from being looked up. The token names its holder as well as its
+item, so a throwaway client can't fetch one for the signed-in client to spend.
+
+Signed, not stored, for two reasons. A row to write it in would have to exist
+before the first trial, which is exactly the pressure that used to put a limit in
+front of arriving; and state means one pending trial per user, so two tabs fight.
+The remaining hole is small and known: a trial served before its owner has any
+identity is bound to nobody, so another anonymous caller can redeem it —
+recording the answer on *their* row, never accumulating onto a session that keeps
+its cookie. That, and the fact that `next`→`answer` reaches every item anyway,
+is why enforcement stops here rather than growing a nonce store. What *does*
+protect the shared counters is that only first exposures move them, and a
+per-address limit on answering.
+
+The signing key comes from `TRIAL_TOKEN_SECRET` (a Fly secret). Rotating it costs
+nothing but the trials in flight; unset, the server logs that it made an
+ephemeral one, which on a restarting machine means one refused answer per open
+tab.
 
 ## Identity (`trainer/auth.py`)
 
-Anonymous-first. The first request mints a guest `users` row and an opaque
-session token in an HttpOnly cookie; no name is typed and no name is
-guessable, which the old `?user=` scheme couldn't say. Signing up attaches a
-username, an argon2 password hash, and an optional unverified email (kept
-only for a future reset) to *that same row*, so an account is a claim on
+Anonymous-first, and lazy: arriving writes nothing. The first *answer* mints a
+guest `users` row and an opaque session token in an HttpOnly cookie; no name is
+typed and no name is guessable, which the old `?user=` scheme couldn't say. An
+earlier version issued that row on arrival, and the cost of it kept surfacing —
+crawlers and health checks grew the table, and metering the write was a limit in
+front of the first trial. Tying the row to the first answer means the only
+unauthenticated write is the one that produces something worth keeping. Signing
+up attaches a username, an argon2 password hash, and an optional unverified email
+(kept only for a future reset) to *that same row* — or creates it outright, for
+someone who signs up before answering anything — so an account is a claim on
 history rather than a gate in front of it. Sessions are a table of hashed
 tokens, so a database read grants no logins; the token is rotated on every
 privilege change and expires both on idleness and absolutely, so a token that
@@ -74,13 +92,14 @@ deletion is keyed separately: the one irreversible thing a user might need to
 do *because* they're under attack must not be blockable from outside.
 
 Signup is keyed on address alone because there is no account to key on yet, and
-so is guest minting, because arriving is enough to write two rows. That last
-limit is the only one an ordinary stranger can meet, and nothing may gate the
-first trial, so it is deliberately loose and the sweep does the real work: guests
-that answered nothing are reclaimed within hours, which bounds a flood to a rate
-times that window instead of everything it ever sent. Tightening the limit rather
-than the sweep would mean turning away real first-time visitors sharing one
-carrier NAT. "Address" behind a proxy means a header the proxy
+so is answering, because that is the only unauthenticated write left and the only
+thing that moves `items.attempts`/`correct` — global counters every user's
+difficulty targeting reads. The trial binding is no help there: `next`→`answer`
+skews an item as well as a bare `answer` did, one request later. That limit sits
+on the core loop, where several real users share one address routinely, so it is
+set far above any human pace; there is deliberately no limit at all on arriving,
+because arriving writes nothing to ration. "Address" behind a proxy means a
+header the proxy
 overwrites (`CLIENT_IP_HEADER`), never the socket: trusting forwarded headers
 makes uvicorn believe the *leftmost* `X-Forwarded-For` entry, which a proxy
 appends to rather than replaces, so it is the caller's to invent and a flood
@@ -93,9 +112,11 @@ need every exit path to be right. argon2 runs outside the database lock, under
 a concurrency cap because it is memory-hard by design (unbounded parallelism is
 an out-of-memory button) and with a short wait rather than an unbounded one,
 because sync endpoints share a fixed thread pool and a caller merely waiting
-still holds a thread the trial flow needs. Guests that answered nothing and
-went cold are swept periodically; anything with a response or a password is
-never touched.
+still holds a thread the trial flow needs. Rows that answered nothing and went
+cold are swept periodically; anything with a response or a password is never
+touched. Since answering is what writes a row, the sweep now mostly tidies
+history — the guests the old arrival-minting left behind, and the gap between
+minting an identity and recording the answer that earned it.
 
 Deletion runs on the same reasoning as signup, in reverse: a signed-in session
 is the proof of ownership, which is what makes an in-app button the primary

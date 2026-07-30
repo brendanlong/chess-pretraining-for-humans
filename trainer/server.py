@@ -16,7 +16,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import auth, rating
+from . import auth, rating, trials
 from .db import DEFAULT_DB, connect
 
 # Items are never repeated for a user: every trial is a first exposure, so
@@ -70,21 +70,19 @@ signup_limiter = auth.RateLimiter(limit=20, window_s=3600)
 login_limiter = auth.RateLimiter(limit=10, window_s=900)
 login_ip_limiter = auth.RateLimiter(limit=60, window_s=900)
 delete_limiter = auth.RateLimiter(limit=10, window_s=900)
-# Arriving is enough to write a `users` row and a `sessions` row, which makes
-# the unauthenticated write path the cheapest one in the app.
+# Answering is the only unauthenticated write left — arriving costs nothing now —
+# and it is the one that moves `items.attempts`/`correct`, which every user's
+# difficulty targeting reads. A trial binding can't help here: `next`→`answer`
+# skews an item just as well as a bare `answer` did, at one extra request. So
+# this is where the volume gate belongs.
 #
-# This is the only limit an ordinary stranger can meet, and SPEC says nothing
-# gates the first trial — so it is deliberately far looser than the others, and
-# the real bound on a flood is `auth.GUEST_TTL_HOURS`: rows with no answers are
-# reclaimed within hours, so what an address can hold is its rate times that
-# window (~1800 rows, under a megabyte) rather than everything it ever sent.
-# Tightening this instead of the TTL would be choosing to turn away real
-# first-time visitors behind one carrier NAT, which is the wrong trade — real
-# per-address volume belongs in a reverse proxy anyway.
-guest_limiter = auth.RateLimiter(
-    limit=600,
-    window_s=3600,
-    message="Too many new visitors from your network right now. Try again in a few minutes.",
+# Deliberately far above any human pace, because it sits on the core loop and
+# several real users share one address routinely. Like the others it is
+# insurance, not a defence — real per-address volume is a reverse proxy's job.
+answer_limiter = auth.RateLimiter(
+    limit=1200,
+    window_s=900,
+    message="Answers are coming in faster than we can count. Try again in a moment.",
 )
 
 # Guests are swept periodically rather than on a timer; there is no scheduler
@@ -223,11 +221,14 @@ def unhandled_error(request: Request, exc: Exception) -> Response:
     return finalize(request, JSONResponse({"detail": "internal error"}, status_code=500))
 
 
-def current_user_id(request: Request) -> int:
-    """Resolve the session cookie to a user id, minting a guest if there isn't
-    one. Landing on the site is enough to start answering: no name to type,
-    and the row is reachable only through an unguessable token rather than a
-    guessable name in a URL.
+def optional_user_id(request: Request) -> int | None:
+    """Resolve the session cookie to a user id, or None. Writes nothing.
+
+    Identity is issued by *answering*, not by arriving. An earlier version
+    minted a guest row here, which made arriving the cheapest write in the app;
+    metering that write then put a limit in front of the very first trial, which
+    SPEC forbids. So a visitor who has answered nothing has no row, and the
+    trial they are looking at is carried by a signed token instead (`trials`).
 
     Returns an *id*, not a row. FastAPI resolves sync dependencies in a
     separate threadpool call that finishes before the endpoint body starts, so
@@ -235,27 +236,36 @@ def current_user_id(request: Request) -> int:
     section — two overlapping answers would both write ratings derived from
     the same stale row. Endpoints re-read under their own lock.
     """
-    global guests_minted
     with db_lock:
         user = auth.session_user(conn, request.cookies.get(auth.COOKIE_NAME))
-        if user is not None:
-            return user["id"]
-    # Charged only on the minting path, so a returning session never spends a
-    # slot; taken outside the lock because refusing is the cheap answer.
-    spend(guest_limiter, client_key(request))
-    with db_lock:
-        guests_minted += 1
-        if guests_minted % SWEEP_EVERY_GUESTS == 1:
-            auth.sweep(conn)
-        user = auth.create_guest(conn, rating.USER_START, rating.CALIB_START_STEP)
-        queue_cookie(request, auth.start_session(conn, user["id"]))
-        return user["id"]
+    return user["id"] if user is not None else None
 
 
-CurrentUserId = Depends(current_user_id)
+OptionalUserId = Depends(optional_user_id)
 
 
-def account_payload(user: dict) -> dict:
+def start_identity(request: Request) -> dict:
+    """Create the row that answering earns, and hand its session out.
+
+    The only place a `users` row is born from ordinary traffic. Caller holds
+    `db_lock`, and the sweep rides along here because arrival rate is the signal
+    that one is due and there is no scheduler.
+    """
+    global guests_minted
+    guests_minted += 1
+    if guests_minted % SWEEP_EVERY_GUESTS == 1:
+        auth.sweep(conn)
+    user = auth.create_guest(conn, rating.USER_START, rating.CALIB_START_STEP)
+    queue_cookie(request, auth.start_session(conn, user["id"]))
+    return user
+
+
+GUEST_ACCOUNT = {"username": None, "guest": True}
+
+
+def account_payload(user: dict | None) -> dict:
+    if user is None:
+        return dict(GUEST_ACCOUNT)
     return {"username": auth.display_name(user), "guest": auth.is_guest(user)}
 
 
@@ -290,24 +300,27 @@ def line_steps(fen: str, pv: str | None, fallback_uci: str) -> list[dict]:
     return steps
 
 
-def unseen_count(user: dict) -> int:
+# A caller who has answered nothing has no row to read a rating or a history
+# from, so both are the defaults a first trial would have used anyway: beginner
+# rating, nothing seen yet. `user_id is None` is that caller throughout.
+def unseen_count(user_id: int | None) -> int:
     return conn.execute(
         """SELECT COUNT(*) FROM items
            WHERE learnable = 1
              AND id NOT IN (SELECT item_id FROM responses WHERE user_id = ?)""",
-        (user["id"],),
+        (user_id or 0,),  # no row means no responses, so nothing is excluded
     ).fetchone()[0]
 
 
-def pick_item(user: dict) -> tuple[dict | None, bool]:
+def pick_item(user_rating: float, user_id: int | None) -> tuple[dict | None, bool]:
     """An unseen item near the target difficulty; (item, is_repeat)."""
-    target = rating.target_item_rating(user["rating"])
+    target = rating.target_item_rating(user_rating)
     rows = conn.execute(
         """SELECT * FROM items
            WHERE learnable = 1
              AND id NOT IN (SELECT item_id FROM responses WHERE user_id = ?)
            ORDER BY ABS(rating - ?) LIMIT 30""",
-        (user["id"], target),
+        (user_id or 0, target),
     ).fetchall()
     if rows:
         return dict(rng.choice(rows)), False
@@ -318,7 +331,7 @@ def pick_item(user: dict) -> tuple[dict | None, bool]:
            JOIN responses ON responses.item_id = items.id
            WHERE items.learnable = 1 AND responses.user_id = ?
            GROUP BY items.id ORDER BY MAX(responses.id) LIMIT 1""",
-        (user["id"],),
+        (user_id or 0,),
     ).fetchone()
     return (dict(row), True) if row else (None, False)
 
@@ -338,60 +351,76 @@ def healthz():
 
 @app.get("/api/next")
 @locked
-def next_item(user_id: int = CurrentUserId):
-    u = auth.get_user(conn, user_id)
-    item, is_repeat = pick_item(u)
+def next_item(user_id: int | None = OptionalUserId):
+    """Serve a trial. Writes nothing — a first-time visitor has no row yet, and
+    getting one is what answering earns."""
+    u = auth.get_user(conn, user_id) if user_id is not None else None
+    item, is_repeat = pick_item(u["rating"] if u else rating.USER_START, user_id)
     if item is None:
         raise HTTPException(503, "no items in bank — run the mining/labeling pipeline")
     moves = [item["best_uci"], item["distractor_uci"]]
     rng.shuffle(moves)
-    # This is the item /api/answer will accept, and the only one. Recorded
-    # before the payload goes out, so there is no window where a trial is on
-    # screen but unanswerable.
-    conn.execute("UPDATE users SET pending_item_id = ? WHERE id = ?", (item["id"], u["id"]))
-    conn.commit()
     return {
         "item_id": item["id"],
+        # The server's proof that it offered this item to this caller, which is
+        # what /api/answer checks instead of consulting a row that may not exist.
+        "trial_token": trials.issue(item["id"], user_id),
         "fen": item["fen"],
         "side_to_move": "white" if chess.Board(item["fen"]).turn else "black",
         "moves": [{"uci": m, "san": san(item["fen"], m)} for m in moves],
         "repeat": is_repeat,
-        "items_remaining": unseen_count(u),
-        "trial_number": u["attempts"] + 1,
-        "user_rating": round(u["rating"]),
-        "calibrating": is_calibrating(u),
+        "items_remaining": unseen_count(user_id),
+        "trial_number": (u["attempts"] if u else 0) + 1,
+        "user_rating": round(u["rating"] if u else rating.USER_START),
+        "calibrating": is_calibrating(u) if u else True,
     }
 
 
 class Answer(BaseModel):
     item_id: int
     choice_uci: str
+    trial_token: str | None = None
     response_ms: int | None = None
 
 
 @app.post("/api/answer")
 @locked
-def answer(a: Answer, user_id: int = CurrentUserId):
-    # Read the row here, inside the lock that also writes it back: rating and
+def answer(a: Answer, request: Request):
+    """Record an answer and reveal the engine's verdict.
+
+    Resolves identity itself rather than through a dependency, because this is
+    the endpoint that *creates* it: a row should exist only once someone has
+    actually answered something, and only once we know the trial was ours.
+    """
+    # The one unauthenticated write left, and the one that moves counters every
+    # user's difficulty reads. Charged before the work, like the others.
+    spend(answer_limiter, client_key(request))
+    # Read the row inside the lock that also writes it back: rating and
     # calibration updates below are read-modify-write, so a snapshot taken
     # before the lock would let two overlapping answers clobber each other.
-    u = auth.get_user(conn, user_id)
-    # An answer is only ever to the trial this user was last served. The
-    # response below is the answer key — best move, both evals, both lines —
-    # and item ids are small sequential integers, so without this an
-    # unauthenticated caller could read the whole bank by counting, or read the
-    # answer to the trial currently on their own screen before committing to
-    # it, which is the one thing SPEC says nothing may do. It also stops
-    # `items.attempts`/`correct`/`rating` — global, shared by every user, and
-    # surviving account deletion — from being writable by anyone with curl.
-    if a.item_id != u["pending_item_id"]:
-        raise HTTPException(409, "no trial in progress for this item — fetch a new one")
+    u = auth.session_user(conn, request.cookies.get(auth.COOKIE_NAME))
+    # The token comes first, before anything that reads the item — because
+    # *every* answer about an item is a fact about it. The response below is the
+    # answer key outright, and even "that isn't one of the offered moves" tells
+    # an id-counting caller which two moves an item pairs. Item ids are small
+    # sequential integers, so nothing here may reflect one back without proof
+    # that we served it.
+    try:
+        trials.redeem(a.trial_token, a.item_id, u["id"] if u else None)
+    except trials.InvalidTrial as e:
+        raise HTTPException(409, f"{e} — fetch a new trial") from e
+
     item = conn.execute("SELECT * FROM items WHERE id = ?", (a.item_id,)).fetchone()
-    if item is None:
+    if item is None:  # only reachable if the bank dropped it mid-trial
         raise HTTPException(404, "unknown item")
     item = dict(item)
     if a.choice_uci not in (item["best_uci"], item["distractor_uci"]):
         raise HTTPException(400, "choice is not one of the offered moves")
+
+    if u is None:
+        # Answering is what earns an identity. Nothing before this point wrote a
+        # row, which is what keeps arriving free and the first trial ungated.
+        u = start_identity(request)
 
     correct = a.choice_uci == item["best_uci"]
     is_repeat = (
@@ -401,6 +430,12 @@ def answer(a: Answer, user_id: int = CurrentUserId):
         ).fetchone()
         is not None
     )
+    # A repeat is legitimate only once there is nothing fresh left to serve, so
+    # anything else answering an item twice is a replayed token or a resubmitted
+    # POST. Refusing it is what a spent-once trial bought when the pending item
+    # lived in a column; the responses table can say the same thing for free.
+    if is_repeat and unseen_count(u["id"]) > 0:
+        raise HTTPException(409, "that trial has already been answered — fetch a new one")
     # Repeats only happen when the bank is exhausted; they get feedback like
     # any trial but don't move ratings — a remembered answer isn't skill.
     new_step = u["calib_step"]
@@ -431,16 +466,20 @@ def answer(a: Answer, user_id: int = CurrentUserId):
         ),
     )
     conn.execute(
-        # Clearing the pending trial spends it: a resubmitted answer gets the
-        # 409 above rather than a second rating movement for the same trial.
-        """UPDATE users SET rating = ?, calib_step = ?, attempts = attempts + 1,
-                            pending_item_id = NULL WHERE id = ?""",
+        "UPDATE users SET rating = ?, calib_step = ?, attempts = attempts + 1 WHERE id = ?",
         (new_user_r, new_step, u["id"]),
     )
-    conn.execute(
-        "UPDATE items SET rating = ?, attempts = attempts + 1, correct = correct + ? WHERE id = ?",
-        (new_item_r, int(correct), item["id"]),
-    )
+    if not is_repeat:
+        # Only first exposures count toward an item's difficulty, for the same
+        # reason they're the only ones counted toward the user's accuracy: a
+        # remembered answer measures nothing. These counters are global, shared
+        # by every user, and survive account deletion, so letting a re-answer
+        # move them was both a skew and a contradiction of what SPEC promises.
+        conn.execute(
+            "UPDATE items SET rating = ?, attempts = attempts + 1, correct = correct + ?"
+            " WHERE id = ?",
+            (new_item_r, int(correct), item["id"]),
+        )
     conn.commit()
 
     return {
@@ -472,8 +511,8 @@ def answer(a: Answer, user_id: int = CurrentUserId):
 
 @app.get("/api/stats")
 @locked
-def stats(user_id: int = CurrentUserId):
-    u = auth.get_user(conn, user_id)
+def stats(user_id: int | None = OptionalUserId):
+    u = auth.get_user(conn, user_id) if user_id is not None else None
     # Only first exposures count toward accuracy: repeats (served only once
     # the bank is exhausted) can be answered from memory of the reveal.
     rows = [
@@ -486,16 +525,16 @@ def stats(user_id: int = CurrentUserId):
                                  WHERE p.user_id = r.user_id
                                    AND p.item_id = r.item_id AND p.id < r.id)
                ORDER BY r.id""",
-            (u["id"],),
+            (user_id or 0,),
         )
     ]
     total_attempts = conn.execute(
-        "SELECT COUNT(*) FROM responses WHERE user_id = ?", (u["id"],)
+        "SELECT COUNT(*) FROM responses WHERE user_id = ?", (user_id or 0,)
     ).fetchone()[0]
     last50 = rows[-50:]
     n_items, n_learnable = conn.execute("SELECT COUNT(*), SUM(learnable) FROM items").fetchone()
     return {
-        "user_rating": round(u["rating"]),
+        "user_rating": round(u["rating"] if u else rating.USER_START),
         "attempts": total_attempts,
         "first_exposures": len(rows),
         "accuracy": round(sum(r["correct"] for r in rows) / len(rows), 3) if rows else None,
@@ -505,7 +544,7 @@ def stats(user_id: int = CurrentUserId):
         "rating_history": [round(r["user_rating_after"]) for r in rows],
         "items_total": n_items,
         "items_learnable": n_learnable or 0,
-        "items_remaining": unseen_count(u),
+        "items_remaining": unseen_count(user_id),
         "account": account_payload(u),
     }
 
@@ -545,7 +584,7 @@ def reissue_session(request: Request, user_id: int) -> None:
     (over plain http, say) can't be riding along on the account afterwards.
     """
     # Both the token we arrived with and one minted for us moments ago by
-    # current_user_id (whose cookie we are about to overwrite).
+    # start_identity (whose cookie we are about to overwrite).
     auth.end_session(conn, request.cookies.get(auth.COOKIE_NAME))
     auth.end_session(conn, getattr(request.state, "session_cookie", None))
     queue_cookie(request, auth.start_session(conn, user_id))
@@ -553,13 +592,14 @@ def reissue_session(request: Request, user_id: int) -> None:
 
 @app.get("/api/account")
 @locked
-def account(user_id: int = CurrentUserId):
-    return account_payload(auth.get_user(conn, user_id))
+def account(user_id: int | None = OptionalUserId):
+    return account_payload(auth.get_user(conn, user_id) if user_id is not None else None)
 
 
 @app.post("/api/account/signup")
 def signup(body: Signup, request: Request):
-    """Claim the guest row this session has been playing on — no reset."""
+    """Claim the guest row this session has been playing on, or start a fresh
+    one for somebody who signed up before answering anything. No reset."""
     # Charged before anything else, so no request can buy work by failing, and
     # a burst can't walk past a counter that only the outcome increments.
     spend(signup_limiter, client_key(request))
@@ -567,15 +607,25 @@ def signup(body: Signup, request: Request):
         # Everything cheap first: a typo, a taken name, or an already-claimed
         # session must not cost an argon2 hash (~50ms and 64 MiB).
         username, email = auth.validate_signup(body.username, body.password, body.email)
-        # Identity is resolved here rather than by a dependency: dependencies
-        # run before the body, so a throttled flood would still mint a guest
-        # row per rejected attempt.
-        user_id = current_user_id(request)
+        user_id = optional_user_id(request)
         with db_lock:
-            auth.check_claimable(conn, user_id, username)
+            if user_id is None:
+                auth.check_name_free(conn, username)
+            else:
+                auth.check_claimable(conn, user_id, username)
         password_hash = auth.hash_password(body.password)  # slow; not under the lock
         with db_lock:
-            u = auth.claim(conn, user_id, username, password_hash, email)
+            if user_id is None:
+                u = auth.create_account(
+                    conn,
+                    username,
+                    password_hash,
+                    email,
+                    rating.USER_START,
+                    rating.CALIB_START_STEP,
+                )
+            else:
+                u = auth.claim(conn, user_id, username, password_hash, email)
             reissue_session(request, u["id"])
     except auth.AuthError as e:
         raise auth_error(e) from e

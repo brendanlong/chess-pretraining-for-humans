@@ -8,19 +8,38 @@ from fastapi.testclient import TestClient
 from trainer import auth, server
 from trainer.db import connect
 
-from .conftest import answer, next_trial
+from .conftest import answer, answer_body, next_trial
 
 CREDS = {"username": "tester", "password": "hunter2hunter2"}
 
 
-def test_guest_identity_needs_no_signup(client):
+def test_arriving_writes_nothing_and_answering_is_what_earns_an_identity(client, db):
+    """Identity is issued by answering, not by arriving.
+
+    An earlier version minted a guest row in the identity dependency, which made
+    the cheapest write in the app the unauthenticated one — and metering that
+    write is a limit in front of the first trial, which SPEC forbids. So a
+    visitor who has answered nothing has no row, and the trial they are looking
+    at rides in a signed token instead.
+    """
     assert client.get("/api/account").json() == {"username": None, "guest": True}
+    trial = next_trial(client)  # answerable immediately, nothing typed
+    assert trial["item_id"] and trial["trial_token"]
+    assert auth.COOKIE_NAME not in client.cookies
+    assert row_counts(db) == (0, 0, 0)
+
+    answer(client, trial)
+
     assert auth.COOKIE_NAME in client.cookies
-    assert next_trial(client)["item_id"]  # answerable immediately, nothing typed
+    assert row_counts(db) == (1, 1, 1)
+    assert client.get("/api/stats").json()["attempts"] == 1
 
 
 def test_session_cookie_is_httponly_and_opaque(client):
-    r = client.get("/api/account")
+    # The answer is what hands the cookie out, so that's the response to read it
+    # from — nothing earlier in the flow sets one.
+    r = client.post("/api/answer", json=answer_body(next_trial(client)))
+    assert r.status_code == 200, r.text
     header = r.headers["set-cookie"]
     assert "HttpOnly" in header
     assert "samesite=lax" in header.lower()
@@ -99,7 +118,7 @@ def test_login_restores_history_on_another_device(client, db):
 def test_login_rejects_wrong_password_unknown_names_and_guest_rows(client, db):
     client.post("/api/account/signup", json=CREDS)
     with TestClient(server.app) as other:
-        other.get("/api/account")  # mints a guest row for `other`
+        answer(other, next_trial(other))  # answering is what mints its row
         guest_name = db.execute("SELECT name FROM users WHERE password_hash IS NULL").fetchone()[0]
         for body in (
             {**CREDS, "password": "wrongwrongwrong"},
@@ -364,21 +383,18 @@ def test_account_payloads_carry_no_credentials(client):
     assert client.cookies[auth.COOKIE_NAME] not in body
 
 
-def test_failed_request_still_hands_out_the_identity_it_created(tmp_path, monkeypatch):
-    """A 503 from an empty bank must not mint an orphan row per retry.
-
-    The guest is committed while serving the request; if the error response
-    drops its Set-Cookie, the client never gets an identity and every retry
-    creates another unreachable row.
-    """
+def test_a_503_from_an_empty_bank_writes_nothing_at_all(tmp_path, monkeypatch):
+    """This used to mint a guest per retry, which is why the cookie had to be
+    re-applied from the error path — an orphaned row per retry otherwise. Now
+    /api/next writes nothing, so there is nothing to orphan."""
     empty = connect(tmp_path / "empty.db", check_same_thread=False)
     monkeypatch.setattr(server, "conn", empty)
     with TestClient(server.app) as c:
         for _ in range(3):
             assert c.get("/api/next").status_code == 503
-        assert auth.COOKIE_NAME in c.cookies
-    assert empty.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 1
-    assert empty.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
+        assert auth.COOKIE_NAME not in c.cookies
+    assert empty.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0
+    assert empty.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
 
 
 @pytest.mark.parametrize("item_count", [1])
@@ -434,7 +450,7 @@ def test_expired_sessions_stop_working(client, db):
 
 
 def test_signup_rotates_the_session_token(client):
-    client.get("/api/account")
+    answer(client, next_trial(client))  # the answer is what issues a session
     before = client.cookies[auth.COOKIE_NAME]
     client.post("/api/account/signup", json=CREDS)
     assert client.cookies[auth.COOKIE_NAME] != before
@@ -442,8 +458,9 @@ def test_signup_rotates_the_session_token(client):
 
 def test_sweep_drops_empty_guests_but_never_history(client, db):
     answer(client, next_trial(client))  # this guest has a response
-    with TestClient(server.app) as idle:
-        idle.get("/api/account")  # this one has nothing
+    # An answerless row: legacy data from when arriving minted one, or the gap
+    # between minting an identity and recording the answer that earned it.
+    auth.start_session(db, auth.create_guest(db, 700, 250)["id"])
     db.execute("UPDATE users SET created_at = datetime('now', '-30 days')")
     db.execute("UPDATE sessions SET last_seen = datetime('now', '-30 days')")
     db.commit()
@@ -474,26 +491,23 @@ def test_a_guest_that_answered_nothing_is_reclaimed_within_hours(db):
     assert db.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0
 
 
-def test_the_sweep_cannot_reclaim_a_visitor_who_is_still_reading(db):
-    """`session_user` only refreshes `last_seen` once an hour, so an arrival who
-    hasn't answered yet can look up to an hour stale. The TTL has to clear that
-    gap, or someone slowly reading the terms gets swept out from under
-    themselves and silently re-identified on their next click."""
+def test_the_sweep_never_reclaims_a_row_whose_session_is_still_warm(db):
+    """`session_user` only refreshes `last_seen` once an hour, so a session in
+    continuous use can look up to an hour stale. The TTL has to clear that gap,
+    or the sweep pulls a live identity out from under its owner — who then gets
+    silently re-identified, losing whatever rating they had climbed to."""
     assert auth.GUEST_TTL_HOURS > 1
-    with TestClient(server.app) as reader:
-        reader.get("/api/account")
-        # Old enough to be a sweep candidate, with the stalest `last_seen` an
-        # actively-used session can have.
-        db.execute("UPDATE users SET created_at = datetime('now', '-2 days')")
-        # Just past the refresh interval — the worst case for a session in
-        # continuous use, and the case a one-hour TTL would get wrong.
-        db.execute("UPDATE sessions SET last_seen = datetime('now', '-61 minutes')")
-        db.commit()
+    token = auth.start_session(db, auth.create_guest(db, 700, 250)["id"])
+    # Old enough to be a sweep candidate...
+    db.execute("UPDATE users SET created_at = datetime('now', '-2 days')")
+    # ...with the stalest `last_seen` an actively-used session can have. Just
+    # past the refresh interval is the case a one-hour TTL would get wrong.
+    db.execute("UPDATE sessions SET last_seen = datetime('now', '-61 minutes')")
+    db.commit()
 
-        auth.sweep(db)
+    auth.sweep(db)
 
-        assert db.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 1
-        assert reader.get("/api/account").json() == {"username": None, "guest": True}
+    assert auth.session_user(db, token) is not None
 
 
 def test_sweep_keeps_claimed_accounts_even_when_idle(client, db):
@@ -585,14 +599,23 @@ def test_rate_limiter_consume_is_atomic_under_threads():
     assert len(allowed) == 10
 
 
-def test_crash_still_hands_out_the_identity_it_created(client, db, monkeypatch):
-    """A 500 is handled outside our middleware; the cookie has to survive it."""
-    monkeypatch.setattr(server, "pick_item", lambda _: (_ for _ in ()).throw(RuntimeError("boom")))
+def test_a_crash_while_answering_still_hands_out_the_identity_it_created(db, monkeypatch):
+    """The identity is now created while serving the *answer*, so that's where
+    this invariant lives. A 500 is handled outside our middleware, and the
+    answer's row is already committed by the time the reveal is built — if the
+    error response drops the Set-Cookie, the row is orphaned and the next answer
+    mints another one."""
+
+    def boom(*_args):
+        raise RuntimeError("boom")
+
     with TestClient(server.app, raise_server_exceptions=False) as c:
-        for _ in range(3):
-            assert c.get("/api/next").status_code == 500
+        trial = next_trial(c)
+        monkeypatch.setattr(server, "line_steps", boom)  # after the writes commit
+        assert c.post("/api/answer", json=answer_body(trial)).status_code == 500
         assert auth.COOKIE_NAME in c.cookies
     assert db.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 1
+    assert db.execute("SELECT COUNT(*) FROM responses").fetchone()[0] == 1
 
 
 def test_throttled_signups_do_not_mint_guest_rows(db, monkeypatch):
@@ -624,9 +647,9 @@ def test_rate_limiter_key_space_is_bounded():
 
 
 def test_a_shed_signup_still_costs_a_slot(db, monkeypatch):
-    """A shed request has already minted a guest row and a session by the time
-    the hasher refuses it. Refunding the attempt would leave a saturated box
-    with an unmetered signup endpoint — worse than the throttling it avoids."""
+    """Refunding a shed attempt would leave a saturated box with an unmetered
+    signup endpoint — worse than the throttling it avoids. (It no longer leaves
+    a row behind either: the hash is refused before anything is written.)"""
     monkeypatch.setattr(server, "signup_limiter", auth.RateLimiter(3, 3600))
     monkeypatch.setattr(auth, "HASH_WAIT_S", 0.05)
     monkeypatch.setattr(auth, "_hash_slots", threading.Semaphore(0))
@@ -635,7 +658,7 @@ def test_a_shed_signup_still_costs_a_slot(db, monkeypatch):
         with TestClient(server.app) as c:  # a fresh browser each time
             codes.append(c.post("/api/account/signup", json=CREDS).status_code)
     assert codes == [503, 503, 503, 429, 429, 429], codes
-    assert db.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 3  # not 6
+    assert db.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0  # nothing written
 
 
 def test_every_signup_attempt_counts_including_rejected_ones(client, monkeypatch):
@@ -836,3 +859,46 @@ def test_the_limiter_forgives_the_least_throttled_key_first(monkeypatch):
     assert "name:victim" in limiter._hits  # survived; still out of guesses
     with pytest.raises(auth.RateLimited):
         limiter.consume("name:victim", now=2.0)
+
+
+def test_signing_up_before_answering_anything_creates_the_row(client, db):
+    """There's no guest row to claim until something has been answered, so the
+    drawer has to work for someone who opened it first thing."""
+    assert row_counts(db) == (0, 0, 0)
+    assert client.post("/api/account/signup", json=CREDS).json() == {
+        "username": "tester",
+        "guest": False,
+    }
+    assert row_counts(db) == (1, 1, 0)  # a real account, no history yet
+    assert client.get("/api/account").json()["username"] == "tester"
+    # And it's a working account: answers land on it, and it survives a re-login.
+    answer(client, next_trial(client))
+    with TestClient(server.app) as other:
+        assert other.post("/api/account/login", json=CREDS).status_code == 200
+        assert other.get("/api/stats").json()["attempts"] == 1
+
+
+def test_an_anonymous_trial_is_transferable_between_anonymous_callers(db):
+    """The one gap the token binding leaves, recorded so it stays a known one.
+
+    A trial served before its owner has any identity is bound to "nobody", so a
+    second cookieless client can redeem it and read the answer key. What that
+    can't do is accumulate: redeeming mints the *redeemer* a row and records the
+    answer there, and every trial after the first is bound to a real session. So
+    the exposure is one trial, on a visitor who has answered nothing, and the
+    peek can never land on an identity that keeps its cookie.
+    """
+    with TestClient(server.app) as player, TestClient(server.app) as prober:
+        trial = next_trial(player)
+        peeked = prober.post("/api/answer", json=answer_body(trial))
+        assert peeked.status_code == 200  # the gap
+        assert peeked.json()["best"]["uci"]
+
+        # It landed on the prober, not the player: separate rows, and the player
+        # still has to answer for themselves.
+        assert prober.get("/api/stats").json()["attempts"] == 1
+        assert player.get("/api/stats").json()["attempts"] == 0
+        answer(player, trial)
+
+    rows = db.execute("SELECT user_id, COUNT(*) FROM responses GROUP BY user_id").fetchall()
+    assert [r[1] for r in rows] == [1, 1]  # one each, on two different rows

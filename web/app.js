@@ -294,15 +294,19 @@ async function choose(i) {
   try {
     result = await api("/api/answer", {
       item_id: trial.item_id,
+      // The server's own proof that it offered us this item. Answering is also
+      // what mints the identity, so on a first visit this is the request that
+      // gets us a cookie — nothing before it wrote anything.
+      trial_token: trial.trial_token,
       choice_uci: choice.uci,
       response_ms: Math.round(performance.now() - shownAt),
     });
   } catch (err) {
     if (err.status === 409) {
-      // The server only accepts an answer to the trial it last served, and
-      // that is no longer this one — a second tab, or a reload. Retrying the
-      // same pick would fail forever, so fetch the trial that is current.
-      el("prompt").textContent = "That trial has moved on — loading a fresh one…";
+      // Our trial token is no longer redeemable: it expired, or the session it
+      // was issued to changed under us. Retrying the same pick would fail
+      // forever, so fetch a trial this session can actually answer.
+      el("prompt").textContent = "That trial has expired — loading a fresh one…";
       nextTrial();
       return;
     }
