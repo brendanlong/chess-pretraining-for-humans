@@ -1,7 +1,8 @@
 {
   "name": "Chess Pretraining",
-  "short_name": "Chess Pretraining",
+  "short_name": "Chess",
   "description": "Pick the better of two candidate moves in real positions from real games.",
+  "id": "/",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

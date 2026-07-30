@@ -85,18 +85,28 @@ generated and committed. Regenerate them after editing the art:
 uv run --group assets python scripts/generate_assets.py
 ```
 
+Playwright is not part of the app, so it sits in its own `assets` dependency
+group that neither `uv sync` nor the Docker build installs. Setting it up is
+two steps — the group, then the browser it drives:
+
+```bash
+uv sync --group assets
+uv run --group assets playwright install chromium
+```
+
 The icons come out of a bishop silhouette defined in that script; the card is
 a screenshot of `scripts/social-preview.html`, a hand-written wireframe of the
-trial screen, so nothing has to be running to rebuild it. Playwright lives in
-its own `assets` dependency group and is not installed by `uv sync` — the app
-and CI never need it (`uv run --group assets playwright install chromium`
-once, for the browser).
+trial screen, so nothing has to be running to rebuild it. The icons are pure
+geometry and regenerate byte-identically, but the card renders `system-ui` and
+whatever Chromium you have, so it can come out slightly different on another
+machine — check the diff is one you meant.
 
 Two pieces of borrowed art: the bishop is public domain (CC0), chosen over the
 vendored bishop precisely because a logo shouldn't carry obligations. The
 board pieces on the card are the cburnett set by Colin M.L. Burnett, CC BY-SA
 — the same art `web/vendor/chessground.cburnett.css` already draws the board
-with.
+with, credited on the card itself because the card gets shared detached from
+the site.
 
 ## Deploying it
 

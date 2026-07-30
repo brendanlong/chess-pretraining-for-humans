@@ -6,15 +6,19 @@ Outputs are committed, so this only needs running when the art changes.
 Everything is rasterized by screenshotting Chromium at deviceScaleFactor 1,
 which keeps the PNGs pixel-exact at the sizes crawlers and launchers ask for.
 
-The icon is a bishop: Brendan's pick, and a bishop reads as "chess" at 16px in
-a way the knight's outline does not. The silhouette below is a CC0 bishop
-(public domain), deliberately not the vendored cburnett bishop — that set is
-CC BY-SA, which is fine for rendering a board but carries share-alike
-obligations you do not want attached to a logo.
+The icon is a bishop: Brendan's pick, and its silhouette survives 16px better
+than the knight's. It is a CC0 bishop (public domain), deliberately not the
+vendored cburnett bishop — that set is CC BY-SA, which is fine for rendering a
+board but carries share-alike obligations you do not want attached to a logo.
+
+Two things vary by machine, so expect a diff in the card (never the icons,
+which are pure geometry) if you regenerate somewhere else: the mock asks for
+`system-ui`, which resolves to a different face per OS, and a Chromium version
+bump can change rasterization. Neither is worth pinning a font file for; just
+don't be surprised, and don't commit a card you only meant to look at.
 """
 
-import shutil
-import subprocess
+import struct
 from base64 import b64encode
 from pathlib import Path
 
@@ -87,6 +91,20 @@ PNGS = [
 ]
 
 
+def write_ico(path: Path, members: list[tuple[int, bytes]]) -> None:
+    """An ICO wrapping already-encoded PNGs, which every browser still probing
+    a bare /favicon.ico has understood since Vista. Saves rasterizing twice."""
+    header = struct.pack("<HHH", 0, 1, len(members))  # reserved, type=icon, count
+    offset = len(header) + 16 * len(members)
+    entries, blobs = b"", b""
+    for size, png in members:
+        # width, height, palette size, reserved, color planes, bpp, bytes, offset
+        entries += struct.pack("<BBBBHHII", size, size, 0, 0, 1, 32, len(png), offset)
+        offset += len(png)
+        blobs += png
+    path.write_bytes(header + entries + blobs)
+
+
 def main() -> None:
     written = [WEB / "favicon.svg"]
     (WEB / "favicon.svg").write_text(ROUNDED + "\n")
@@ -118,13 +136,12 @@ def main() -> None:
 
         browser.close()
 
-    # Chromium encodes PNGs for speed, not size. oxipng is optional; shrink
-    # only if it happens to be installed.
-    if shutil.which("oxipng"):
-        subprocess.run(
-            ["oxipng", "-o", "4", "--strip", "safe", "-q", *(str(p) for p in written[1:])],
-            check=True,
-        )
+    # Nothing links favicon.ico — the modern links above cover real browsers.
+    # It exists because unfurlers and feed readers still probe the bare path.
+    write_ico(
+        WEB / "favicon.ico", [(s, (WEB / f"favicon-{s}x{s}.png").read_bytes()) for s in (16, 32)]
+    )
+    written.append(WEB / "favicon.ico")
 
     for path in written:
         print(f"  {path.relative_to(ROOT)}")
