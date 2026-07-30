@@ -15,6 +15,12 @@ RUN uv sync --frozen --no-dev
 
 FROM python:3.12-slim-bookworm
 COPY --from=litestream /usr/local/bin/litestream /usr/local/bin/litestream
+# The server reads the code and writes one directory. Running it as root means a
+# code-execution bug also gets to rewrite the image, the database, and
+# Litestream's replication metadata. The entrypoint drops to this uid — it can't
+# be a `USER` line, because only root can chown the volume, and Fly mounts that
+# owned by root long after the build.
+RUN useradd --system --uid 10001 --shell /usr/sbin/nologin trainer
 WORKDIR /app
 COPY --from=build /app/.venv .venv
 COPY trainer/ trainer/

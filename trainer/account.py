@@ -38,7 +38,15 @@ def set_password(conn: sqlite3.Connection, user: dict, rename_to: str | None) ->
         (name, auth.hash_password(password), user["id"]),
     )
     conn.commit()
-    print(f"{name} can now sign in ({user['attempts']} trials preserved)")
+    # This command is the only recovery path the app has — there is no in-app
+    # password change and no reset email yet — so it has to assume the reason
+    # it's being run is that someone else knows the old password. Rotating the
+    # hash while leaving their session live would recover nothing.
+    revoked = auth.revoke_sessions(conn, user["id"])
+    print(
+        f"{name} can now sign in ({user['attempts']} trials preserved"
+        + (f", {revoked} existing session(s) signed out)" if revoked else ")")
+    )
     return 0
 
 
@@ -94,7 +102,14 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{row['name']:<40} {row['attempts']:>6} trials  {kind}")
         return 0
 
-    user = auth.find_by_username(conn, args.name)
+    try:
+        user = auth.find_by_username(conn, args.name)
+    except auth.AuthError as e:
+        # An ambiguous name, on a database missing the case-insensitive unique
+        # index. Refusing is the point: acting on a guess here is how one
+        # user's password ends up on another user's row.
+        print(e, file=sys.stderr)
+        return 1
     if user is None:
         print(f"no user named {args.name!r}", file=sys.stderr)
         return 1

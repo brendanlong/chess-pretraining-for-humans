@@ -42,9 +42,17 @@ fly secrets set -a chess-pretraining \
   AWS_ACCESS_KEY_ID="$(cd terraform && terraform output -raw litestream_access_key_id)" \
   AWS_SECRET_ACCESS_KEY="$(cd terraform && terraform output -raw litestream_secret_access_key)" \
   AWS_REGION="$(cd terraform && terraform output -raw aws_region)" \
-  LITESTREAM_BUCKET="$(cd terraform && terraform output -raw backup_bucket)"
+  LITESTREAM_BUCKET="$(cd terraform && terraform output -raw backup_bucket)" \
+  TRIAL_TOKEN_SECRET="$(openssl rand -hex 32)"
 fly deploy --ha=false
 ```
+
+`TRIAL_TOKEN_SECRET` signs the trial tokens that let `/api/answer` tell a trial
+the server offered from an item id somebody typed. It isn't a user credential
+and nothing is stored under it, so rotating it is free apart from refusing the
+trials in flight at that moment — clients fetch a fresh one. Unset, the server
+generates an ephemeral key and logs that it did: fine on a laptop, and on a
+machine that restarts it means every open tab gets one refused answer.
 
 Without `LITESTREAM_BUCKET` the container still starts — it just logs that it
 has no off-machine backup and serves anyway. That's deliberate (a broken

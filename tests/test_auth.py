@@ -8,19 +8,38 @@ from fastapi.testclient import TestClient
 from trainer import auth, server
 from trainer.db import connect
 
-from .conftest import answer, next_trial
+from .conftest import answer, answer_body, next_trial
 
 CREDS = {"username": "tester", "password": "hunter2hunter2"}
 
 
-def test_guest_identity_needs_no_signup(client):
+def test_arriving_writes_nothing_and_answering_is_what_earns_an_identity(client, db):
+    """Identity is issued by answering, not by arriving.
+
+    An earlier version minted a guest row in the identity dependency, which made
+    the cheapest write in the app the unauthenticated one — and metering that
+    write is a limit in front of the first trial, which SPEC forbids. So a
+    visitor who has answered nothing has no row, and the trial they are looking
+    at rides in a signed token instead.
+    """
     assert client.get("/api/account").json() == {"username": None, "guest": True}
+    trial = next_trial(client)  # answerable immediately, nothing typed
+    assert trial["item_id"] and trial["trial_token"]
+    assert auth.COOKIE_NAME not in client.cookies
+    assert row_counts(db) == (0, 0, 0)
+
+    answer(client, trial)
+
     assert auth.COOKIE_NAME in client.cookies
-    assert next_trial(client)["item_id"]  # answerable immediately, nothing typed
+    assert row_counts(db) == (1, 1, 1)
+    assert client.get("/api/stats").json()["attempts"] == 1
 
 
 def test_session_cookie_is_httponly_and_opaque(client):
-    r = client.get("/api/account")
+    # The answer is what hands the cookie out, so that's the response to read it
+    # from — nothing earlier in the flow sets one.
+    r = client.post("/api/answer", json=answer_body(next_trial(client)))
+    assert r.status_code == 200, r.text
     header = r.headers["set-cookie"]
     assert "HttpOnly" in header
     assert "samesite=lax" in header.lower()
@@ -99,7 +118,7 @@ def test_login_restores_history_on_another_device(client, db):
 def test_login_rejects_wrong_password_unknown_names_and_guest_rows(client, db):
     client.post("/api/account/signup", json=CREDS)
     with TestClient(server.app) as other:
-        other.get("/api/account")  # mints a guest row for `other`
+        answer(other, next_trial(other))  # answering is what mints its row
         guest_name = db.execute("SELECT name FROM users WHERE password_hash IS NULL").fetchone()[0]
         for body in (
             {**CREDS, "password": "wrongwrongwrong"},
@@ -183,12 +202,30 @@ def test_delete_guesses_are_throttled_like_logins(client, monkeypatch):
     """A shared browser holds the session, so the password is the only guard —
     and a password check with no limit on it is a guessing oracle."""
     client.post("/api/account/signup", json=CREDS)
-    monkeypatch.setattr(server, "login_limiter", auth.RateLimiter(2, 900))
+    monkeypatch.setattr(server, "delete_limiter", auth.RateLimiter(2, 900))
     bad = {"password": "wrongwrongwrong"}
     assert client.post("/api/account/delete", json=bad).status_code == 400
     assert client.post("/api/account/delete", json=bad).status_code == 400
     # Out of tries, even with the right password.
     assert client.post("/api/account/delete", json=CREDS).status_code == 429
+
+
+def test_a_login_lockout_cannot_block_deletion(client, monkeypatch):
+    """Per-name login throttling means anyone can hold a known account locked
+    by guessing at it. That must not reach the erase button: deletion is the
+    privacy policy's promise, and it's the one thing a user might need to do
+    urgently *because* someone is attacking the account."""
+    client.post("/api/account/signup", json=CREDS)
+    monkeypatch.setattr(server, "login_limiter", auth.RateLimiter(2, 900))
+    bad = {**CREDS, "password": "wrongwrongwrong"}
+    with TestClient(server.app) as attacker:
+        for _ in range(3):
+            attacker.post("/api/account/login", json=bad)
+        # The owner really is locked out of signing in...
+        assert attacker.post("/api/account/login", json=CREDS).status_code == 429
+    # ...but the session they already have can still erase the account.
+    r = client.post("/api/account/delete", json={"password": CREDS["password"]})
+    assert r.status_code == 200, r.text
 
 
 def test_a_guest_cannot_delete_and_keeps_its_history(client, db):
@@ -346,50 +383,51 @@ def test_account_payloads_carry_no_credentials(client):
     assert client.cookies[auth.COOKIE_NAME] not in body
 
 
-def test_failed_request_still_hands_out_the_identity_it_created(tmp_path, monkeypatch):
-    """A 503 from an empty bank must not mint an orphan row per retry.
-
-    The guest is committed while serving the request; if the error response
-    drops its Set-Cookie, the client never gets an identity and every retry
-    creates another unreachable row.
-    """
+def test_a_503_from_an_empty_bank_writes_nothing_at_all(tmp_path, monkeypatch):
+    """This used to mint a guest per retry, which is why the cookie had to be
+    re-applied from the error path — an orphaned row per retry otherwise. Now
+    /api/next writes nothing, so there is nothing to orphan."""
     empty = connect(tmp_path / "empty.db", check_same_thread=False)
     monkeypatch.setattr(server, "conn", empty)
     with TestClient(server.app) as c:
         for _ in range(3):
             assert c.get("/api/next").status_code == 503
-        assert auth.COOKIE_NAME in c.cookies
-    assert empty.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 1
-    assert empty.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
+        assert auth.COOKIE_NAME not in c.cookies
+    assert empty.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0
+    assert empty.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
 
 
-def test_concurrent_answers_do_not_clobber_rating(client, db):
-    """Two overlapping answers on one session (two tabs, or a retried POST).
+@pytest.mark.parametrize("item_count", [1])
+def test_concurrent_answers_do_not_clobber_shared_counters(db, item_count):
+    """Overlapping answers to one item from six sessions at once.
 
-    The user row is read-modify-written, so both requests must serialize on
-    the same lock the write happens under — a row read before that lock is a
-    snapshot, and the second writer would roll the first one back.
+    `items.attempts`/`correct` are read-modify-written and shared by every
+    user, so the requests must serialize on the same lock the write happens
+    under — a row read before that lock is a snapshot, and the last writer
+    would roll every other one back. (One *session* can no longer have two
+    answers in flight: /api/answer takes only the trial /api/next last served
+    it, which is what keeps the answer key out of reach.)
     """
-    trials = [next_trial(client) for _ in range(1)]
-    trials.append(next_trial(client))
-    results = []
-    threads = [
-        threading.Thread(target=lambda t=t: results.append(answer(client, t))) for t in trials
-    ]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
+    clients = [TestClient(server.app) for _ in range(6)]
+    try:
+        trials = [next_trial(c) for c in clients]
+        assert len({t["item_id"] for t in trials}) == 1  # one item, six answers
+        threads = [
+            threading.Thread(target=lambda c=c, t=t: answer(c, t))
+            for c, t in zip(clients, trials, strict=True)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+    finally:
+        for c in clients:
+            c.close()
 
-    row = db.execute("SELECT rating, calib_step, attempts FROM users").fetchone()
-    assert row["attempts"] == 2
-    # Both were correct-or-not, but each moved the rating from the previous
-    # one's result: the final row must equal the last recorded snapshot.
-    last = db.execute(
-        "SELECT user_rating_after FROM responses ORDER BY id DESC LIMIT 1"
-    ).fetchone()[0]
-    assert row["rating"] == last
-    assert db.execute("SELECT COUNT(DISTINCT user_rating_before) FROM responses").fetchone()[0] == 2
+    row = db.execute("SELECT attempts, correct FROM items").fetchone()
+    assert row["attempts"] == 6  # no increment lost to a stale snapshot
+    assert row["correct"] == db.execute("SELECT SUM(correct) FROM responses").fetchone()[0]
+    assert db.execute("SELECT COUNT(*) FROM responses").fetchone()[0] == 6
 
 
 def test_garbage_cookie_falls_back_to_a_fresh_guest(client):
@@ -412,7 +450,7 @@ def test_expired_sessions_stop_working(client, db):
 
 
 def test_signup_rotates_the_session_token(client):
-    client.get("/api/account")
+    answer(client, next_trial(client))  # the answer is what issues a session
     before = client.cookies[auth.COOKIE_NAME]
     client.post("/api/account/signup", json=CREDS)
     assert client.cookies[auth.COOKIE_NAME] != before
@@ -420,8 +458,9 @@ def test_signup_rotates_the_session_token(client):
 
 def test_sweep_drops_empty_guests_but_never_history(client, db):
     answer(client, next_trial(client))  # this guest has a response
-    with TestClient(server.app) as idle:
-        idle.get("/api/account")  # this one has nothing
+    # An answerless row: legacy data from when arriving minted one, or the gap
+    # between minting an identity and recording the answer that earned it.
+    auth.start_session(db, auth.create_guest(db, 700, 250)["id"])
     db.execute("UPDATE users SET created_at = datetime('now', '-30 days')")
     db.execute("UPDATE sessions SET last_seen = datetime('now', '-30 days')")
     db.commit()
@@ -431,6 +470,44 @@ def test_sweep_drops_empty_guests_but_never_history(client, db):
     names = [r[0] for r in db.execute("SELECT name FROM users")]
     assert len(names) == 1  # the idle guest is gone
     assert db.execute("SELECT COUNT(*) FROM responses").fetchone()[0] == 1
+
+
+def test_a_guest_that_answered_nothing_is_reclaimed_within_hours(db):
+    """This is what lets the arrival limit be loose enough that a real
+    first-time visitor never meets it: a flood an address can send is bounded by
+    its rate times this window, not by everything it ever sent. If reclamation
+    took a day, the limit would have to be a gate instead."""
+    with TestClient(server.app) as arrival:
+        arrival.get("/api/account")
+    # A fixed age, deliberately not derived from GUEST_TTL_HOURS: computing it
+    # from the constant would make this pass at any TTL, including the day-long
+    # one it exists to rule out.
+    db.execute("UPDATE users SET created_at = datetime('now', '-4 hours')")
+    db.execute("UPDATE sessions SET last_seen = datetime('now', '-4 hours')")
+    db.commit()
+
+    auth.sweep(db)
+
+    assert db.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0
+
+
+def test_the_sweep_never_reclaims_a_row_whose_session_is_still_warm(db):
+    """`session_user` only refreshes `last_seen` once an hour, so a session in
+    continuous use can look up to an hour stale. The TTL has to clear that gap,
+    or the sweep pulls a live identity out from under its owner — who then gets
+    silently re-identified, losing whatever rating they had climbed to."""
+    assert auth.GUEST_TTL_HOURS > 1
+    token = auth.start_session(db, auth.create_guest(db, 700, 250)["id"])
+    # Old enough to be a sweep candidate...
+    db.execute("UPDATE users SET created_at = datetime('now', '-2 days')")
+    # ...with the stalest `last_seen` an actively-used session can have. Just
+    # past the refresh interval is the case a one-hour TTL would get wrong.
+    db.execute("UPDATE sessions SET last_seen = datetime('now', '-61 minutes')")
+    db.commit()
+
+    auth.sweep(db)
+
+    assert auth.session_user(db, token) is not None
 
 
 def test_sweep_keeps_claimed_accounts_even_when_idle(client, db):
@@ -522,14 +599,23 @@ def test_rate_limiter_consume_is_atomic_under_threads():
     assert len(allowed) == 10
 
 
-def test_crash_still_hands_out_the_identity_it_created(client, db, monkeypatch):
-    """A 500 is handled outside our middleware; the cookie has to survive it."""
-    monkeypatch.setattr(server, "pick_item", lambda _: (_ for _ in ()).throw(RuntimeError("boom")))
+def test_a_crash_while_answering_still_hands_out_the_identity_it_created(db, monkeypatch):
+    """The identity is now created while serving the *answer*, so that's where
+    this invariant lives. A 500 is handled outside our middleware, and the
+    answer's row is already committed by the time the reveal is built — if the
+    error response drops the Set-Cookie, the row is orphaned and the next answer
+    mints another one."""
+
+    def boom(*_args):
+        raise RuntimeError("boom")
+
     with TestClient(server.app, raise_server_exceptions=False) as c:
-        for _ in range(3):
-            assert c.get("/api/next").status_code == 500
+        trial = next_trial(c)
+        monkeypatch.setattr(server, "line_steps", boom)  # after the writes commit
+        assert c.post("/api/answer", json=answer_body(trial)).status_code == 500
         assert auth.COOKIE_NAME in c.cookies
     assert db.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 1
+    assert db.execute("SELECT COUNT(*) FROM responses").fetchone()[0] == 1
 
 
 def test_throttled_signups_do_not_mint_guest_rows(db, monkeypatch):
@@ -561,9 +647,9 @@ def test_rate_limiter_key_space_is_bounded():
 
 
 def test_a_shed_signup_still_costs_a_slot(db, monkeypatch):
-    """A shed request has already minted a guest row and a session by the time
-    the hasher refuses it. Refunding the attempt would leave a saturated box
-    with an unmetered signup endpoint — worse than the throttling it avoids."""
+    """Refunding a shed attempt would leave a saturated box with an unmetered
+    signup endpoint — worse than the throttling it avoids. (It no longer leaves
+    a row behind either: the hash is refused before anything is written.)"""
     monkeypatch.setattr(server, "signup_limiter", auth.RateLimiter(3, 3600))
     monkeypatch.setattr(auth, "HASH_WAIT_S", 0.05)
     monkeypatch.setattr(auth, "_hash_slots", threading.Semaphore(0))
@@ -572,7 +658,7 @@ def test_a_shed_signup_still_costs_a_slot(db, monkeypatch):
         with TestClient(server.app) as c:  # a fresh browser each time
             codes.append(c.post("/api/account/signup", json=CREDS).status_code)
     assert codes == [503, 503, 503, 429, 429, 429], codes
-    assert db.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 3  # not 6
+    assert db.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0  # nothing written
 
 
 def test_every_signup_attempt_counts_including_rejected_ones(client, monkeypatch):
@@ -623,15 +709,56 @@ def test_throttling_one_account_does_not_touch_another(client, monkeypatch):
 
 
 def test_unknown_usernames_do_not_consume_a_real_accounts_budget(client, monkeypatch):
-    """Keys are row ids, so junk names can't crowd a real account's counter
-    out of the tracked key space and reset its throttle."""
+    """Every name gets its own counter, so junk names can't spend the budget
+    that protects a real account."""
     client.post("/api/account/signup", json=CREDS)
     monkeypatch.setattr(server, "login_limiter", auth.RateLimiter(2, 900))
     with TestClient(server.app) as c:
         for i in range(20):
             r = c.post("/api/account/login", json={"username": f"nobody{i}", "password": "x" * 12})
-            assert r.status_code == 400  # no account to protect, nothing counted
+            assert r.status_code == 400
         assert c.post("/api/account/login", json=CREDS).status_code == 200  # budget intact
+
+
+def test_an_unknown_username_is_throttled_exactly_like_a_real_one(client, monkeypatch):
+    """Otherwise the throttle itself answers "does this account exist?": a 429
+    for a name that has a counter, 400 forever for one that doesn't. Eleven
+    requests and no credentials, and it undoes the dummy-hash verify that keeps
+    the *timing* from saying the same thing."""
+    client.post("/api/account/signup", json=CREDS)
+    monkeypatch.setattr(server, "login_limiter", auth.RateLimiter(2, 900))
+    bad = {"password": "wrongwrongwrong"}
+    with TestClient(server.app) as c:
+        real = [
+            c.post("/api/account/login", json={**bad, "username": CREDS["username"]}).status_code
+        ]
+        real.append(
+            c.post("/api/account/login", json={**bad, "username": CREDS["username"]}).status_code
+        )
+        real.append(
+            c.post("/api/account/login", json={**bad, "username": CREDS["username"]}).status_code
+        )
+        ghost = [
+            c.post("/api/account/login", json={**bad, "username": "nosuchperson"}).status_code
+            for _ in range(3)
+        ]
+    assert real == [400, 400, 429]
+    assert ghost == real  # the boundary says nothing about which names exist
+
+
+def test_login_is_capped_per_address_even_for_names_that_do_not_exist(client, monkeypatch):
+    """argon2 is 64 MiB and ~50ms by design and only HASH_CONCURRENCY of them
+    run at once, so an unmetered password check is a way to answer every real
+    user 503. A name nobody registered must still cost the caller something."""
+    monkeypatch.setattr(server, "login_ip_limiter", auth.RateLimiter(3, 900))
+    with TestClient(server.app) as c:
+        codes = [
+            c.post(
+                "/api/account/login", json={"username": f"ghost{i}", "password": "x" * 12}
+            ).status_code
+            for i in range(5)
+        ]
+    assert codes == [400, 400, 400, 429, 429]
 
 
 def test_a_correct_password_clears_the_accounts_strikes(client, monkeypatch):
@@ -660,3 +787,123 @@ def test_a_saturated_hasher_waits_briefly_then_sheds(client, monkeypatch):
     assert r.status_code == 503
     assert "try again" in r.json()["detail"].lower()
     assert waited < auth.HASH_WAIT_S + 1
+
+
+def test_setting_a_password_signs_existing_sessions_out(client, db):
+    """`trainer.account set-password` is the only recovery path this app has —
+    no in-app password change, no reset email — so it has to assume the reason
+    it's being run is that someone else knows the old password. Rotating the
+    hash while leaving their session live recovers nothing."""
+    answer(client, next_trial(client))
+    client.post("/api/account/signup", json=CREDS)
+    token = client.cookies[auth.COOKIE_NAME]
+    assert auth.session_user(db, token) is not None
+
+    user = auth.find_by_username(db, CREDS["username"])
+    assert user is not None
+    db.execute(
+        "UPDATE users SET password_hash = ? WHERE id = ?",
+        (auth.hash_password("a-brand-new-password"), user["id"]),
+    )
+    db.commit()
+    assert auth.revoke_sessions(db, user["id"]) == 1
+
+    assert auth.session_user(db, token) is None
+    assert client.get("/api/account").json()["guest"] is True
+    # The history is still there for whoever knows the new password.
+    assert db.execute("SELECT COUNT(*) FROM responses").fetchone()[0] == 1
+
+
+def test_a_session_expires_absolutely_however_often_it_is_used(client, db):
+    """The idle window slides forward on every request, so on its own it never
+    expires a token that gets used — a stolen cookie would be permanent."""
+    client.post("/api/account/signup", json=CREDS)
+    token = client.cookies[auth.COOKIE_NAME]
+    assert auth.session_user(db, token) is not None
+
+    db.execute(
+        "UPDATE sessions SET created_at = datetime('now', ?), last_seen = datetime('now')",
+        (f"-{auth.SESSION_MAX_DAYS + 1} days",),
+    )
+    db.commit()
+    assert auth.session_user(db, token) is None  # warm, but too old to matter
+
+
+def test_an_ambiguous_username_is_refused_rather_than_guessed(db):
+    """Only reachable on a database whose case-insensitive unique index couldn't
+    be created. Picking one silently is how `set-password kim` ends up setting
+    it on `Kim`'s row, handing one user another's account."""
+    db.execute("DROP INDEX IF EXISTS idx_users_name_nocase")
+    for name in ("Kim", "kim"):
+        db.execute("INSERT INTO users (name, rating, calib_step) VALUES (?, 700, 250)", (name,))
+    db.commit()
+    with pytest.raises(auth.AuthError, match="matches 2 rows"):
+        auth.find_by_username(db, "KIM")
+
+
+def test_the_limiter_forgives_the_least_throttled_key_first(monkeypatch):
+    """Key eviction is unavoidable at the cap, but which key goes matters: a
+    login key is whatever username the caller typed, so evicting by age lets a
+    flood of one-hit junk push out the near-exhausted counter of the account
+    being guessed at and hand the attacker a fresh budget."""
+    limiter = auth.RateLimiter(limit=3, window_s=900)
+    monkeypatch.setattr(type(limiter), "MAX_KEYS", 8)
+    for _ in range(3):
+        limiter.consume("name:victim", now=1.0)
+    with pytest.raises(auth.RateLimited):
+        limiter.consume("name:victim", now=1.0)
+
+    for i in range(40):  # a flood of freshly-minted, barely-used keys
+        limiter.consume(f"name:junk{i}", now=2.0)
+
+    assert "name:victim" in limiter._hits  # survived; still out of guesses
+    with pytest.raises(auth.RateLimited):
+        limiter.consume("name:victim", now=2.0)
+
+
+def test_signing_up_before_answering_anything_creates_the_row(client, db):
+    """There's no guest row to claim until something has been answered, so the
+    drawer has to work for someone who opened it first thing."""
+    assert row_counts(db) == (0, 0, 0)
+    assert client.post("/api/account/signup", json=CREDS).json() == {
+        "username": "tester",
+        "guest": False,
+    }
+    assert row_counts(db) == (1, 1, 0)  # a real account, no history yet
+    assert client.get("/api/account").json()["username"] == "tester"
+    # And it's a working account: answers land on it, and it survives a re-login.
+    answer(client, next_trial(client))
+    with TestClient(server.app) as other:
+        assert other.post("/api/account/login", json=CREDS).status_code == 200
+        assert other.get("/api/stats").json()["attempts"] == 1
+
+
+def test_a_pre_identity_trial_is_spent_once_however_many_contexts_use_it(db):
+    """A token issued before its holder has an identity can't be bound to a
+    session that doesn't exist yet, so it is spent once and remembered instead.
+
+    The two clients below are one person's two contexts — a browser and a script —
+    not two people: a token goes to the one client that asked for it and nowhere
+    else, so nobody else has it to try. What that buys isn't privacy of the answer
+    key (the reveal gives that up the moment you commit) but the shared item
+    counters: without the ledger each replay mints a fresh row, which sees the
+    item for the first time, and first exposures are what move difficulty.
+    """
+    with TestClient(server.app) as browser, TestClient(server.app) as script:
+        trial = next_trial(browser)
+        peeked = script.post("/api/answer", json=answer_body(trial))
+        assert peeked.status_code == 200  # unbound, so either context may spend it
+        assert peeked.json()["best"]["uci"]
+
+        # Spent — by two different mechanisms, both reported as the status the
+        # client recovers from. The script now holds a session the anonymous
+        # token isn't bound to; the still-anonymous browser meets the ledger.
+        assert script.post("/api/answer", json=answer_body(trial)).status_code == 409
+        assert browser.post("/api/answer", json=answer_body(trial)).status_code == 409
+        # So the peek can't be banked as a correct answer either.
+        assert browser.get("/api/stats").json()["attempts"] == 0
+        answer(browser, next_trial(browser))  # a fresh trial works fine
+
+    # One row and one response per context — no per-replay inflation.
+    assert row_counts(db) == (2, 2, 2)
+    assert db.execute("SELECT SUM(attempts) FROM items").fetchone()[0] == 2

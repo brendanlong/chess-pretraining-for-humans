@@ -19,6 +19,7 @@ Usage:
 import argparse
 import io
 import json
+import re
 import sys
 from collections.abc import Iterable, Iterator
 
@@ -26,6 +27,12 @@ import chess
 import chess.pgn
 
 from .winprob import cp_to_winprob
+
+# A PGN header is attacker-controlled data the moment the PGN isn't a Lichess
+# dump, and this one is the only mined field the app renders as a link. The
+# reveal builds that link as a node rather than markup, so this is the second
+# of two locks; keeping the bank clean is worth the four lines regardless.
+GAME_URL_RE = re.compile(r"^https://lichess\.org/[A-Za-z0-9]{8,12}$")
 
 MIN_PLY = 12  # skip opening-book territory
 MAX_PLY = 90
@@ -35,6 +42,12 @@ MAX_GAP_WP = 0.35  # ...but not be an absurd blunder nobody would consider
 MIN_BASE_TIME_S = 180  # blitz and slower; bullet errors are mostly mouse slips
 MAX_PER_GAME = 2
 MIN_PLY_SPACING = 10  # candidates from one game must be far apart
+
+
+def game_url(site: str) -> str:
+    """The game's URL, or "" if it isn't one we'd put in front of a user."""
+    site = site.strip()
+    return site if GAME_URL_RE.match(site) else ""
 
 
 def raw_games(stream: Iterable[str]) -> Iterator[str]:
@@ -129,7 +142,7 @@ def mine_game(game: chess.pgn.Game, seen_fens: set[str]) -> list[dict]:
                 "cp_after_white": cp_after_white,
                 "gap_wp_mined": round(gap_wp, 4),
                 "ply": ply,
-                "game_url": headers.get("Site", ""),
+                "game_url": game_url(headers.get("Site", "")),
                 "mover_elo": int(headers.get(elo_key, 0) or 0),
                 "time_control": headers.get("TimeControl", ""),
             }

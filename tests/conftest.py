@@ -49,6 +49,33 @@ def item_count():
     return 2
 
 
+class _NoDatabase:
+    """Stands in for `server.conn` in tests that never asked for one."""
+
+    def __getattr__(self, attribute):
+        raise AssertionError(
+            "this test reached server.conn without the `db` fixture, so it was "
+            "about to use the real data/items.db — request `db` (or `client`) so "
+            "it gets a throwaway database instead"
+        )
+
+
+@pytest.fixture(autouse=True)
+def no_real_database(monkeypatch):
+    """Make forgetting the `db` fixture loud instead of silent.
+
+    `server.conn` is opened at import against the real database, so a test that
+    hits the API without `db` quietly uses whatever the developer has in `data/` —
+    passing on a laptop with a full item bank, failing in CI with an empty one,
+    and writing rows into the experimental record on the way past. That is exactly
+    how `test_a_rate_limit_can_say_what_it_is_actually_rationing` got committed.
+
+    Autouse, so it applies first; `db` overrides it for the tests that want a
+    database, and the one test that supplies its own connection still may.
+    """
+    monkeypatch.setattr(server, "conn", _NoDatabase())
+
+
 @pytest.fixture
 def db(tmp_path, monkeypatch, item_count):
     # TestClient runs the app in its own thread, like uvicorn's threadpool does.
@@ -62,6 +89,12 @@ def db(tmp_path, monkeypatch, item_count):
     for name, limiter in (
         ("signup_limiter", auth.RateLimiter(20, 3600)),
         ("login_limiter", auth.RateLimiter(20, 900)),
+        ("login_ip_limiter", auth.RateLimiter(200, 900)),
+        ("delete_limiter", auth.RateLimiter(20, 900)),
+        # Every client in a test shares one address, and some tests answer in
+        # bulk on purpose. The real limit gets its own test.
+        ("answer_limiter", auth.RateLimiter(100_000, 900)),
+        ("anonymous_trial_use", auth.RateLimiter(1, 900)),
     ):
         monkeypatch.setattr(server, name, limiter)
     return conn
@@ -80,10 +113,17 @@ def next_trial(client):
     return r.json()
 
 
-def answer(client, trial):
-    r = client.post(
-        "/api/answer",
-        json={"item_id": trial["item_id"], "choice_uci": trial["moves"][0]["uci"]},
-    )
+def answer(client, trial, choice: int = 0):
+    r = client.post("/api/answer", json=answer_body(trial, choice))
     assert r.status_code == 200, r.text
     return r.json()
+
+
+def answer_body(trial, choice: int = 0) -> dict:
+    """What the client sends back. The token is the server's own proof that it
+    offered this trial, so an answer without it isn't answering anything."""
+    return {
+        "item_id": trial["item_id"],
+        "trial_token": trial["trial_token"],
+        "choice_uci": trial["moves"][choice]["uci"],
+    }

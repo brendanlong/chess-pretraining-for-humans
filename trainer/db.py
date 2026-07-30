@@ -1,9 +1,11 @@
 """SQLite storage for items, users, and responses."""
 
-import contextlib
+import logging
 import os
 import sqlite3
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 # In a container the database lives on a mounted volume, not in the checkout,
 # and the server has no argv to take a path from.
@@ -110,9 +112,24 @@ def connect(path: Path = DEFAULT_DB, check_same_thread: bool = True) -> sqlite3.
     # It's an index over a check the queries make anyway, so a database that
     # can't take it — legacy names already collide, or someone else holds the
     # write lock — carries on without it rather than failing to open.
+    #
+    # But it carries on *loudly*. Without this index two rows can share a name
+    # case-insensitively, and then `find_by_username` is answering a question
+    # with two answers: the second owner can never sign in, and an operator
+    # running `set-password kim` would be setting it on `Kim`'s row — handing
+    # one user another's account. Failing silently here is what turns a
+    # legacy-data wrinkle into that, so say so where someone will see it.
     if not any(row[1] == USERS_NAME_INDEX for row in conn.execute("PRAGMA index_list(users)")):
-        with contextlib.suppress(sqlite3.Error):
+        try:
             conn.execute(f"CREATE UNIQUE INDEX {USERS_NAME_INDEX} ON users(name COLLATE NOCASE)")
+        except sqlite3.Error as e:
+            log.error(
+                "could not create %s (%s) — usernames are NOT uniquely constrained "
+                "case-insensitively. Two rows may share a name; `trainer.account` will "
+                "refuse to act on one until the collision is resolved by hand.",
+                USERS_NAME_INDEX,
+                e,
+            )
     item_cols = {row[1] for row in conn.execute("PRAGMA table_info(items)")}
     for col in ("pv_best", "pv_distractor"):
         if col not in item_cols:

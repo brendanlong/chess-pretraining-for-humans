@@ -27,39 +27,113 @@ unseen learnable item near the rating where the user's expected score is
 staircase first (start low, big steps, halve on miss). All responses are
 recorded with timing for later analysis.
 
+An answer is only accepted for a trial the server actually offered, which
+`trainer/trials.py` carries in an HMAC-signed token rather than a row: the answer
+payload *is* the answer key, and item ids are small sequential integers, so
+otherwise the whole bank reads out by counting and the trial on your own screen
+is one request from being looked up. The token names its holder as well as its
+item, so a throwaway client can't fetch one for the signed-in client to spend.
+
+Signed, not stored, for two reasons. A row to write it in would have to exist
+before the first trial, which is exactly the pressure that used to put a limit in
+front of arriving; and state means one pending trial per user, so two tabs fight.
+
+Two things do have to be remembered, though, and both were bugs first. The token
+says whether the trial was served *as a repeat*, because deciding that from the
+bank at answer time gets both boundaries wrong: answering your own last unseen
+item drops the count to zero, which made that token replayable, and a bank
+refilled mid-trial made a repeat we had just offered unanswerable. And a token
+issued before its holder had any identity — so bound to nobody — is spent once and
+remembered (`server.anonymous_trial_use`), because redeeming one *creates* the row
+that records it: every replay is a new identity seeing the item for the first
+time, and first exposures are exactly what move the item's shared counters. One
+token replayed would otherwise skew a single item's difficulty as hard as the
+volume limit allows, which is far worse than the diffuse noise `next`→`answer` can
+already make. That ledger is per-process and lost on restart, costing at most one
+extra replay per token; anonymous tokens expire quickly to keep it small.
+
+Worth being exact about who that defends against, because it is easy to write
+down as somebody else's token. It never is: a token goes to the one client that
+asked for it and nowhere else — TLS, a `no-store` body, never a URL or a log — so
+the only actor is its own holder, driving a browser and a script at once. Which
+also caps what the remaining gap is worth. The reveal hands the answer over as
+soon as you commit, so a pre-commit peek costs a burnt trial to learn what
+answering would have said for free, and single-use means it can't be banked as a
+correct answer either. Deciding not to spend more here is a judgement about value,
+not an unguarded hole.
+
+The signing key comes from `TRIAL_TOKEN_SECRET` (a Fly secret). Rotating it costs
+nothing but the trials in flight; unset, the server logs that it made an
+ephemeral one, which on a restarting machine means one refused answer per open
+tab.
+
 ## Identity (`trainer/auth.py`)
 
-Anonymous-first. The first request mints a guest `users` row and an opaque
-session token in an HttpOnly cookie; no name is typed and no name is
-guessable, which the old `?user=` scheme couldn't say. Signing up attaches a
-username, an argon2 password hash, and an optional unverified email (kept
-only for a future reset) to *that same row*, so an account is a claim on
+Anonymous-first, and lazy: arriving writes nothing. The first *answer* mints a
+guest `users` row and an opaque session token in an HttpOnly cookie; no name is
+typed and no name is guessable, which the old `?user=` scheme couldn't say. An
+earlier version issued that row on arrival, and the cost of it kept surfacing —
+crawlers and health checks grew the table, and metering the write was a limit in
+front of the first trial. Tying the row to the first answer means the only
+unauthenticated write is the one that produces something worth keeping. Signing
+up attaches a username, an argon2 password hash, and an optional unverified email
+(kept only for a future reset) to *that same row* — or creates it outright, for
+someone who signs up before answering anything — so an account is a claim on
 history rather than a gate in front of it. Sessions are a table of hashed
 tokens, so a database read grants no logins; the token is rotated on every
-privilege change, and `SameSite=Lax` plus `no-store` on every API response
-is the CSRF-and-shared-cache story. Signup and login are rate-limited per IP
-in memory rather than captcha'd. Login is throttled **per account**, not per
-address: what an attacker is guessing at is one account's password, and
-rotating addresses is a line of script, while several real users share one
-address routinely. The price is that a known account can be held locked while
-someone keeps guessing at it — inherent to per-account throttling, with the
-short window as the mitigation. Signup is throttled per address only because
-there is no account to key on yet — and "address" behind a proxy means a
-header the proxy overwrites (`CLIENT_IP_HEADER`), never the socket: trusting
-forwarded headers makes uvicorn believe the *leftmost* `X-Forwarded-For`
-entry, which a proxy appends to rather than replaces, so it is the caller's to
-invent and a flood keyed on it would get a fresh counter every request; per-IP volume really belongs in a reverse
-proxy, which sees the true client, is shared across workers and survives a
-restart, so treat that counter as insurance rather than a defence. Counters
-are charged before the slow work and never refunded — read-before/write-after
-is what a burst walks past, and per-outcome refunds need every exit path to be
-right. argon2 runs outside the database lock, under a concurrency cap because
-it is memory-hard by design (unbounded parallelism is an out-of-memory button)
-and with a short wait rather than an unbounded one, because sync endpoints
-share a fixed thread pool and a caller merely waiting still holds a thread the
-trial flow needs. Because arriving is
-enough to mint a guest, guests that answered nothing and went cold are swept
-periodically; anything with a response or a password is never touched.
+privilege change and expires both on idleness and absolutely, so a token that
+keeps being used still stops being a credential eventually. `SameSite=Lax`
+plus `no-store` on every API response is the CSRF-and-shared-cache story, and a
+CSP with no allowlist (everything the page loads is ours) is what stops a
+future hostile string in mined data from being script.
+
+Rate limiting, not captchas: the cost of a wrong guess here should be a wait,
+not a lost signup. Every password check is metered twice, and each half stops
+something the other can't. **Per name typed** is what protects one account's
+password — rotating addresses is a line of script, while several real users
+share one address routinely. **Per address** is what protects the box: argon2
+is memory-hard on purpose and only a few run at once, so an unmetered password
+check is a way to answer every real user 503, whether or not the name it names
+exists. Which is also why the name key is the name *submitted* rather than the
+row it resolves to: key on a row id and a name nobody registered has no
+counter, so the presence of a 429 becomes the answer to "does this account
+exist?" — an enumeration oracle that costs eleven requests and undoes the
+careful dummy-hash verify that keeps the *timing* from saying the same thing.
+Handing the key space to the caller is the price, which is why the limiter
+evicts its least-throttled keys rather than its oldest when full, and why the
+per-address budget in front makes filling it expensive.
+
+Per-name throttling means a known account can be held locked by someone who
+keeps guessing at it — inherent, with the short window as the mitigation — so
+deletion is keyed separately: the one irreversible thing a user might need to
+do *because* they're under attack must not be blockable from outside.
+
+Signup is keyed on address alone because there is no account to key on yet, and
+so is answering, because that is the only unauthenticated write left and the only
+thing that moves `items.attempts`/`correct` — global counters every user's
+difficulty targeting reads. The trial binding is no help there: `next`→`answer`
+skews an item as well as a bare `answer` did, one request later. That limit sits
+on the core loop, where several real users share one address routinely, so it is
+set far above any human pace; there is deliberately no limit at all on arriving,
+because arriving writes nothing to ration. "Address" behind a proxy means a
+header the proxy
+overwrites (`CLIENT_IP_HEADER`), never the socket: trusting forwarded headers
+makes uvicorn believe the *leftmost* `X-Forwarded-For` entry, which a proxy
+appends to rather than replaces, so it is the caller's to invent and a flood
+keyed on it would get a fresh counter every request. Per-IP volume really
+belongs in a reverse proxy, which sees the true client, is shared across
+workers and survives a restart, so treat these counters as insurance rather
+than a defence. They are charged before the slow work and never refunded —
+read-before/write-after is what a burst walks past, and per-outcome refunds
+need every exit path to be right. argon2 runs outside the database lock, under
+a concurrency cap because it is memory-hard by design (unbounded parallelism is
+an out-of-memory button) and with a short wait rather than an unbounded one,
+because sync endpoints share a fixed thread pool and a caller merely waiting
+still holds a thread the trial flow needs. Rows that answered nothing and went
+cold are swept periodically; anything with a response or a password is never
+touched. Since answering is what writes a row, the sweep now mostly tidies
+history — the guests the old arrival-minting left behind, and the gap between
+minting an identity and recording the answer that earned it.
 
 Deletion runs on the same reasoning as signup, in reverse: a signed-in session
 is the proof of ownership, which is what makes an in-app button the primary
@@ -74,7 +148,13 @@ before the `users` row they reference, all in one transaction — a half-deleted
 account is a live session pointing at nothing. `trainer/account.py` is the
 operator's way in for what the app can't reach: putting a password on a
 pre-account `?user=` profile, and deleting a row that has no password to
-re-enter.
+re-enter. Setting a password there signs that account's existing sessions out.
+With no reset email yet, that command is the only recovery path there is, so it
+has to assume the reason it's being run is that someone else knows the old
+password — and rotating the hash while leaving their session live recovers
+nothing. It also refuses to act on a name that matches two rows, which a
+database missing the case-insensitive unique index allows: guessing there is how
+one user's password ends up on another user's history.
 
 Two ordering constraints are easy to get wrong. Identity resolution is a
 dependency, but it yields a user *id*: FastAPI finishes dependencies before
@@ -159,7 +239,10 @@ responses are the experimental record.
 One Fly machine with the database on a volume — SQLite has one writer, so a
 second machine would be a second fork of the history rather than redundancy.
 The image carries the server only; Stockfish and zstd belong to the pipeline,
-which stays on a laptop. Litestream supervises uvicorn and streams the file to
+which stays on a laptop. The entrypoint drops to an unprivileged uid before
+starting anything, which is why it isn't a `USER` line: only root can chown a
+volume the platform mounts after the build, and Litestream is the supervisor, so
+the drop has to wrap it rather than the server. Litestream supervises uvicorn and streams the file to
 S3 continuously, because a volume is one disk on one host and `responses`
 can't be regenerated from anything. AWS holds the backup bucket, Litestream's
 IAM user, and the DNS record, in Terraform; Fly's own provider is archived, so

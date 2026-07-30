@@ -54,8 +54,13 @@ jobs:
             echo "HEAD is behind origin/main; a newer deploy supersedes this one"
             echo "superseded=true" >> "$GITHUB_ENV"
           }
+      # Pinned to a commit rather than @master. This step runs in the job that
+      # holds FLY_API_TOKEN and it installs the binary the next step invokes, so
+      # a mutable ref here means whoever controls that branch can deploy to
+      # production and `fly ssh` into the volume. Dependabot doesn't update
+      # branch refs either, so @master would never have been flagged. (= tag 1.6)
       - if: env.superseded != 'true'
-        uses: superfly/flyctl-actions/setup-flyctl@master
+        uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1
       # --ha=false: a second machine would fork the database. See fly.toml.
       - if: env.superseded != 'true'
         run: flyctl deploy --remote-only --ha=false

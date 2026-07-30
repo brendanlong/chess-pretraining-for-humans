@@ -54,6 +54,27 @@ function arrow(uci, brush) {
   return { orig: uci.slice(0, 2), dest: uci.slice(2, 4), brush };
 }
 
+// The scheme is checked rather than trusted: a `javascript:` href runs on click
+// even when assigned as a property instead of parsed from markup. A URL we
+// can't vouch for becomes text, which is the honest way to render a link we
+// won't follow.
+function gameLink(url) {
+  let href = null;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol === "https:" || parsed.protocol === "http:") href = parsed.href;
+  } catch {
+    // not an absolute URL at all (older items store "")
+  }
+  if (!href) return "the game it came from";
+  const a = document.createElement("a");
+  a.href = href;
+  a.target = "_blank";
+  a.rel = "noopener noreferrer";
+  a.textContent = "the game";
+  return a;
+}
+
 // "~" marks a still-calibrating rating (new users start low and climb fast)
 function ratingLabel(value, calibrating) {
   return (calibrating ? "~" : "") + value;
@@ -95,12 +116,17 @@ function renderStep() {
       lastMove: [step.uci.slice(0, 2), step.uci.slice(2, 4)],
     });
   }
-  el("line-sans").innerHTML = line.steps
-    .map((s, i) => {
-      const cur = i === stepIdx ? " current" : "";
-      return `<span class="ply${cur}">${s.san}</span>`;
-    })
-    .join(" ");
+  // Nodes rather than markup. SAN comes from python-chess and can't contain an
+  // HTML metacharacter, so this isn't a hole — but it was the app's second
+  // innerHTML fed by server data, and one is enough to have to think about.
+  el("line-sans").replaceChildren(
+    ...line.steps.flatMap((s, i) => {
+      const span = document.createElement("span");
+      span.className = i === stepIdx ? "ply current" : "ply";
+      span.textContent = s.san;
+      return i ? [" ", span] : [span];
+    }),
+  );
   lines.forEach((l, i) => {
     el(`tab-${i}`).classList.toggle("active", i === activeLine);
   });
@@ -268,10 +294,22 @@ async function choose(i) {
   try {
     result = await api("/api/answer", {
       item_id: trial.item_id,
+      // The server's own proof that it offered us this item. Answering is also
+      // what mints the identity, so on a first visit this is the request that
+      // gets us a cookie — nothing before it wrote anything.
+      trial_token: trial.trial_token,
       choice_uci: choice.uci,
       response_ms: Math.round(performance.now() - shownAt),
     });
   } catch (err) {
+    if (err.status === 409) {
+      // Our trial token is no longer redeemable: it expired, or the session it
+      // was issued to changed under us. Retrying the same pick would fail
+      // forever, so fetch a trial this session can actually answer.
+      el("prompt").textContent = "That trial has expired — loading a fresh one…";
+      nextTrial();
+      return;
+    }
     // Submit failed: back to choosing so the same pick can be retried.
     phase = "choosing";
     choiceEls.forEach((b) => (b.disabled = false));
@@ -321,13 +359,18 @@ async function choose(i) {
     ? "rerun — not rated"
     : `${result.rating_delta >= 0 ? "+" : ""}${result.rating_delta} Elo`;
 
-  const source =
-    result.distractor_source === "game"
-      ? `the move actually played in <a href="${result.game_url}" target="_blank">the game</a>`
-      : "the engine's second choice";
-  el("detail").innerHTML =
-    `Gap: ${result.gap_wp}% win probability. The alternative was ${source}. ` +
-    `Item rating ${result.item_rating}.`;
+  // Built as nodes, not markup. `game_url` is the `Site` header of a mined PGN
+  // — the one string here that didn't originate in this codebase — and
+  // interpolating it into innerHTML would make a hostile PGN a stored XSS.
+  const detail = el("detail");
+  detail.replaceChildren(`Gap: ${result.gap_wp}% win probability. The alternative was `);
+  if (result.distractor_source === "game") {
+    detail.append("the move actually played in ");
+    detail.append(gameLink(result.game_url));
+  } else {
+    detail.append("the engine's second choice");
+  }
+  detail.append(`. Item rating ${result.item_rating}.`);
 
   el("ask").hidden = true;
   el("feedback").hidden = false;

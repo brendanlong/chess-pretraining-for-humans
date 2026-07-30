@@ -4,9 +4,9 @@ from html.parser import HTMLParser
 import pytest
 from fastapi.testclient import TestClient
 
-from trainer import auth, server
+from trainer import auth, server, trials
 
-from .conftest import answer, next_trial
+from .conftest import answer, answer_body, next_trial
 
 
 class Head(HTMLParser):
@@ -216,3 +216,236 @@ def test_separate_browsers_get_separate_identities(db):
         assert a.get("/api/stats").json()["attempts"] == 1
         assert b.get("/api/stats").json()["attempts"] == 0
         assert next_trial(b)["repeat"] is False  # b's bank is untouched
+
+
+def test_an_answer_must_be_to_the_trial_that_was_served(client, db):
+    """The /api/answer payload *is* the answer key — best move, both evals,
+    both lines — and item ids are small sequential integers. Without this,
+    reading the answer to the trial on your own screen before committing to it
+    is one request, which is the one thing SPEC says nothing may do; and the
+    whole bank can be dumped by counting.
+    """
+    served = next_trial(client)
+    other = db.execute("SELECT id FROM items WHERE id != ?", (served["item_id"],)).fetchone()[0]
+
+    r = client.post("/api/answer", json={"item_id": other, "choice_uci": "e2e4"})
+    assert r.status_code == 409
+    assert "best" not in r.json()  # nothing about the item comes back
+
+    # The shared counters that drive difficulty for everyone are untouched.
+    assert db.execute("SELECT attempts FROM items WHERE id = ?", (other,)).fetchone()[0] == 0
+    assert db.execute("SELECT COUNT(*) FROM responses").fetchone()[0] == 0
+    # ...and the trial actually in progress still answers fine.
+    assert answer(client, served)["correct"] in (True, False)
+
+
+def test_an_unserved_item_is_unanswerable_without_a_token(db):
+    """The interesting caller isn't the one playing — it's a second client asking
+    about the item id the first one is looking at."""
+    with TestClient(server.app) as player, TestClient(server.app) as prober:
+        trial = next_trial(player)
+        r = prober.post(
+            "/api/answer",
+            json={"item_id": trial["item_id"], "choice_uci": trial["moves"][0]["uci"]},
+        )
+        assert r.status_code == 409
+    assert db.execute("SELECT COUNT(*) FROM responses").fetchone()[0] == 0
+
+
+def test_a_trial_issued_to_one_session_cannot_be_redeemed_by_another(client, db):
+    """The token names its holder, not just its item. Without that, a throwaway
+    client could fetch a token and the signed-in one could spend it — which is
+    the pre-commit peek the binding exists to stop."""
+    answer(client, next_trial(client))  # `client` now has an identity
+    mine = next_trial(client)
+    with TestClient(server.app) as other:
+        assert other.post("/api/answer", json=answer_body(mine)).status_code == 409
+    # And a *different* identity's token is no good to me either.
+    with TestClient(server.app) as third:
+        answer(third, next_trial(third))
+        theirs = next_trial(third)
+    assert client.post("/api/answer", json=answer_body(theirs)).status_code == 409
+
+
+@pytest.mark.parametrize(
+    "mangle",
+    [
+        pytest.param(lambda t: None, id="absent"),
+        pytest.param(lambda t: "", id="empty"),
+        pytest.param(lambda t: "not-a-token", id="malformed"),
+        pytest.param(lambda t: t[:-1] + ("a" if t[-1] != "a" else "b"), id="tampered-signature"),
+        pytest.param(lambda t: t.replace(t.split(".")[2], "99999999999", 1), id="extended-expiry"),
+    ],
+)
+def test_a_token_we_did_not_sign_is_refused(client, db, mangle):
+    trial = next_trial(client)
+    body = {**answer_body(trial), "trial_token": mangle(trial["trial_token"])}
+    assert client.post("/api/answer", json=body).status_code == 409
+    assert db.execute("SELECT COUNT(*) FROM responses").fetchone()[0] == 0
+
+
+def test_an_expired_token_is_refused(client, db, monkeypatch):
+    """A tab left open for a day should ask for a fresh trial, not answer a
+    stale one — the client turns the 409 into exactly that."""
+    monkeypatch.setattr(trials, "TOKEN_TTL_S", -1)
+    monkeypatch.setattr(trials, "ANON_TOKEN_TTL_S", -1)
+    trial = next_trial(client)
+    assert client.post("/api/answer", json=answer_body(trial)).status_code == 409
+    assert db.execute("SELECT COUNT(*) FROM responses").fetchone()[0] == 0
+
+
+def test_an_anonymous_token_expires_sooner_than_a_bound_one(client):
+    """It's the weaker kind — interchangeable between callers, and replayable
+    unless the server still remembers it — so it gets a shorter life, which also
+    keeps that memory small."""
+    assert trials.ANON_TOKEN_TTL_S < trials.TOKEN_TTL_S
+    anon = next_trial(client)["trial_token"]
+    assert trials.is_anonymous(anon)
+    answer(client, next_trial(client))  # now `client` has an identity
+    bound = next_trial(client)["trial_token"]
+    assert not trials.is_anonymous(bound)
+    assert int(bound.split(".")[4]) > int(anon.split(".")[4])
+
+
+def test_an_answer_is_spent_once(client, db):
+    """A re-answer is legitimate only once there is nothing fresh left, so
+    anything else — a double tap, a retry after a slow response, a replayed
+    token — is refused rather than recorded twice."""
+    trial = next_trial(client)
+    answer(client, trial)
+    r = client.post("/api/answer", json=answer_body(trial))
+    assert r.status_code == 409
+    assert db.execute("SELECT COUNT(*) FROM responses").fetchone()[0] == 1
+
+
+def test_a_repeat_does_not_move_the_shared_item_counters(client, db):
+    """Item difficulty is fed by `attempts`/`correct`, which are global and
+    survive account deletion. SPEC excludes repeats from ratings and accuracy for
+    the same reason they should be excluded here: a remembered answer measures
+    nothing, and counting it skews difficulty for everyone."""
+    for _ in range(2):  # exhaust the bank, so repeats become legitimate
+        answer(client, next_trial(client))
+    before = dict(db.execute("SELECT SUM(attempts) a, SUM(correct) c FROM items").fetchone())
+
+    repeat = next_trial(client)
+    assert repeat["repeat"] is True
+    assert answer(client, repeat)["repeat"] is True
+
+    after = dict(db.execute("SELECT SUM(attempts) a, SUM(correct) c FROM items").fetchone())
+    assert after == before
+    # The response is still recorded — it just isn't evidence about the item.
+    assert db.execute("SELECT COUNT(*) FROM responses").fetchone()[0] == 3
+
+
+def test_responses_carry_security_headers(client):
+    """A CSP is what keeps a hostile string in mined game data from being
+    script rather than a broken link; the rest is close-the-door hardening."""
+    for path in ("/", "/api/account"):
+        h = client.get(path).headers
+        assert "default-src 'self'" in h["content-security-policy"]
+        assert "frame-ancestors 'none'" in h["content-security-policy"]
+        assert h["x-content-type-options"] == "nosniff"
+        assert h["referrer-policy"] == "same-origin"
+
+
+def test_answering_is_rate_limited_but_arriving_is_free(client, db, monkeypatch):
+    """Answering is the only unauthenticated write left, and the only thing that
+    moves the counters every user's difficulty reads — so that's where the volume
+    gate belongs. Arriving stays free, because a limit there is a gate in front
+    of the first trial."""
+    monkeypatch.setattr(server, "answer_limiter", auth.RateLimiter(1, 900))
+    answer(client, next_trial(client))  # spends the only slot
+    refused = client.post("/api/answer", json=answer_body(next_trial(client)))
+    assert refused.status_code == 429
+    # Reading is never refused, however many times.
+    for _ in range(5):
+        assert client.get("/api/next").status_code == 200
+        assert client.get("/api/stats").status_code == 200
+    assert db.execute("SELECT COUNT(*) FROM responses").fetchone()[0] == 1
+
+
+def test_a_rate_limit_can_say_what_it_is_actually_rationing(client, monkeypatch):
+    """The default wording speaks to someone who typed something wrong, which is
+    not every limiter — so each carries its own message."""
+    monkeypatch.setattr(server, "answer_limiter", auth.RateLimiter(1, 900, "a message of its own"))
+    answer(client, next_trial(client))
+    refused = client.post("/api/answer", json=answer_body(next_trial(client)))
+    assert refused.json()["detail"] == "a message of its own"
+    assert auth.RateLimiter(0, 900).message == auth.RateLimiter.DEFAULT_MESSAGE
+
+
+def test_nothing_about_an_item_is_reflected_without_a_valid_token(client, db):
+    """Not just the answer key: "that isn't one of the offered moves" tells an
+    id-counting caller which two moves an item pairs, and a 404 tells them how
+    big the bank is. So the token is checked before the item is even read."""
+    trial = next_trial(client)
+    other = db.execute("SELECT id FROM items WHERE id != ?", (trial["item_id"],)).fetchone()[0]
+    for body in (
+        {"item_id": other, "choice_uci": "e2e4"},  # no token at all
+        {"item_id": other, "choice_uci": "h7h8", "trial_token": trial["trial_token"]},
+        {"item_id": 99999, "choice_uci": "e2e4", "trial_token": trial["trial_token"]},
+    ):
+        r = client.post("/api/answer", json=body)
+        assert r.status_code == 409, r.text
+        assert "offered moves" not in r.text and "unknown item" not in r.text
+
+
+def test_one_anonymous_token_cannot_be_replayed_into_many_first_exposures(client, db):
+    """The attack the ledger exists for. Redeeming an anonymous token *creates*
+    the identity that records it, so without the ledger every replay is a brand
+    new row seeing the item for the first time — and first exposures are exactly
+    what moves the item's shared counters. One captured token would skew one
+    item's difficulty as far as the volume limit allows, which is far worse than
+    the diffuse noise `next`→`answer` can already make."""
+    trial = next_trial(client)
+    before = db.execute("SELECT attempts FROM items WHERE id = ?", (trial["item_id"],)).fetchone()[
+        0
+    ]
+
+    codes = []
+    for _ in range(6):
+        with TestClient(server.app) as fresh:  # cookieless every time
+            codes.append(fresh.post("/api/answer", json=answer_body(trial)).status_code)
+
+    assert codes == [200, 409, 409, 409, 409, 409]
+    after = db.execute("SELECT attempts FROM items WHERE id = ?", (trial["item_id"],)).fetchone()[0]
+    assert after == before + 1  # one answer, not six
+    assert db.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 1
+
+
+def test_answering_your_last_unseen_item_does_not_make_its_token_replayable(client, db):
+    """The boundary a live `unseen_count` check got wrong: answering the last
+    unseen item takes the count to zero as a *result* of that answer, which made
+    "is a repeat allowed right now?" true and the token replayable. The token
+    itself now says whether we served it as a repeat.
+
+    The first answer is spent getting an identity, so that the token under test is
+    bound to a session — otherwise the binding refuses the replay first and this
+    would pass without exercising the repeat rule at all.
+    """
+    answer(client, next_trial(client))
+    last = next_trial(client)
+    assert last["repeat"] is False
+    answer(client, last)
+    assert client.get("/api/stats").json()["items_remaining"] == 0  # bank now empty
+
+    for _ in range(3):
+        assert client.post("/api/answer", json=answer_body(last)).status_code == 409
+    assert db.execute("SELECT COUNT(*) FROM responses").fetchone()[0] == 2
+
+
+@pytest.mark.parametrize("item_count", [1])
+def test_a_repeat_we_served_stays_answerable_even_if_the_bank_refills(client, db, item_count):
+    """The mirror of the same bug: a live count would turn a repeat the server
+    had just offered into "you already answered this" the moment new items
+    arrived mid-trial."""
+    answer(client, next_trial(client))
+    repeat = next_trial(client)
+    assert repeat["repeat"] is True
+
+    from .conftest import FEN_TMPL, add_item  # the bank grows under the open trial
+
+    add_item(db, FEN_TMPL.format("7P"))
+    db.commit()
+
+    assert client.post("/api/answer", json=answer_body(repeat)).status_code == 200
