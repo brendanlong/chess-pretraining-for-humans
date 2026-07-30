@@ -404,9 +404,10 @@ class RateLimiter:
         self.limit = limit
         self.window_s = window_s
         # The default speaks to someone who typed something wrong. Not every
-        # limiter rations a guess: the one in front of guest minting turns away
-        # a stranger who has done nothing at all, and telling them they have
-        # made too many attempts is both untrue and unhelpful.
+        # limiter rations a guess: the one in front of answering is refusing a
+        # perfectly good answer because the address is busy, and the spend-once
+        # ledger isn't rationing anything at all. Telling either of them they
+        # have made too many attempts is untrue and unhelpful.
         self.message = message
         self._hits: dict[str, list[float]] = {}
         self._lock = threading.Lock()  # endpoints no longer serialize elsewhere

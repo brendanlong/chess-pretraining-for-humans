@@ -9,15 +9,23 @@ the pending trial becomes state the client holds and cannot forge.
 
 The token names the holder as well as the item. That part is load-bearing: a
 token issued to nobody in particular could otherwise be fetched by a throwaway
-cookieless client and spent by the signed-in one, which is the pre-commit peek
-it exists to prevent. Anonymous tokens (issued before anyone has answered
-anything) are interchangeable between anonymous callers, so the server also
-remembers that it has seen one — see `server.anonymous_trial_use`. Without that,
-replaying a single anonymous token mints a fresh row per replay, and because each
-row is seeing the item for the first time, every replay counts as a first
-exposure and moves the item's shared counters. That turns one captured token into
-a targeted skew of one item's difficulty, which is worse than the diffuse noise
-`next`→`answer` can already make.
+cookieless client and spent by the signed-in one, which is the pre-commit peek it
+exists to prevent.
+
+A token issued before its holder has any identity can't be bound to a session
+that doesn't exist yet, so the server remembers it has spent one instead — see
+`server.anonymous_trial_use`. Note who that defends against: a token is only ever
+handed to the one client that asked for it, over TLS, in a `no-store` body, never
+in a URL or a log, so nobody else has it. The actor is the holder using two
+contexts at once, and the thing worth stopping is not the peek — replaying is how
+one client mints a fresh row per replay, and since each row is seeing the item for
+the first time, each replay counts as a first exposure and moves the item's shared
+counters. That is a targeted skew of one item's difficulty, which is worse than
+the diffuse noise `next`→`answer` can already make.
+
+The peek itself barely repays the effort, which is why nothing more is spent on
+it: the reveal hands over the answer as soon as you commit, so peeking buys, at
+the cost of a burnt trial, something answering would have told you for free.
 
 The token also carries whether the trial was served *as a repeat*, so the "you
 already answered this" rule is decided from what the server offered rather than

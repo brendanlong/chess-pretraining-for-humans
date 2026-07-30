@@ -878,31 +878,32 @@ def test_signing_up_before_answering_anything_creates_the_row(client, db):
         assert other.get("/api/stats").json()["attempts"] == 1
 
 
-def test_an_anonymous_trial_can_be_redeemed_by_a_stranger_but_only_once(db):
-    """The gap the token binding leaves, recorded so it stays a known one.
+def test_a_pre_identity_trial_is_spent_once_however_many_contexts_use_it(db):
+    """A token issued before its holder has an identity can't be bound to a
+    session that doesn't exist yet, so it is spent once and remembered instead.
 
-    A trial served before its owner has any identity is bound to "nobody", so a
-    second cookieless client can redeem it and read the answer key. What it can't
-    do is repeat: the server remembers an anonymous token has been spent, which is
-    what stops one captured token from minting a row per replay — each of which
-    would be a fresh first exposure moving the item's shared counters. The cost is
-    that the stranger burned the visitor's trial; the client turns that 409 into
-    fetching another one.
+    The two clients below are one person's two contexts — a browser and a script —
+    not two people: a token goes to the one client that asked for it and nowhere
+    else, so nobody else has it to try. What that buys isn't privacy of the answer
+    key (the reveal gives that up the moment you commit) but the shared item
+    counters: without the ledger each replay mints a fresh row, which sees the
+    item for the first time, and first exposures are what move difficulty.
     """
-    with TestClient(server.app) as player, TestClient(server.app) as prober:
-        trial = next_trial(player)
-        peeked = prober.post("/api/answer", json=answer_body(trial))
-        assert peeked.status_code == 200  # the gap
+    with TestClient(server.app) as browser, TestClient(server.app) as script:
+        trial = next_trial(browser)
+        peeked = script.post("/api/answer", json=answer_body(trial))
+        assert peeked.status_code == 200  # unbound, so either context may spend it
         assert peeked.json()["best"]["uci"]
 
-        # Spent, by two different mechanisms and the same recoverable status:
-        # the prober now holds a session the anonymous token isn't bound to, and
-        # the still-anonymous player meets the ledger.
-        assert prober.post("/api/answer", json=answer_body(trial)).status_code == 409
-        assert player.post("/api/answer", json=answer_body(trial)).status_code == 409
-        assert player.get("/api/stats").json()["attempts"] == 0
-        answer(player, next_trial(player))  # a fresh trial works fine
+        # Spent — by two different mechanisms, both reported as the status the
+        # client recovers from. The script now holds a session the anonymous
+        # token isn't bound to; the still-anonymous browser meets the ledger.
+        assert script.post("/api/answer", json=answer_body(trial)).status_code == 409
+        assert browser.post("/api/answer", json=answer_body(trial)).status_code == 409
+        # So the peek can't be banked as a correct answer either.
+        assert browser.get("/api/stats").json()["attempts"] == 0
+        answer(browser, next_trial(browser))  # a fresh trial works fine
 
-    # Exactly one row each, and one response each — no per-replay inflation.
+    # One row and one response per context — no per-replay inflation.
     assert row_counts(db) == (2, 2, 2)
     assert db.execute("SELECT SUM(attempts) FROM items").fetchone()[0] == 2
