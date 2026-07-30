@@ -1,0 +1,54 @@
+# See deploy/README.md for the one-time bootstrap.
+app = "chess-pretraining"
+# Ashburn. web/privacy.html tells users the app is hosted in the United States
+# and reserves the region itself as an operational choice, so this can move —
+# within the country, or the page changes with it.
+primary_region = "iad"
+
+# SIGINT is what Litestream forwards to the server; the 30s matches its
+# shutdown sync, and Fly's 5s default would cut that short on every deploy and
+# every auto-stop — losing the tail of whatever was just answered.
+kill_signal = "SIGINT"
+kill_timeout = 30
+
+[build]
+# flyctl picks up ./Dockerfile on its own.
+
+[env]
+TRAINER_DB = "/data/items.db"
+# fly-proxy sets this one itself. X-Forwarded-For would be the obvious choice
+# and is the wrong one: the proxy appends to whatever the caller sent, so the
+# entry uvicorn reads is the caller's to invent, and the signup limiter would
+# be counting a value the flooder picks.
+CLIENT_IP_HEADER = "fly-client-ip"
+
+# SQLite has one writer, so this app has exactly one machine. Deploy with
+# --ha=false: a second machine would need its own volume (a fork of the
+# database, silently serving different users different history) and would be a
+# second Litestream writing the same S3 prefix, which corrupts the replica.
+[[mounts]]
+source = "chess_pretraining_data"
+destination = "/data"
+initial_size = "1gb"
+
+[http_service]
+internal_port = 8080
+force_https = true
+# Stopping when idle is safe here — the volume outlives the machine, and
+# uvicorn cold-starts in about a second. Not "suspend": that skips the clean
+# shutdown Litestream needs to flush its last writes.
+auto_stop_machines = "stop"
+auto_start_machines = true
+min_machines_running = 0
+
+[[http_service.checks]]
+path = "/healthz"
+method = "GET"
+interval = "15s"
+timeout = "5s"
+# Covers a first-boot `litestream restore`, which runs before uvicorn binds.
+grace_period = "30s"
+
+[[vm]]
+size = "shared-cpu-1x"
+memory = "512mb"

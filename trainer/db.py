@@ -1,10 +1,13 @@
 """SQLite storage for items, users, and responses."""
 
 import contextlib
+import os
 import sqlite3
 from pathlib import Path
 
-DEFAULT_DB = Path("data/items.db")
+# In a container the database lives on a mounted volume, not in the checkout,
+# and the server has no argv to take a path from.
+DEFAULT_DB = Path(os.environ.get("TRAINER_DB", "data/items.db"))
 USERS_NAME_INDEX = "idx_users_name_nocase"
 
 SCHEMA = """

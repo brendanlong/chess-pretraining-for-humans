@@ -1,0 +1,63 @@
+name: Deploy
+
+# Deploys follow a green CI run rather than the push itself: this app has one
+# machine and one database, so a bad deploy is downtime, not a rolled-back
+# replica set.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One machine, one volume, one SQLite writer — overlapping deploys have
+# nothing good to do with each other.
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # `branches` above filters the *triggering* run's head branch, and CI runs
+    # on every pull_request — so a fork PR opened from a branch named `main`
+    # matches it. A workflow_run job gets the base repo's secrets, and the
+    # checkout below takes `head_sha`, so without the head_repository test that
+    # is a fork's commit deployed with a live token. The step that compares HEAD
+    # to origin/main happens to catch it too; that step is about deploy order,
+    # so don't let it be the only thing standing here.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # workflow_run runs against the default branch's tip; pin to the
+          # commit CI actually tested.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      # CI runs finish in whatever order they finish, not in commit order, so
+      # an older commit's run can complete after a newer one's and deploy
+      # backwards over it. Nothing fails when that happens — production just
+      # quietly stops matching main.
+      - name: Skip if main has moved on
+        run: |
+          git fetch --quiet origin main
+          # FETCH_HEAD, not origin/main: checkout@v7 clones shallow and doesn't
+          # necessarily leave a remote-tracking ref behind.
+          [ "$(git rev-parse HEAD)" = "$(git rev-parse FETCH_HEAD)" ] || {
+            echo "HEAD is behind origin/main; a newer deploy supersedes this one"
+            echo "superseded=true" >> "$GITHUB_ENV"
+          }
+      - if: env.superseded != 'true'
+        uses: superfly/flyctl-actions/setup-flyctl@master
+      # --ha=false: a second machine would fork the database. See fly.toml.
+      - if: env.superseded != 'true'
+        run: flyctl deploy --remote-only --ha=false
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

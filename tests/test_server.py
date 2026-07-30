@@ -58,6 +58,17 @@ def test_legal_pages_are_served_and_reachable_before_signing_up(client):
         assert served.headers["content-type"].startswith("text/html")
 
 
+def test_healthz_is_free_and_anonymous(client, db):
+    """The platform probes it every few seconds forever."""
+    before = db.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+    r = client.get("/healthz")
+    assert r.status_code == 200 and r.json() == {"ok": True}
+    # No identity: a probe that minted a guest would fill the table with rows
+    # the sweep then has to clear, and would hand the prober a session cookie.
+    assert db.execute("SELECT COUNT(*) FROM users").fetchone()[0] == before
+    assert auth.COOKIE_NAME not in r.cookies
+
+
 def test_separate_browsers_get_separate_identities(db):
     with TestClient(server.app) as a, TestClient(server.app) as b:
         answer(a, next_trial(a))

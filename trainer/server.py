@@ -5,6 +5,7 @@ Run:
 """
 
 import functools
+import os
 import random
 import threading
 from pathlib import Path
@@ -213,6 +214,18 @@ def pick_item(user: dict) -> tuple[dict | None, bool]:
     return (dict(row), True) if row else (None, False)
 
 
+@app.get("/healthz")
+def healthz():
+    """Liveness for the platform's health check.
+
+    Deliberately outside `/api/`: it takes no identity dependency, so a probe
+    every few seconds doesn't mint (and then sweep) a guest row, and it doesn't
+    take the database lock, so a slow query can't make a healthy machine look
+    dead and get it restarted mid-answer.
+    """
+    return {"ok": True}
+
+
 @app.get("/api/next")
 @locked
 def next_item(user_id: int = CurrentUserId):
@@ -375,9 +388,25 @@ def stats(user_id: int = CurrentUserId):
 # none of them can leak which move is better.
 
 
+# Which header, if any, carries an address the client can't choose for itself.
+# Empty means "believe the socket", which is right when nothing is in front.
+CLIENT_IP_HEADER = os.environ.get("CLIENT_IP_HEADER", "").lower()
+
+
 def client_key(request: Request) -> str:
-    # Behind a reverse proxy this is only the real client if uvicorn runs with
-    # --proxy-headers and a trusted --forwarded-allow-ips.
+    """The address to charge a rate-limit slot to.
+
+    Not `request.client.host`, when a proxy is in front. uvicorn's
+    `--forwarded-allow-ips '*'` takes the *leftmost* `X-Forwarded-For` entry,
+    and a proxy appends to whatever the client sent rather than replacing it —
+    so that address is the caller's to choose, and a signup flood keyed on it
+    would get a fresh counter per request. Name a header the proxy overwrites
+    (`fly-client-ip` on Fly) and charge that instead.
+    """
+    if CLIENT_IP_HEADER:
+        forwarded = request.headers.get(CLIENT_IP_HEADER)
+        if forwarded:
+            return forwarded
     return request.client.host if request.client else "unknown"
 
 

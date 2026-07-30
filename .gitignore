@@ -145,6 +145,17 @@ vite.config.ts.timestamp-*
 # project
 data/
 .playwright-mcp/
+
+# terraform: local state and anything holding a key. .terraform.lock.hcl is
+# committed on purpose — it's what actually pins the provider build.
+.terraform/
+*.tfstate
+*.tfstate.*
+terraform/terraform.tfvars
+# A saved plan is a readable copy of everything the plan touched, secrets
+# included, and it is stale the moment it's applied. Never commit one.
+tfplan
+*.tfplan
 __pycache__/
 *.pyc
 .venv/

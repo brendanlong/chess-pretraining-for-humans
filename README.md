@@ -27,6 +27,9 @@ uv run python -m trainer.label data/candidates.jsonl
 uv run uvicorn trainer.server:app --host 0.0.0.0 --port 8000
 ```
 
+The database is `data/items.db` unless `TRAINER_DB` says otherwise — which is
+how the container finds it on its volume.
+
 ## Using it
 
 Press <kbd>1</kbd>/<kbd>2</kbd> (or tap) to answer; the chosen move's
@@ -58,14 +61,30 @@ uv run python -m trainer.account delete brendan   # asks for the name back
 
 Behind a reverse proxy, terminate TLS there (the session cookie is marked
 `Secure` whenever the request arrives over https) and run uvicorn with
-`--proxy-headers` and a trusted `--forwarded-allow-ips`, so the signup limit
-sees real client addresses rather than counting the whole site as one. Login
-throttling is per account and unaffected either way.
+`--proxy-headers` and a trusted `--forwarded-allow-ips`.
+
+That settles the scheme but not the address: with `--forwarded-allow-ips '*'`
+uvicorn believes the leftmost `X-Forwarded-For` entry, and proxies append to
+that header rather than replacing it, so the address is whatever the caller
+put there. Set `CLIENT_IP_HEADER` to a header your proxy *overwrites*
+(`fly-client-ip` on Fly, or an `X-Real-IP` you set yourself in nginx) and the
+signup limit is charged to that instead. Leave it unset when nothing is in
+front. Login throttling is per account and unaffected either way.
 
 If you expose this publicly, put per-IP request limiting in the proxy
 (`limit_req` in nginx, or equivalent) rather than relying on the in-app
 counter: the proxy's is shared across workers, survives a restart, and sheds
 load before it reaches Python.
+
+## Deploying it
+
+One Fly machine, SQLite on a volume, Litestream replicating to S3, DNS and the
+bucket in Terraform. Bootstrap and runbooks in **[deploy/README.md](deploy/README.md)**;
+the AWS side in [terraform/README.md](terraform/README.md).
+
+Mining and labeling stay local, so a refreshed bank is pushed to the
+deployment rather than deployed with it — `./deploy/push-items.sh` merges the
+new positions in without touching the responses that share the file.
 
 ## Checks
 

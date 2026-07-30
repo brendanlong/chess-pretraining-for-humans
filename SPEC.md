@@ -69,6 +69,10 @@ automatically.
 - **Explanations are grounded in engine output.** The engine lines are the
   authority; any prose (user's pasted questions today, generated
   narration later) sits next to them, never replaces them.
+- **The record outlives the deployment.** Responses are the experiment, so
+  they are replicated off the machine that serves them, and no routine
+  operation — refreshing the item bank especially — may replace the live
+  database wholesale.
 
 ## Not yet built
 

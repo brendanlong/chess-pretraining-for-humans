@@ -44,7 +44,11 @@ rotating addresses is a line of script, while several real users share one
 address routinely. The price is that a known account can be held locked while
 someone keeps guessing at it — inherent to per-account throttling, with the
 short window as the mitigation. Signup is throttled per address only because
-there is no account to key on yet; per-IP volume really belongs in a reverse
+there is no account to key on yet — and "address" behind a proxy means a
+header the proxy overwrites (`CLIENT_IP_HEADER`), never the socket: trusting
+forwarded headers makes uvicorn believe the *leftmost* `X-Forwarded-For`
+entry, which a proxy appends to rather than replaces, so it is the caller's to
+invent and a flood keyed on it would get a fresh counter every request; per-IP volume really belongs in a reverse
 proxy, which sees the true client, is shared across workers and survives a
 restart, so treat that counter as insurance rather than a defence. Counters
 are charged before the slow work and never refunded — read-before/write-after
@@ -118,3 +122,21 @@ One SQLite database: `items` (positions, moves, evals, lines, difficulty),
 (hashed cookie tokens), `responses` (every answer, timed, with rating
 snapshots). The item bank is disposable and rebuildable from the pipeline;
 responses are the experimental record.
+
+## Deployment (`deploy/`, `terraform/`)
+
+One Fly machine with the database on a volume — SQLite has one writer, so a
+second machine would be a second fork of the history rather than redundancy.
+The image carries the server only; Stockfish and zstd belong to the pipeline,
+which stays on a laptop. Litestream supervises uvicorn and streams the file to
+S3 continuously, because a volume is one disk on one host and `responses`
+can't be regenerated from anything. AWS holds the backup bucket, Litestream's
+IAM user, and the DNS record, in Terraform; Fly's own provider is archived, so
+that side is `fly.toml` and `flyctl`.
+
+The consequence worth naming is that a refreshed item bank can't arrive as a
+file: the bank and the record share a file, so `trainer/push_items.py` carries
+items across as their own database and merges them in, matching on position
+rather than on row id. Positions already present are skipped — relabelling an
+item under the answers already given to it would make those answers
+uninterpretable.
