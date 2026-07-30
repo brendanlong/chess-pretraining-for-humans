@@ -28,10 +28,11 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --frozen
-      # Without it the committed-PNGs-are-squeezed test skips, which would make
-      # it useless in the one place it exists to catch things.
+      # The PNGs-are-squeezed test needs it, and fails rather than skips when
+      # it's missing. `update` first: the runner image's apt index can be a
+      # week stale, and a superseded pool file 404s without it.
       - name: install optipng
-        run: sudo apt-get install -y optipng
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends optipng
       - name: ruff (lint)
         run: uv run ruff check --output-format=github .
       - name: ruff (format)
