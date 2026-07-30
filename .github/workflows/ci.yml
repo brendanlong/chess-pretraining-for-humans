@@ -28,6 +28,10 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --frozen
+      # Without it the committed-PNGs-are-squeezed test skips, which would make
+      # it useless in the one place it exists to catch things.
+      - name: install optipng
+        run: sudo apt-get install -y optipng
       - name: ruff (lint)
         run: uv run ruff check --output-format=github .
       - name: ruff (format)

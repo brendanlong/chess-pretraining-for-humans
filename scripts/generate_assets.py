@@ -20,13 +20,29 @@ don't be surprised, and don't commit a card you only meant to look at.
 
 import re
 import struct
+import subprocess
 from base64 import b64encode
 from pathlib import Path
+from shutil import which
 
 from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parent.parent
 WEB = ROOT / "web"
+
+
+def optimize(path: Path) -> None:
+    """Recompress a PNG in place, losslessly.
+
+    Chromium's encoder is tuned for speed, so what it hands back is 15-45%
+    larger than it needs to be — on icons every browser fetches, and a card
+    unfurlers fetch. `-o7` tries every filter/zlib combination, which costs a
+    few seconds across this set and nothing at all at serve time. `-strip all`
+    is a no-op against today's Chromium, which writes no ancillary chunks; it
+    is there so a version that starts writing a timestamp can't turn every
+    regeneration into a diff.
+    """
+    subprocess.run(["optipng", "-quiet", "-o7", "-strip", "all", path], check=True)
 
 
 def app_palette() -> str:
@@ -120,6 +136,9 @@ def write_ico(path: Path, members: list[tuple[int, bytes]]) -> None:
 
 
 def main() -> None:
+    if which("optipng") is None:
+        raise SystemExit("optipng not on PATH — install it, or the assets ship oversized")
+
     written = [WEB / "favicon.svg"]
     (WEB / "favicon.svg").write_text(ROUNDED + "\n")
 
@@ -139,6 +158,7 @@ def main() -> None:
             )
             # The rounded tile's corners must stay transparent.
             page.screenshot(path=WEB / name, omit_background=True)
+            optimize(WEB / name)
             written.append(WEB / name)
 
         # Straight goto, so the mock's relative links (the cburnett CSS, the
@@ -148,6 +168,7 @@ def main() -> None:
         # Appended to <head>, so it outranks the mock's own :root on order.
         page.add_style_tag(content=app_palette())
         page.screenshot(path=WEB / "social-preview.png")
+        optimize(WEB / "social-preview.png")
         written.append(WEB / "social-preview.png")
 
         browser.close()

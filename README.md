@@ -94,6 +94,13 @@ uv sync --group assets
 uv run --group assets playwright install chromium
 ```
 
+`optipng` also has to be on PATH (`apt install optipng`): every PNG the script
+writes is recompressed in place before it lands, which is lossless and takes
+15-45% off what Chromium's encoder produces — the favicon.ico shrinks with it,
+since it just wraps two of those PNGs. `tests/test_assets.py` recompresses each
+committed PNG and fails if that finds much left to take, so a PNG can't reach
+`web/` unsqueezed whatever route it came by.
+
 The icons come out of a bishop silhouette defined in that script; the card is
 a screenshot of `scripts/social-preview.html`, a hand-written wireframe of the
 trial screen, so nothing has to be running to rebuild it. The icons are pure
