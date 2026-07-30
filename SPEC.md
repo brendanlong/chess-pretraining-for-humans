@@ -26,6 +26,12 @@ automatically.
 - **Nothing may leak the answer before the user commits.** No UI element,
   API payload, or (future) overlay cue may distinguish the two moves
   pre-answer.
+- **Colour is load-bearing, so it has to work for everyone.** Which arrow
+  belongs to which button, and which move the engine preferred, are things
+  only colour says quickly. Both pairs have to stay apart for red-green
+  colour blindness and under the warm filters night-mode displays apply,
+  and the candidate pair also has to stay free of any hint that one move
+  is the safer one.
 - **The correct answer is the position's best move** by full-strength
   engine analysis — never a weakened engine, and never "the less bad of two
   bad moves".

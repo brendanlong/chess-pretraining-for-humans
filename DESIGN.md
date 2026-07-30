@@ -96,6 +96,17 @@ chosen move's engine line (switchable to the other, steppable, speed
 configurable), and can copy the position + both lines as plain text for
 pasting into an assistant.
 
+The palette lives entirely in `:root`, including the dark, saturated
+arrow variants the light board needs alongside the light ones the dark
+panel needs; `app.js` reads the arrow colours back out of CSS so a brush
+can't drift away from the button it is supposed to match. Both meaningful
+pairs are chosen on the blue-yellow axis — blue/orange for the two
+candidates, green/rose for best against worse — since red-green vision
+deficiencies and warm night filters both flatten the red/green and
+blue/purple pairs into a single hue. Chessground's global 0.6 dimming of
+drawn shapes is overridden, because compositing that far toward the board
+throws away the separation.
+
 Layout is mobile-first: a slim header (rating, recent accuracy, user,
 settings) over a single column, with the space under the board swapping
 between the choice buttons and the reveal — verdict and rating delta,
