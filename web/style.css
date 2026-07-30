@@ -119,6 +119,15 @@ main {
 
 #board { width: var(--bw); height: var(--bw); }
 
+/* Vendored chessground nudges both coord rows off their own axis: the files
+   by `left: 24px` on top of `width: 100%`, so half a square of letters hangs
+   past the board — and where the board is viewport-wide, that hangover is a
+   strip of page you can swipe to. Each row already centres itself (letters
+   by text-align, digits by translateY), so the nudges only decentre them.
+   Upstream's own fix is the same two zeroes (chessground#343, unmerged). */
+.cg-wrap coords.files { left: 0; }
+.cg-wrap coords.ranks { top: 0; }
+
 #panel { width: var(--bw); max-width: 100%; padding: 0 12px; }
 
 @media (min-width: 900px) {
