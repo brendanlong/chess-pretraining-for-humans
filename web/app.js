@@ -1,7 +1,7 @@
 import { Chessground } from "./vendor/chessground.min.js";
 
-// Identity lives entirely in an HttpOnly session cookie the server sets on
-// the first request — there is nothing to type and nothing here to spoof.
+// Identity lives entirely in an HttpOnly session cookie, minted by the first
+// answer — there is nothing to type and nothing here to spoof.
 let account = { username: null, guest: true };
 
 const BRUSHES = ["choice-1", "choice-2"]; // arrow colors matching the two buttons
@@ -117,8 +117,8 @@ function renderStep() {
     });
   }
   // Nodes rather than markup. SAN comes from python-chess and can't contain an
-  // HTML metacharacter, so this isn't a hole — but it was the app's second
-  // innerHTML fed by server data, and one is enough to have to think about.
+  // HTML metacharacter, so this isn't a hole — but every innerHTML fed by
+  // server data is one more thing to have to think about.
   el("line-sans").replaceChildren(
     ...line.steps.flatMap((s, i) => {
       const span = document.createElement("span");
@@ -384,12 +384,16 @@ async function choose(i) {
 async function initStats() {
   try {
     const s = await api("/api/stats");
-    if (s.account) setAccount(s.account);
+    if (s.account) account = s.account;
     if (s.accuracy_last_50 != null)
       el("stat-acc").textContent = Math.round(s.accuracy_last_50 * 100) + "%";
   } catch (e) {
+    // Fall through to setAccount anyway: the drawer's account sections start
+    // hidden in the HTML, so the guest view (and its sign-in forms) has to be
+    // applied even when stats can't be fetched.
     console.warn(e);
   }
+  setAccount(account);
 }
 
 // --- account --------------------------------------------------------------
@@ -581,20 +585,9 @@ el("prompt").addEventListener("click", () => {
   if (phase === "error") nextTrial();
 });
 
-// The first request is what mints a guest identity and its cookie, so it has
-// to land alone — parallel cold requests would each create their own row.
-async function boot() {
-  let a = { username: null, guest: true };
-  try {
-    a = await api("/api/account");
-  } catch (e) {
-    // Fall back to the guest view rather than leaving the drawer's account
-    // section blank: the forms still work, and a failing one says why.
-    console.warn(e);
-  }
-  setAccount(a);
-  initStats();
-  nextTrial();
-}
-
-boot();
+// Nothing at boot writes anything — identity is minted by the first answer —
+// so these are safe to race. /api/stats carries the account for the header;
+// if it fails, the page keeps its default guest view and the drawer's forms
+// still work.
+initStats();
+nextTrial();

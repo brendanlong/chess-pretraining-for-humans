@@ -4,11 +4,23 @@ Before adding or changing features, read:
 
 - **[SPEC.md](SPEC.md)** — goals and invariants (what we want)
 - **[DESIGN.md](DESIGN.md)** — architecture (how it's built)
+- **[deploy/README.md](deploy/README.md)** — running the live instance
+  (bootstrap, runbooks, operational cautions; the AWS half is
+  [terraform/README.md](terraform/README.md))
 
 When a change alters behavior, update the relevant file: new goals or
-invariants go in SPEC.md, structural changes in DESIGN.md. Both stay
-brief, code-free, and non-repeating — if it's obvious from the code,
-don't document it.
+invariants go in SPEC.md, structural changes in DESIGN.md, and anything
+an operator does or must not do goes in deploy/README.md. All of them
+stay brief, code-free, and non-repeating — if it's obvious from the
+code, or already said in one of the others, don't document it. Detailed
+"why is it built this way" reasoning lives in comments beside the code
+it justifies; DESIGN.md points at it rather than restating it.
+
+Comments document only what a reader needs to know about the *current*
+state of the app. State the reason a thing is the way it is, not the
+history of how it got that way — no "used to", "an earlier version",
+or "no longer" unless the old state left data behind that the code
+still handles.
 
 ## Working on the code
 

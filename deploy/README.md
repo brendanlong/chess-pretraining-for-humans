@@ -14,6 +14,25 @@ the pipeline; `responses` is not, which is why there's a backup story at all.
 | `../terraform/` | Route 53 record, backup bucket, Litestream's IAM user |
 | `../.github/workflows/deploy.yml` | `flyctl deploy` after CI goes green on main |
 
+## Behind a reverse proxy (Fly's, or your own)
+
+Terminate TLS at the proxy (the session cookie is marked `Secure` whenever
+the request arrives over https) and run uvicorn with `--proxy-headers` and a
+trusted `--forwarded-allow-ips` — the Dockerfile and `fly.toml` already do.
+
+That settles the scheme but not the address: with `--forwarded-allow-ips '*'`
+uvicorn believes the leftmost `X-Forwarded-For` entry, and proxies append to
+that header rather than replacing it, so the address is whatever the caller
+put there. Set `CLIENT_IP_HEADER` to a header your proxy *overwrites*
+(`fly-client-ip` on Fly, or an `X-Real-IP` you set yourself in nginx) and the
+per-address limits are charged to that instead. Leave it unset when nothing
+is in front. Login throttling is per account and unaffected either way.
+
+If you expose this publicly, put per-IP request limiting in the proxy
+(`limit_req` in nginx, or equivalent) rather than relying on the in-app
+counter: the proxy's is shared across workers, survives a restart, and sheds
+load before it reaches Python.
+
 ## One-time bootstrap
 
 Order matters: Terraform mints the AWS key that Fly needs as a secret, and Fly

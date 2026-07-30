@@ -1,8 +1,8 @@
 """Trial tokens: the server's own proof that it offered this item to this caller.
 
 `/api/answer` returns the answer key, so it has to be reachable only by
-answering a trial that was really served. Recording that server-side meant a
-`users` row had to exist before the first trial — and minting a row on arrival
+answering a trial that was really served. Recording that server-side would mean
+a `users` row exists before the first trial — and minting a row on arrival
 makes arriving a write, a write needs a limit, and a limit on arriving is a gate
 in front of the first trial, which SPEC forbids. A signed token needs no row:
 the pending trial becomes state the client holds and cannot forge.
@@ -29,10 +29,10 @@ the cost of a burnt trial, something answering would have told you for free.
 
 The token also carries whether the trial was served *as a repeat*, so the "you
 already answered this" rule is decided from what the server offered rather than
-from what the bank happens to look like when the answer arrives. Asking
-`unseen_count` at redemption time got both boundaries wrong: answering your last
-unseen item drops the count to zero and made that token replayable, and a bank
-refilled mid-trial made a legitimately-served repeat unanswerable.
+from what the bank happens to look like when the answer arrives. Deciding it
+from the bank at redemption time gets both boundaries wrong: answering your
+last unseen item drops the count to zero and makes that token replayable, and a
+bank refilled mid-trial makes a legitimately-served repeat unanswerable.
 """
 
 import base64
@@ -96,13 +96,6 @@ def _sign(payload: str) -> str:
 
 
 FIELDS = 5  # item, user, served-as-repeat, nonce, expiry — then the mac
-
-
-def is_anonymous(token: str | None) -> bool:
-    """Whether this token was issued to nobody in particular, and so needs the
-    server to remember it has been spent."""
-    parts = (token or "").split(".")
-    return len(parts) == FIELDS + 1 and parts[1] == "0"
 
 
 def issue(item_id: int, user_id: int | None, served_as_repeat: bool) -> str:

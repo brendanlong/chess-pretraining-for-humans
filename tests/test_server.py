@@ -300,10 +300,10 @@ def test_an_anonymous_token_expires_sooner_than_a_bound_one(client):
     keeps that memory small."""
     assert trials.ANON_TOKEN_TTL_S < trials.TOKEN_TTL_S
     anon = next_trial(client)["trial_token"]
-    assert trials.is_anonymous(anon)
+    assert anon.split(".")[1] == "0"  # the user field: issued to nobody yet
     answer(client, next_trial(client))  # now `client` has an identity
     bound = next_trial(client)["trial_token"]
-    assert not trials.is_anonymous(bound)
+    assert bound.split(".")[1] != "0"
     assert int(bound.split(".")[4]) > int(anon.split(".")[4])
 
 
