@@ -878,15 +878,16 @@ def test_signing_up_before_answering_anything_creates_the_row(client, db):
         assert other.get("/api/stats").json()["attempts"] == 1
 
 
-def test_an_anonymous_trial_is_transferable_between_anonymous_callers(db):
-    """The one gap the token binding leaves, recorded so it stays a known one.
+def test_an_anonymous_trial_can_be_redeemed_by_a_stranger_but_only_once(db):
+    """The gap the token binding leaves, recorded so it stays a known one.
 
     A trial served before its owner has any identity is bound to "nobody", so a
-    second cookieless client can redeem it and read the answer key. What that
-    can't do is accumulate: redeeming mints the *redeemer* a row and records the
-    answer there, and every trial after the first is bound to a real session. So
-    the exposure is one trial, on a visitor who has answered nothing, and the
-    peek can never land on an identity that keeps its cookie.
+    second cookieless client can redeem it and read the answer key. What it can't
+    do is repeat: the server remembers an anonymous token has been spent, which is
+    what stops one captured token from minting a row per replay — each of which
+    would be a fresh first exposure moving the item's shared counters. The cost is
+    that the stranger burned the visitor's trial; the client turns that 409 into
+    fetching another one.
     """
     with TestClient(server.app) as player, TestClient(server.app) as prober:
         trial = next_trial(player)
@@ -894,11 +895,14 @@ def test_an_anonymous_trial_is_transferable_between_anonymous_callers(db):
         assert peeked.status_code == 200  # the gap
         assert peeked.json()["best"]["uci"]
 
-        # It landed on the prober, not the player: separate rows, and the player
-        # still has to answer for themselves.
-        assert prober.get("/api/stats").json()["attempts"] == 1
+        # Spent, by two different mechanisms and the same recoverable status:
+        # the prober now holds a session the anonymous token isn't bound to, and
+        # the still-anonymous player meets the ledger.
+        assert prober.post("/api/answer", json=answer_body(trial)).status_code == 409
+        assert player.post("/api/answer", json=answer_body(trial)).status_code == 409
         assert player.get("/api/stats").json()["attempts"] == 0
-        answer(player, trial)
+        answer(player, next_trial(player))  # a fresh trial works fine
 
-    rows = db.execute("SELECT user_id, COUNT(*) FROM responses GROUP BY user_id").fetchall()
-    assert [r[1] for r in rows] == [1, 1]  # one each, on two different rows
+    # Exactly one row each, and one response each — no per-replay inflation.
+    assert row_counts(db) == (2, 2, 2)
+    assert db.execute("SELECT SUM(attempts) FROM items").fetchone()[0] == 2

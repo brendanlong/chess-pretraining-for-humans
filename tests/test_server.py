@@ -288,9 +288,23 @@ def test_an_expired_token_is_refused(client, db, monkeypatch):
     """A tab left open for a day should ask for a fresh trial, not answer a
     stale one — the client turns the 409 into exactly that."""
     monkeypatch.setattr(trials, "TOKEN_TTL_S", -1)
+    monkeypatch.setattr(trials, "ANON_TOKEN_TTL_S", -1)
     trial = next_trial(client)
     assert client.post("/api/answer", json=answer_body(trial)).status_code == 409
     assert db.execute("SELECT COUNT(*) FROM responses").fetchone()[0] == 0
+
+
+def test_an_anonymous_token_expires_sooner_than_a_bound_one(client):
+    """It's the weaker kind — interchangeable between callers, and replayable
+    unless the server still remembers it — so it gets a shorter life, which also
+    keeps that memory small."""
+    assert trials.ANON_TOKEN_TTL_S < trials.TOKEN_TTL_S
+    anon = next_trial(client)["trial_token"]
+    assert trials.is_anonymous(anon)
+    answer(client, next_trial(client))  # now `client` has an identity
+    bound = next_trial(client)["trial_token"]
+    assert not trials.is_anonymous(bound)
+    assert int(bound.split(".")[4]) > int(anon.split(".")[4])
 
 
 def test_an_answer_is_spent_once(client, db):
@@ -377,3 +391,64 @@ def test_nothing_about_an_item_is_reflected_without_a_valid_token(client, db):
         r = client.post("/api/answer", json=body)
         assert r.status_code == 409, r.text
         assert "offered moves" not in r.text and "unknown item" not in r.text
+
+
+def test_one_anonymous_token_cannot_be_replayed_into_many_first_exposures(client, db):
+    """The attack the ledger exists for. Redeeming an anonymous token *creates*
+    the identity that records it, so without the ledger every replay is a brand
+    new row seeing the item for the first time — and first exposures are exactly
+    what moves the item's shared counters. One captured token would skew one
+    item's difficulty as far as the volume limit allows, which is far worse than
+    the diffuse noise `next`→`answer` can already make."""
+    trial = next_trial(client)
+    before = db.execute("SELECT attempts FROM items WHERE id = ?", (trial["item_id"],)).fetchone()[
+        0
+    ]
+
+    codes = []
+    for _ in range(6):
+        with TestClient(server.app) as fresh:  # cookieless every time
+            codes.append(fresh.post("/api/answer", json=answer_body(trial)).status_code)
+
+    assert codes == [200, 409, 409, 409, 409, 409]
+    after = db.execute("SELECT attempts FROM items WHERE id = ?", (trial["item_id"],)).fetchone()[0]
+    assert after == before + 1  # one answer, not six
+    assert db.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 1
+
+
+def test_answering_your_last_unseen_item_does_not_make_its_token_replayable(client, db):
+    """The boundary a live `unseen_count` check got wrong: answering the last
+    unseen item takes the count to zero as a *result* of that answer, which made
+    "is a repeat allowed right now?" true and the token replayable. The token
+    itself now says whether we served it as a repeat.
+
+    The first answer is spent getting an identity, so that the token under test is
+    bound to a session — otherwise the binding refuses the replay first and this
+    would pass without exercising the repeat rule at all.
+    """
+    answer(client, next_trial(client))
+    last = next_trial(client)
+    assert last["repeat"] is False
+    answer(client, last)
+    assert client.get("/api/stats").json()["items_remaining"] == 0  # bank now empty
+
+    for _ in range(3):
+        assert client.post("/api/answer", json=answer_body(last)).status_code == 409
+    assert db.execute("SELECT COUNT(*) FROM responses").fetchone()[0] == 2
+
+
+@pytest.mark.parametrize("item_count", [1])
+def test_a_repeat_we_served_stays_answerable_even_if_the_bank_refills(client, db, item_count):
+    """The mirror of the same bug: a live count would turn a repeat the server
+    had just offered into "you already answered this" the moment new items
+    arrived mid-trial."""
+    answer(client, next_trial(client))
+    repeat = next_trial(client)
+    assert repeat["repeat"] is True
+
+    from .conftest import FEN_TMPL, add_item  # the bank grows under the open trial
+
+    add_item(db, FEN_TMPL.format("7P"))
+    db.commit()
+
+    assert client.post("/api/answer", json=answer_body(repeat)).status_code == 200

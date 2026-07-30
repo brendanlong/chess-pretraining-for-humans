@@ -87,6 +87,19 @@ answer_limiter = auth.RateLimiter(
     window_s=900,
     message="Answers are coming in faster than we can count. Try again in a moment.",
 )
+# Not a rate limit — a spend-once ledger, which is the same data structure: a
+# bounded, in-memory, time-expiring set of keys. An anonymous trial token has no
+# session to bind to, and redeeming one *creates* the identity that records it, so
+# each replay is a brand-new row seeing the item for the first time and moving its
+# shared counters again. One captured token would otherwise skew one item's
+# difficulty as far as the volume limit allows. Per-process and lost on restart,
+# which costs at most one extra replay per token; the short anonymous token life
+# is what keeps the set small enough that eviction stays theoretical.
+anonymous_trial_use = auth.RateLimiter(
+    limit=1,
+    window_s=trials.ANON_TOKEN_TTL_S,
+    message="That trial has already been answered — fetch a new one.",
+)
 
 # Guests are swept periodically rather than on a timer; there is no scheduler
 # here and arrival rate is exactly the signal that we need one. The counter is
@@ -367,7 +380,7 @@ def next_item(user_id: int | None = OptionalUserId):
         "item_id": item["id"],
         # The server's proof that it offered this item to this caller, which is
         # what /api/answer checks instead of consulting a row that may not exist.
-        "trial_token": trials.issue(item["id"], user_id),
+        "trial_token": trials.issue(item["id"], user_id, is_repeat),
         "fen": item["fen"],
         "side_to_move": "white" if chess.Board(item["fen"]).turn else "black",
         "moves": [{"uci": m, "san": san(item["fen"], m)} for m in moves],
@@ -409,9 +422,18 @@ def answer(a: Answer, request: Request):
     # sequential integers, so nothing here may reflect one back without proof
     # that we served it.
     try:
-        trials.redeem(a.trial_token, a.item_id, u["id"] if u else None)
+        served_as_repeat = trials.redeem(a.trial_token, a.item_id, u["id"] if u else None)
     except trials.InvalidTrial as e:
         raise HTTPException(409, f"{e} — fetch a new trial") from e
+    if u is None:
+        # An anonymous token is the one kind a replay can profit from, because
+        # the row that would notice the repeat doesn't exist yet. Answered as a
+        # 409 rather than the limiter's 429: "this trial is spent" is the same
+        # thing the client already knows how to recover from by fetching another.
+        try:
+            anonymous_trial_use.consume(a.trial_token or "")
+        except auth.RateLimited as e:
+            raise HTTPException(409, str(e)) from e
 
     item = conn.execute("SELECT * FROM items WHERE id = ?", (a.item_id,)).fetchone()
     if item is None:  # only reachable if the bank dropped it mid-trial
@@ -433,11 +455,12 @@ def answer(a: Answer, request: Request):
         ).fetchone()
         is not None
     )
-    # A repeat is legitimate only once there is nothing fresh left to serve, so
-    # anything else answering an item twice is a replayed token or a resubmitted
-    # POST. Refusing it is what a spent-once trial bought when the pending item
-    # lived in a column; the responses table can say the same thing for free.
-    if is_repeat and unseen_count(u["id"]) > 0:
+    # A repeat is legitimate only if we *offered* it as one, which the token says.
+    # Asking `unseen_count` here instead got both boundaries wrong: answering your
+    # own last unseen item takes the count to zero, which made that token
+    # replayable, and a bank refilled mid-trial made a repeat we had just served
+    # unanswerable.
+    if is_repeat and not served_as_repeat:
         raise HTTPException(409, "that trial has already been answered — fetch a new one")
     # Repeats only happen when the bank is exhausted; they get feedback like
     # any trial but don't move ratings — a remembered answer isn't skill.

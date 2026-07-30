@@ -37,13 +37,25 @@ item, so a throwaway client can't fetch one for the signed-in client to spend.
 Signed, not stored, for two reasons. A row to write it in would have to exist
 before the first trial, which is exactly the pressure that used to put a limit in
 front of arriving; and state means one pending trial per user, so two tabs fight.
-The remaining hole is small and known: a trial served before its owner has any
-identity is bound to nobody, so another anonymous caller can redeem it —
-recording the answer on *their* row, never accumulating onto a session that keeps
-its cookie. That, and the fact that `next`→`answer` reaches every item anyway,
-is why enforcement stops here rather than growing a nonce store. What *does*
-protect the shared counters is that only first exposures move them, and a
-per-address limit on answering.
+
+Two things do have to be remembered, though, and both were bugs first. The token
+says whether the trial was served *as a repeat*, because deciding that from the
+bank at answer time gets both boundaries wrong: answering your own last unseen
+item drops the count to zero, which made that token replayable, and a bank
+refilled mid-trial made a repeat we had just offered unanswerable. And an
+anonymous token — one issued before its holder had any identity, so bound to
+nobody — is spent once and remembered (`server.anonymous_trial_use`), because
+redeeming one *creates* the row that records it: every replay is a new identity
+seeing the item for the first time, and first exposures are exactly what move the
+item's shared counters. One captured token would otherwise skew a single item's
+difficulty as hard as the volume limit allows, which is far worse than the diffuse
+noise `next`→`answer` can already make. That ledger is per-process and lost on
+restart, costing at most one extra replay per token; anonymous tokens expire
+quickly to keep it small.
+
+The hole that remains is narrow and known: an anonymous token is interchangeable
+between anonymous callers, so a stranger who obtains one can burn a first-time
+visitor's trial (the client fetches another) and read that one answer key.
 
 The signing key comes from `TRIAL_TOKEN_SECRET` (a Fly secret). Rotating it costs
 nothing but the trials in flight; unset, the server logs that it made an
