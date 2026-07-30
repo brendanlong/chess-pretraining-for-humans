@@ -15,17 +15,15 @@
 <title>Chess Pretraining — social preview</title>
 <link rel="stylesheet" href="../web/vendor/chessground.cburnett.css">
 <style>
+  /* Every --var below this line comes from web/style.css, injected by
+     generate_assets.py — the card advertises the app, so it can't be holding
+     its own copy of colours the app has since changed. Opening this file
+     directly renders it unstyled; run the generator. */
+  /* The board, which the app doesn't state as colors — chessground lays 20%
+     black over the light square, so this is what it composites to on screen. */
   :root {
-    --bg: #161512;
-    --panel: #211f1c;
-    --card: #2c2a26;
-    --line: #3a3733;
-    --text: #d8d5d0;
-    --muted: #8f8a83;
-    --accent-1: #4a90d9;
-    --accent-2: #a678de;
     --light: #f0d9b5;
-    --dark: #b58863;
+    --dark: #c0ad90;
   }
 
   * { box-sizing: border-box; }
@@ -66,14 +64,20 @@
     background-repeat: no-repeat;
     background-position: center;
   }
-  /* Candidate arrows, in the same two colors as the buttons. */
+  /* Candidate arrows: the board variants of the two button colors, at the
+     opacity the app draws them with. SVG presentation attributes can't hold a
+     var(), so the colors are applied here rather than on the elements. */
   #arrows {
     position: absolute;
     inset: 0;
     width: 100%;
     height: 100%;
-    opacity: 0.85;
+    opacity: 0.8;
   }
+  .a1 { stroke: var(--arrow-1); }
+  .a2 { stroke: var(--arrow-2); }
+  .a1-head { fill: var(--arrow-1); }
+  .a2-head { fill: var(--arrow-2); }
 
   /* --- panel ------------------------------------------------------------ */
 
@@ -231,18 +235,18 @@
     <defs>
       <marker id="head-1" orient="auto" markerWidth="3.2" markerHeight="3.2"
               refX="0" refY="1.6">
-        <path d="M0,0 V3.2 L3.2,1.6 Z" fill="#4a90d9"></path>
+        <path class="a1-head" d="M0,0 V3.2 L3.2,1.6 Z"></path>
       </marker>
       <marker id="head-2" orient="auto" markerWidth="3.2" markerHeight="3.2"
               refX="0" refY="1.6">
-        <path d="M0,0 V3.2 L3.2,1.6 Z" fill="#a678de"></path>
+        <path class="a2-head" d="M0,0 V3.2 L3.2,1.6 Z"></path>
       </marker>
     </defs>
     <!-- Bd3xh7 -->
-    <line x1="3.698" y1="5.302" x2="6.977" y2="2.023" stroke="#4a90d9"
+    <line class="a1" x1="3.698" y1="5.302" x2="6.977" y2="2.023"
           stroke-width="0.2" marker-end="url(#head-1)"></line>
     <!-- Nf3-e5 -->
-    <line x1="5.375" y1="5.250" x2="4.831" y2="4.162" stroke="#a678de"
+    <line class="a2" x1="5.375" y1="5.250" x2="4.831" y2="4.162"
           stroke-width="0.2" marker-end="url(#head-2)"></line>
   </svg>
 </div>

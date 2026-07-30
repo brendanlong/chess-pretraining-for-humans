@@ -5,10 +5,23 @@
   --line: #3a3733;
   --text: #d8d5d0;
   --muted: #8f8a83;
-  --accent-1: #4a90d9;
-  --accent-2: #a678de;
-  --good: #4caf50;
-  --bad: #e05252;
+  /* Two colour pairs carry meaning, so both have to survive colour blindness
+     and warm night-mode filters. Blue vs orange and green vs rose separate on
+     the blue-yellow axis, which red-green deficiencies leave intact; the old
+     blue/purple and green/red pairs collapsed to the same hue. Each pair has a
+     light variant for the dark panel and a dark, saturated one for the light
+     board, and app.js reads all of them from here so the arrow can't drift
+     away from the button it belongs to. */
+  --accent-1: #5aa9ff;
+  --accent-2: #f0932f;
+  --arrow-1: #1550c8;
+  --arrow-2: #b3520a;
+  --good: #56d364;
+  --bad: #f0559b;
+  --arrow-good: #15781b;
+  --arrow-bad: #b3117a;
+  /* Destructive actions, which never sit next to --good and can stay red. */
+  --danger: #ff6b6b;
   --probe: #b07fd9;
   /* board (and mobile panel) edge length */
   --bw: min(100vw, 64vh, 520px);
@@ -128,6 +141,12 @@ main {
 .cg-wrap coords.files { left: 0; }
 .cg-wrap coords.ranks { top: 0; }
 
+/* Chessground dims every shape to 0.6, which suits a board users scribble on
+   but not one where the two arrows are the trial: composited that far toward
+   the board, the two hues wash out and lose the separation the palette buys.
+   The brushes keep enough transparency to see the piece underneath. */
+.cg-wrap .cg-shapes { opacity: 1; }
+
 #panel { width: var(--bw); max-width: 100%; padding: 0 12px; }
 
 @media (min-width: 900px) {
@@ -234,11 +253,11 @@ kbd {
   border-radius: 8px;
   border: none;
   background: var(--accent-1);
-  color: #fff;
+  color: #0b1a2b;
   cursor: pointer;
 }
 #next:hover { filter: brightness(1.1); }
-#next kbd { background: rgba(0, 0, 0, 0.25); border-color: transparent; }
+#next kbd { background: rgba(0, 0, 0, 0.15); border-color: transparent; color: inherit; }
 
 #line-cards { display: flex; flex-direction: column; gap: 8px; }
 
@@ -280,7 +299,8 @@ kbd {
   line-height: 1.8;
 }
 #line-sans .ply { padding: 1px 4px; border-radius: 3px; }
-#line-sans .ply.current { background: #3a4a5c; color: var(--text); }
+/* Neutral: this marks position in the line, not one of the two moves. */
+#line-sans .ply.current { background: #4a463f; color: var(--text); }
 
 #detail { font-size: 13px; color: var(--muted); margin: 6px 0 0; }
 #detail a { color: var(--accent-1); }
@@ -411,7 +431,7 @@ kbd {
 /* Deletion erases responses with no undo, so it shouldn't look like Sign out.
    Carries the #id so it outranks the shared block above, which has one too. */
 #delete-btn.danger,
-.auth-form button.danger { border-color: var(--bad); color: var(--bad); }
+.auth-form button.danger { border-color: var(--danger); color: var(--danger); }
 .auth-form button:disabled,
 #logout-btn:disabled,
 #delete-btn:disabled { opacity: 0.6; cursor: default; }
@@ -423,7 +443,7 @@ kbd {
 #auth-error {
   margin: 0;
   font-size: 13px;
-  color: var(--bad);
+  color: var(--danger);
 }
 #auth-error[hidden] { display: none; }
 

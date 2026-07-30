@@ -4,14 +4,30 @@ import { Chessground } from "./vendor/chessground.min.js";
 // the first request — there is nothing to type and nothing here to spoof.
 let account = { username: null, guest: true };
 
-const BRUSHES = ["blue", "purple"]; // arrow colors matching the two buttons
-// Custom brush set: chessground's yellow is invisible on the light squares.
-const BRUSH_DEFS = {
-  blue: { key: "blue", color: "#1a56c4", opacity: 0.9, lineWidth: 10 },
-  purple: { key: "purple", color: "#8a2be2", opacity: 0.9, lineWidth: 10 },
-  green: { key: "green", color: "#15781b", opacity: 0.85, lineWidth: 10 },
-  red: { key: "red", color: "#b02323", opacity: 0.85, lineWidth: 10 },
-};
+const BRUSHES = ["choice-1", "choice-2"]; // arrow colors matching the two buttons
+// Custom brush set: chessground's own colors include a yellow that is
+// invisible on the light squares, and its blue and purple are a pair most
+// colorblind viewers can't tell apart. The stylesheet owns the palette (see
+// its :root comment) so an arrow can never disagree with its button.
+// The fallbacks are only reached if the stylesheet failed to load, where an
+// empty color would make chessground draw no arrow at all.
+const ROOT_STYLE = getComputedStyle(document.documentElement);
+const BRUSH_DEFS = Object.fromEntries(
+  [
+    ["choice-1", "--arrow-1", "#1550c8"],
+    ["choice-2", "--arrow-2", "#b3520a"],
+    ["best", "--arrow-good", "#15781b"],
+    ["worse", "--arrow-bad", "#b3117a"],
+  ].map(([key, varName, fallback]) => [
+    key,
+    {
+      key,
+      color: ROOT_STYLE.getPropertyValue(varName).trim() || fallback,
+      opacity: 0.8,
+      lineWidth: 10,
+    },
+  ]),
+);
 
 const el = (id) => document.getElementById(id);
 const boardEl = el("board");
@@ -282,7 +298,7 @@ async function choose(i) {
     mv,
     tag,
     steps: mv.line,
-    brush: isBest ? "green" : "red",
+    brush: isBest ? "best" : "worse",
     cls: isBest ? "good" : "bad",
   });
   lines = result.correct

@@ -96,6 +96,27 @@ chosen move's engine line (switchable to the other, steppable, speed
 configurable), and can copy the position + both lines as plain text for
 pasting into an assistant.
 
+The palette lives entirely in `:root`, including the dark, saturated
+arrow variants the light board needs alongside the light ones the dark
+panel needs; `app.js` reads the arrow colours back out of CSS so a brush
+can't drift away from the button it is supposed to match.
+
+The candidate pair is blue against orange, which sits on the blue-yellow
+axis that red-green deficiencies leave intact, and it holds up even with a
+warm night filter stacked on top — that pair has to, because colour is the
+only thing tying an arrow to its button. The reveal pair is green against
+rose, red pushed far enough toward magenta to keep a blue component;
+that is a real improvement over green/red but it is not the same
+guarantee, since deuteranopia plus a strong warm filter strips exactly the
+component it depends on. No green/red pair can do better on a cream board
+— the lightness range both colours have to sit in to stay visible is too
+narrow — and the reveal says the same thing in text anyway, so colour
+there reinforces rather than carries. `tests/test_palette.py` holds both
+pairs to the floors they are meant to clear.
+
+Chessground's global 0.6 dimming of drawn shapes is overridden, because
+compositing that far toward the board throws away the separation.
+
 Layout is mobile-first: a slim header (rating, recent accuracy, user,
 settings) over a single column, with the space under the board swapping
 between the choice buttons and the reveal — verdict and rating delta,
@@ -118,9 +139,12 @@ drawer's About row.
 The icons and the social-card image are committed files in `web/`, generated
 by `scripts/generate_assets.py` screenshotting Chromium — so the art has a
 source that can be edited and re-run, and serving it stays a static file
-read. Every page carries its own copy of the card metadata, since there is
-no template to share one; a test globs `web/*.html` and holds each copy
-against the page it sits on, so a new page can't ship without it.
+read. The card mock declares no colours of its own: the generator injects
+the app's `:root`, because a card advertising the app shouldn't be showing
+a palette the app has since moved off. Every page carries its own copy of
+the card metadata, since there is no template to share one; a test globs
+`web/*.html` and holds each copy against the page it sits on, so a new page
+can't ship without it.
 
 ## Storage
 
