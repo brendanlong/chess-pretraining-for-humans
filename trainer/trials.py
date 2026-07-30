@@ -20,7 +20,9 @@ in a URL or a log, so nobody else has it. The actor is the holder using two
 contexts at once. What the ledger buys is that a spent trial stays spent for
 anonymous callers too: an authenticated replay is caught by the `responses` row
 it already wrote, but each anonymous replay mints a fresh identity, so that row
-is never there to find.
+is never there to find. Without it one held token is worth a fresh `users` row
+and a fresh `responses` row per replay, up to the answer limiter's ceiling —
+junk in the experimental record, under identities that answered one trial each.
 
 The peek it thereby prices is barely worth the effort anyway, which is why
 nothing more is spent on it: the reveal hands over the answer as soon as you

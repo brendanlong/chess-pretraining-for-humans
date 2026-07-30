@@ -70,16 +70,16 @@ should be a wait, not a lost signup. Password checks are metered twice (per
 name *submitted* and per address, each stopping something the other can't),
 deletion on its own key so an attack on an account's password can't block
 its owner's erase button, and answering — the one unauthenticated write, and
-the one that mints rows — per address, far above human pace. Limits are charged before the
-slow work and never refunded; argon2 runs outside the database lock under a
-small concurrency cap. A guest row commits atomically with the answer that
-earns it and foreign keys are enforced, so the only garbage collection is a
-periodic sweep of expired session rows — user rows are always history worth
-keeping. "Address" behind a proxy means a header the proxy overwrites
-(`CLIENT_IP_HEADER`), never a forwarded header the caller can seed, and the
-in-app counters are insurance — real per-IP volume belongs in the proxy. The
-full reasoning for each choice sits beside the limiters in
-`trainer/server.py` and on `RateLimiter` in `trainer/auth.py`.
+the one that mints rows — per address, far above human pace. Limits are
+charged before the slow work and never refunded; argon2 runs outside the
+database lock under a small concurrency cap. A guest row commits atomically
+with the answer that earns it and foreign keys are enforced, so the only
+garbage collection is a periodic sweep of expired session rows — user rows
+are always history worth keeping. "Address" behind a proxy means a header
+the proxy overwrites (`CLIENT_IP_HEADER`), never a forwarded header the
+caller can seed, and the in-app counters are insurance — real per-IP volume
+belongs in the proxy. The full reasoning for each choice sits beside the
+limiters in `trainer/server.py` and on `RateLimiter` in `trainer/auth.py`.
 
 Deletion runs on signup's reasoning in reverse: the signed-in session is the
 proof of ownership (the optional email is never verified, so an email thread

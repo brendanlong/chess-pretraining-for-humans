@@ -1,6 +1,6 @@
 import math
 
-from trainer.label import MAX_GAP_WP, MIN_GAP_WP, difficulty_rating
+from trainer.label import MAX_GAP_WP, MIN_GAP_WP
 from trainer.rating import (
     CALIB_END_STEP,
     CALIB_START_STEP,
@@ -11,6 +11,7 @@ from trainer.rating import (
     USER_MIN,
     USER_START,
     calibrate,
+    difficulty_rating,
     expected_score,
     target_item_rating,
     update,
@@ -36,18 +37,23 @@ def test_elo_update_direction():
     assert update(1500, 1500, correct=False) < 1500
 
 
-def test_difficulty_stays_on_the_rating_scale():
-    """Difficulty is `gap_wp` mapped onto the user rating scale, so the widest
-    and narrowest gaps the labeler admits still have to land inside it."""
-    assert RATING_MIN <= difficulty_rating(MIN_GAP_WP) <= RATING_MAX
-    assert RATING_MIN <= difficulty_rating(MAX_GAP_WP) <= RATING_MAX
-    # A gap wide enough to run off the bottom of the scale is clamped onto it,
-    # so `pick_item`'s nearest-rating search can always reach the easiest items.
-    assert difficulty_rating(1.0) == RATING_MIN
-
-
-def test_harder_items_rate_higher():
+def test_difficulty_separates_the_gaps_the_labeler_admits():
+    """Two items the labeler accepts must be able to get different difficulties,
+    or selection can't tell them apart. Asserting the clamped range would be
+    vacuous — `difficulty_rating` clamps, so it can't fail — so assert the
+    interesting thing: neither end of the admitted band is *at* a stop."""
+    assert difficulty_rating(MIN_GAP_WP) < RATING_MAX
+    assert difficulty_rating(MAX_GAP_WP) > RATING_MIN
     assert difficulty_rating(0.02) > difficulty_rating(0.30)
+
+
+def test_difficulty_is_clamped_outside_that_band():
+    """Banks mined with a wider `--max-gap-wp` do exist, and everything past the
+    point the formula reaches RATING_MIN collapses onto it — see issue #29. The
+    clamp is still what keeps those items selectable rather than sorting below
+    every real rating."""
+    assert difficulty_rating(1.0) == RATING_MIN
+    assert difficulty_rating(0.0) < RATING_MAX  # the scale's top is never reached
 
 
 def test_target_rating_hits_target_accuracy():

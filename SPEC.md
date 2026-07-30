@@ -84,8 +84,9 @@ automatically.
   holding data the user believes is gone. Losing some responses is
   cheaper than making "we deleted it" mean something narrower than a user
   would read it as. Nothing derived from them survives either — difficulty
-  comes from the engine, not from answers — so "erased" needs no asterisk
-  beyond the backup window.
+  comes from the engine, not from answers — so the only asterisks left are
+  the ones no design can remove: the backup window, and analysis already
+  published.
 - **Explanations are grounded in engine output.** The engine lines are the
   authority; any prose (user's pasted questions today, generated
   narration later) sits next to them, never replaces them.

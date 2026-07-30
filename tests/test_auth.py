@@ -401,11 +401,11 @@ def test_a_503_from_an_empty_bank_writes_nothing_at_all(tmp_path, monkeypatch):
 def test_concurrent_answers_all_land(db, item_count):
     """Overlapping answers to one item from six sessions at once.
 
-    Each one mints a guest and writes a response under the same lock, so all
-    six have to serialize on it: identities are minted with a unique name and
-    the sweep counter they share advances per guest. Nothing about the *item*
-    is contended any more — difficulty is fixed — which is why the assertion
-    is that six answers produce six of everything rather than a correct tally.
+    Nothing about the *item* is contended any more — difficulty is fixed — but
+    the six requests still share one `sqlite3.Connection` and so one implicit
+    transaction: an unlocked `commit()` from one thread lands another's
+    half-finished work, or its `rollback()` discards it. Hence the assertion
+    that six answers produce six of everything rather than a correct tally.
     (One *session* can't have two answers in flight: /api/answer takes only the
     trial /api/next last served it, which is what keeps the answer key out of
     reach.)
@@ -428,7 +428,11 @@ def test_concurrent_answers_all_land(db, item_count):
 
     assert db.execute("SELECT COUNT(*) FROM responses").fetchone()[0] == 6
     assert db.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 6
-    assert db.execute("SELECT COUNT(DISTINCT name) FROM users").fetchone()[0] == 6
+    # Each landed against the rating its own answer was scored under, so no
+    # response carries a snapshot another thread's commit rolled forward.
+    for row in db.execute("SELECT user_rating_before, user_rating_after FROM responses"):
+        assert row["user_rating_before"] == server.rating.USER_START
+        assert row["user_rating_after"] != row["user_rating_before"]
 
 
 def test_garbage_cookie_falls_back_to_a_fresh_guest(client):
@@ -896,9 +900,10 @@ def test_a_pre_identity_trial_is_spent_once_however_many_contexts_use_it(db):
     The two clients below are one person's two contexts — a browser and a script —
     not two people: a token goes to the one client that asked for it and nowhere
     else, so nobody else has it to try. What that buys isn't privacy of the answer
-    key (the reveal gives that up the moment you commit) but the shared item
-    counters: without the ledger each replay mints a fresh row, which sees the
-    item for the first time, and first exposures are what move difficulty.
+    key (the reveal gives that up the moment you commit) but a spent trial staying
+    spent: an authenticated replay is caught by the `responses` row it already
+    wrote, and each anonymous replay mints a fresh identity, so that row is never
+    there to find and the ledger has to stand in for it.
     """
     with TestClient(server.app) as browser, TestClient(server.app) as script:
         trial = next_trial(browser)

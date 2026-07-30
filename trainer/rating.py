@@ -25,6 +25,19 @@ SELECTION_JITTER = 75  # rating points of noise around the target difficulty
 RATING_MIN = 600
 RATING_MAX = 2500
 
+
+def difficulty_rating(gap_wp: float) -> float:
+    """An item's difficulty: a 2% win-prob gap is expert-hard, 35% is trivial.
+
+    Lives here rather than in the labeler that first applies it because it is
+    the definition of `items.rating`, which `db.connect` re-derives and the
+    selection query compares against user ratings. Callers must pass the
+    `gap_wp` that gets *stored*, not the full-precision one it was rounded
+    from, or the stored rating stops being a function of the stored gap.
+    """
+    return max(RATING_MIN, min(RATING_MAX, 2400 - 5000 * gap_wp))
+
+
 # New users start as "knows the rules but is terrible" and calibrate upward,
 # rather than starting mid-scale and asking. Plain Elo can't climb fast from
 # a too-low start (a strong player beating easy items gains almost nothing

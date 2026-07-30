@@ -68,6 +68,7 @@ def test_export_refuses_to_overwrite(tmp_path):
 
 def test_merge_adds_new_positions_and_leaves_the_record_alone(tmp_path):
     live = live_db(tmp_path)
+    before = tuple(connect(live).execute("SELECT * FROM items WHERE id = 1").fetchone())
     incoming = bank(tmp_path / "fresh.db", ["8", "7P", "6P1"])  # two overlap, one is new
 
     added, skipped = merge(live, incoming)
@@ -78,8 +79,7 @@ def test_merge_adds_new_positions_and_leaves_the_record_alone(tmp_path):
     # Ids the responses point at are untouched, and so is the row itself:
     # relabelling an item under the answers already given to it would make
     # those answers uninterpretable.
-    item = conn.execute("SELECT * FROM items WHERE id = 1").fetchone()
-    assert item["rating"] == 1800
+    assert tuple(conn.execute("SELECT * FROM items WHERE id = 1").fetchone()) == before
     assert conn.execute("SELECT COUNT(*) FROM responses").fetchone()[0] == 1
     assert conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 1
 

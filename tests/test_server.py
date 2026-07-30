@@ -349,9 +349,8 @@ def test_responses_carry_security_headers(client):
 
 def test_answering_is_rate_limited_but_arriving_is_free(client, db, monkeypatch):
     """Answering is the only unauthenticated write left, and the only thing that
-    moves the counters every user's difficulty reads — so that's where the volume
-    gate belongs. Arriving stays free, because a limit there is a gate in front
-    of the first trial."""
+    mints rows — so that's where the volume gate belongs. Arriving stays free,
+    because a limit there is a gate in front of the first trial."""
     monkeypatch.setattr(server, "answer_limiter", auth.RateLimiter(1, 900))
     answer(client, next_trial(client))  # spends the only slot
     refused = client.post("/api/answer", json=answer_body(next_trial(client)))

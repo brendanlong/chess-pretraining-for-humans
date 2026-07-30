@@ -32,21 +32,20 @@ import chess
 import chess.engine
 
 from .db import DEFAULT_DB, connect
-from .rating import RATING_MAX, RATING_MIN
+from .rating import difficulty_rating
 from .winprob import score_to_winprob
 
 DEPTH_DEEP = 18
 DEPTH_SHALLOW = 8
 PV_PLIES = 8  # how much of each line to keep for the reveal replay
 MIN_GAP_WP = 0.015
-MAX_GAP_WP = 0.40
+# The easy end stops where `difficulty_rating` does: past a 0.36 gap the formula
+# is below RATING_MIN and every item clamps to the same difficulty, which
+# selection then cannot tell apart. Banks already hold a block of those — see
+# issue #29 — but there is no reason to mine more.
+MAX_GAP_WP = 0.35
 ENGINE_WORKERS = 8
 ENGINE_THREADS = 2
-
-
-def difficulty_rating(gap_wp: float) -> float:
-    """Difficulty: a 2% win-prob gap is expert-hard, 35% is trivial."""
-    return max(RATING_MIN, min(RATING_MAX, 2400 - 5000 * gap_wp))
 
 
 _local = threading.local()
@@ -105,7 +104,9 @@ def label_candidate(cand: dict) -> dict | None:
 
     wp_best = score_to_winprob(cp_best, mate_best)
     wp_d = score_to_winprob(cp_d, mate_d)
-    gap_wp = wp_best - wp_d
+    # Rounded before anything derives from it, so that the gap the row stores
+    # is the gap its difficulty was computed from.
+    gap_wp = round(wp_best - wp_d, 4)
     if not (MIN_GAP_WP <= gap_wp <= MAX_GAP_WP):
         return None
 
@@ -128,7 +129,7 @@ def label_candidate(cand: dict) -> dict | None:
         "mate_distractor": mate_d,
         "wp_best": round(wp_best, 4),
         "wp_distractor": round(wp_d, 4),
-        "gap_wp": round(gap_wp, 4),
+        "gap_wp": gap_wp,
         "pv_best": pv_best,
         "pv_distractor": pv_d,
         "learnable": learnable,

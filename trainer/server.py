@@ -67,10 +67,10 @@ login_limiter = auth.RateLimiter(limit=10, window_s=900)
 login_ip_limiter = auth.RateLimiter(limit=60, window_s=900)
 delete_limiter = auth.RateLimiter(limit=10, window_s=900)
 # Answering is the only unauthenticated write left — arriving costs nothing now —
-# and it is the one that mints rows: a guest `users` row and a `responses` row
-# per call. A trial binding can't help here: `next`→`answer` writes just as much
-# as a bare `answer` did, at one extra request. So this is where the volume gate
-# belongs.
+# and it is the one that mints rows: a `responses` row every time, and a guest
+# `users` row for a caller that arrives without one. Requiring a trial first
+# can't gate that, since `next`→`answer` writes the same rows for one extra
+# request. So this is where the volume gate belongs.
 #
 # Deliberately far above any human pace, because it sits on the core loop and
 # several real users share one address routinely: 1200/15min is 80 answers a
@@ -414,8 +414,7 @@ def answer(a: Answer, request: Request):
     the endpoint that *creates* it: a row should exist only once someone has
     actually answered something, and only once we know the trial was ours.
     """
-    # The one unauthenticated write left, and the one that moves counters every
-    # user's difficulty reads. Charged before the work, like the others.
+    # The one unauthenticated write left. Charged before the work, like the others.
     spend(answer_limiter, client_key(request))
     # Read the row inside the lock that also writes it back: rating and
     # calibration updates below are read-modify-write, so a snapshot taken

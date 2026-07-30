@@ -9,6 +9,7 @@ import sqlite3
 
 from trainer import account, auth
 from trainer.db import connect
+from trainer.rating import difficulty_rating
 
 from .conftest import FEN_RANKS, FEN_TMPL, add_item
 
@@ -83,6 +84,23 @@ def test_migration_drops_the_columns_that_carried_answers_into_difficulty(tmp_pa
     assert "item_rating_before" in response_cols
     assert conn.execute("SELECT COUNT(*) FROM responses").fetchone()[0] == 2
     assert conn.execute("SELECT COUNT(*) FROM items").fetchone()[0] == 1
+
+
+def test_migration_re_derives_difficulty_that_drifted_off_the_formula(tmp_path):
+    """`items.rating` is a pure function of `gap_wp` — a claim about the rows,
+    not just about the code that writes new ones. Two kinds of row disagreed: a
+    rating an older server's Elo had moved, and one computed from the
+    full-precision gap before the gap was rounded for storage."""
+    path = old_db(tmp_path)
+    conn = connect(path)
+    add_item(conn, FEN_TMPL.format(FEN_RANKS[0]))
+    conn.execute("UPDATE items SET gap_wp = 0.2, rating = 1234.5")  # as Elo left it
+    conn.commit()
+    conn.close()
+
+    conn = connect(path)
+    item = conn.execute("SELECT gap_wp, rating FROM items").fetchone()
+    assert item["rating"] == difficulty_rating(item["gap_wp"]) == 1400
 
 
 def test_migration_is_idempotent_and_takes_no_write_lock_when_current(tmp_path):
