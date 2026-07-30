@@ -19,10 +19,6 @@ from pydantic import BaseModel
 from . import auth, rating, trials
 from .db import DEFAULT_DB, connect
 
-# Items are never repeated for a user: every trial is a first exposure, so
-# the answer (recorded before feedback arrives) is an uncontaminated
-# measurement AND the reveal can train on every trial. When the bank runs
-# out, mine more games rather than recycling.
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
 # Which of the two moves is the correct one is decided by a coin flip, and that
@@ -101,14 +97,10 @@ anonymous_trial_use = auth.RateLimiter(
     message="That trial has already been answered — fetch a new one.",
 )
 
-# Rows are swept periodically rather than on a timer; there is no scheduler here
-# and the rate at which they appear is exactly the signal that we need one. The
-# counter is per-process, so this used to fire near every wake back when the
-# deployment idled to zero; with `min_machines_running = 1` it really is once per
-# 100, which on a quiet week is a while. Slower still now that a row costs an
-# *answer* rather than an arrival — but that cuts both ways, since the same change
-# means there is far less to sweep. Bounded either way: growth between sweeps is
-# ~100 rows, and every one of them belongs to somebody who answered something.
+# Rows are swept every Nth guest minted rather than on a timer: there is no
+# scheduler here, and the rate at which rows appear is exactly the signal that
+# a sweep is due. Growth between sweeps is bounded at ~100 rows, every one of
+# them belonging to somebody who answered something.
 SWEEP_EVERY_GUESTS = 100
 guests_minted = 0
 
@@ -243,11 +235,11 @@ def unhandled_error(request: Request, exc: Exception) -> Response:
 def optional_user_id(request: Request) -> int | None:
     """Resolve the session cookie to a user id, or None. Writes nothing.
 
-    Identity is issued by *answering*, not by arriving. An earlier version
-    minted a guest row here, which made arriving the cheapest write in the app;
-    metering that write then put a limit in front of the very first trial, which
-    SPEC forbids. So a visitor who has answered nothing has no row, and the
-    trial they are looking at is carried by a signed token instead (`trials`).
+    Identity is issued by *answering*, not by arriving — minting a row here
+    would make arriving the cheapest write in the app, and metering that write
+    puts a limit in front of the very first trial, which SPEC forbids. So a
+    visitor who has answered nothing has no row, and the trial they are looking
+    at is carried by a signed token instead (`trials`).
 
     Returns an *id*, not a row. FastAPI resolves sync dependencies in a
     separate threadpool call that finishes before the endpoint body starts, so
@@ -359,12 +351,10 @@ def pick_item(user_rating: float, user_id: int | None) -> tuple[dict | None, boo
 def healthz():
     """Liveness for the platform's health check.
 
-    Deliberately outside `/api/`: it doesn't take the database lock, so a slow
-    query can't make a healthy machine look dead and have the proxy route around
-    it mid-answer. (A failed check does that and only that — Fly doesn't restart a
-    machine over one.) It also takes no identity dependency, which mattered more
-    when arriving minted a row: a probe every few seconds would create one, and
-    the sweep would then have to clear it.
+    Deliberately outside `/api/`, and free of the database lock and the identity
+    dependency: a slow query can't make a healthy machine look dead and have the
+    proxy route around it mid-answer. (A failed check does that and only that —
+    Fly doesn't restart a machine over one.)
     """
     return {"ok": True}
 
@@ -459,11 +449,9 @@ def answer(a: Answer, request: Request):
         ).fetchone()
         is not None
     )
-    # A repeat is legitimate only if we *offered* it as one, which the token says.
-    # Asking `unseen_count` here instead got both boundaries wrong: answering your
-    # own last unseen item takes the count to zero, which made that token
-    # replayable, and a bank refilled mid-trial made a repeat we had just served
-    # unanswerable.
+    # A repeat is legitimate only if we *offered* it as one, which the token
+    # says. Deciding it from the bank here instead gets both boundaries wrong —
+    # see the `trials` module docstring.
     if is_repeat and not served_as_repeat:
         raise HTTPException(409, "that trial has already been answered — fetch a new one")
     # Repeats only happen when the bank is exhausted; they get feedback like
@@ -503,8 +491,8 @@ def answer(a: Answer, request: Request):
         # Only first exposures count toward an item's difficulty, for the same
         # reason they're the only ones counted toward the user's accuracy: a
         # remembered answer measures nothing. These counters are global, shared
-        # by every user, and survive account deletion, so letting a re-answer
-        # move them was both a skew and a contradiction of what SPEC promises.
+        # by every user, and survive account deletion, so a re-answer moving
+        # them would be both a skew and a contradiction of what SPEC promises.
         conn.execute(
             "UPDATE items SET rating = ?, attempts = attempts + 1, correct = correct + ?"
             " WHERE id = ?",

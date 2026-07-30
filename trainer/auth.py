@@ -1,13 +1,13 @@
 """Guest identities, optional accounts, and the sessions behind both.
 
 The app must be answerable within seconds of landing, so identity is
-anonymous-first: the first request mints a guest `users` row and hands back
-an opaque session token. Signing up attaches a username and password to that
-same row, so an account is a claim on history already earned rather than a
-gate in front of it.
+anonymous-first: the first *answer* mints a guest `users` row and hands back
+an opaque session token; arriving writes nothing. Signing up attaches a
+username and password to that same row, so an account is a claim on history
+already earned rather than a gate in front of it.
 
 Nothing here touches the trial flow; ratings and responses are keyed on
-`users.id` exactly as before.
+`users.id`.
 """
 
 import contextlib
@@ -31,9 +31,10 @@ SESSION_DAYS = 365
 SESSION_MAX_DAYS = 730
 # A row that answered nothing and whose session has gone cold is noise, not
 # history, so it is swept. Anything with a response or a password is never
-# touched. Answering is what creates a row now, so this mostly reclaims two
-# things: the guests that arrival-minting left behind, and the gap between
-# minting an identity and recording the answer that earned it.
+# touched. Answering is what creates a row, so there is little to reclaim:
+# rows left by the crash window between minting an identity and recording the
+# answer that earned it, plus legacy guests from before rows were tied to
+# answering.
 #
 # Comfortably longer than the hour `session_user` waits before refreshing
 # `last_seen`, because a session in continuous use can look that stale — and
@@ -352,10 +353,10 @@ def revoke_sessions(conn: sqlite3.Connection, user_id: int) -> int:
 def sweep(conn: sqlite3.Connection) -> None:
     """Drop dead sessions and the empty guest rows they leave behind.
 
-    Arriving is enough to mint a guest, so crawlers and health checks would
-    otherwise grow `users` without bound. Only rows with no password, no
-    trials, no responses and no warm session are touched — the experimental
-    record is never in reach.
+    Only rows with no password, no trials, no responses and no warm session
+    are touched — the experimental record is never in reach. See the
+    GUEST_TTL_HOURS comment for what qualifies and why the window is sized
+    the way it is.
     """
     conn.execute(
         "DELETE FROM sessions WHERE last_seen < datetime('now', ?)", (f"-{SESSION_DAYS} days",)
@@ -392,9 +393,9 @@ class RateLimiter:
     yet, so a concurrent burst all passes at once.
 
     Nothing is ever handed back. Refunding slots for outcomes that "shouldn't
-    count" is where every version of this file went wrong: it needs an exit
-    path to be right on, and it never was. A limit loose enough that a
-    fumbled form can't reach it buys the same forgiveness for free.
+    count" needs every exit path to be right, and one missed path is an
+    unmetered endpoint. A limit loose enough that a fumbled form can't reach
+    it buys the same forgiveness for free.
     """
 
     MAX_KEYS = 10_000
@@ -410,7 +411,7 @@ class RateLimiter:
         # have made too many attempts is untrue and unhelpful.
         self.message = message
         self._hits: dict[str, list[float]] = {}
-        self._lock = threading.Lock()  # endpoints no longer serialize elsewhere
+        self._lock = threading.Lock()
 
     def _live(self, key: str, now: float) -> list[float]:
         return [t for t in self._hits.get(key, []) if now - t < self.window_s]
@@ -452,11 +453,10 @@ class RateLimiter:
     def clear(self, key: str) -> None:
         """Forget a key entirely.
 
-        Unlike a per-request refund — which needs every exit path to be right,
-        and is where earlier versions of this went wrong — this is reachable
-        only by proving you know the password. An attacker who doesn't can
-        never trigger it, and forgetting to call it just leaves someone
-        slightly more throttled than intended.
+        Unlike a per-request refund — which needs every exit path to be right
+        — this is reachable only by proving you know the password. An attacker
+        who doesn't can never trigger it, and forgetting to call it just
+        leaves someone slightly more throttled than intended.
         """
         with self._lock:
             self._hits.pop(key, None)

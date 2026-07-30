@@ -59,22 +59,9 @@ uv run python -m trainer.account set-password brendan
 uv run python -m trainer.account delete brendan   # asks for the name back
 ```
 
-Behind a reverse proxy, terminate TLS there (the session cookie is marked
-`Secure` whenever the request arrives over https) and run uvicorn with
-`--proxy-headers` and a trusted `--forwarded-allow-ips`.
-
-That settles the scheme but not the address: with `--forwarded-allow-ips '*'`
-uvicorn believes the leftmost `X-Forwarded-For` entry, and proxies append to
-that header rather than replacing it, so the address is whatever the caller
-put there. Set `CLIENT_IP_HEADER` to a header your proxy *overwrites*
-(`fly-client-ip` on Fly, or an `X-Real-IP` you set yourself in nginx) and the
-signup limit is charged to that instead. Leave it unset when nothing is in
-front. Login throttling is per account and unaffected either way.
-
-If you expose this publicly, put per-IP request limiting in the proxy
-(`limit_req` in nginx, or equivalent) rather than relying on the in-app
-counter: the proxy's is shared across workers, survives a restart, and sheds
-load before it reaches Python.
+Exposing it beyond your own machine — a reverse proxy in front, TLS, the
+`CLIENT_IP_HEADER` the rate limiters need behind one — is covered in
+[deploy/README.md](deploy/README.md).
 
 ## Brand assets
 
