@@ -51,7 +51,10 @@ signup_limiter = auth.RateLimiter(limit=20, window_s=3600)
 login_limiter = auth.RateLimiter(limit=10, window_s=900)
 
 # Guests are swept periodically rather than on a timer; there is no scheduler
-# here and arrival rate is exactly the signal that we need one.
+# here and arrival rate is exactly the signal that we need one. The counter is
+# per-process, so this used to fire near every wake back when the deployment
+# idled to zero; now it really is once per 100 guests, which on a quiet week is
+# a while. Bounded either way — growth between sweeps is ~100 guests.
 SWEEP_EVERY_GUESTS = 100
 guests_minted = 0
 
@@ -221,7 +224,8 @@ def healthz():
     Deliberately outside `/api/`: it takes no identity dependency, so a probe
     every few seconds doesn't mint (and then sweep) a guest row, and it doesn't
     take the database lock, so a slow query can't make a healthy machine look
-    dead and get it restarted mid-answer.
+    dead and have the proxy route around it mid-answer. (A failed check does
+    that and only that — Fly doesn't restart a machine over one.)
     """
     return {"ok": True}
 
