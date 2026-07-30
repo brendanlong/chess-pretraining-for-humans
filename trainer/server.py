@@ -97,10 +97,9 @@ anonymous_trial_use = auth.RateLimiter(
     message="That trial has already been answered — fetch a new one.",
 )
 
-# Rows are swept every Nth guest minted rather than on a timer: there is no
-# scheduler here, and the rate at which rows appear is exactly the signal that
-# a sweep is due. Growth between sweeps is bounded at ~100 rows, every one of
-# them belonging to somebody who answered something.
+# Expired sessions are swept every Nth guest minted rather than on a timer:
+# there is no scheduler here, and new identities arriving is a decent clock
+# for how fast the sessions table grows.
 SWEEP_EVERY_GUESTS = 100
 guests_minted = 0
 
@@ -152,7 +151,15 @@ def locked(fn):
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
         with db_lock:
-            return fn(*args, **kwargs)
+            try:
+                return fn(*args, **kwargs)
+            except BaseException:
+                # The connection is shared, so a transaction left open here
+                # would be adopted — and committed — by whoever takes the lock
+                # next. Rolling back is also what makes /api/answer's identity
+                # mint atomic: a failure after the mint erases it.
+                conn.rollback()
+                raise
 
     return wrapper
 
@@ -259,8 +266,11 @@ def start_identity(request: Request) -> dict:
     """Create the row that answering earns, and hand its session out.
 
     The only place a `users` row is born from ordinary traffic. Caller holds
-    `db_lock`, and the sweep rides along here because arrival rate is the signal
-    that one is due and there is no scheduler.
+    `db_lock` and owns the transaction: the row and its session commit together
+    with the response that earns them, so a failure anywhere in between rolls
+    the identity back (see `locked`) instead of leaving a row that answered
+    nothing. The sweep rides along here — before the mint, so its commit can't
+    publish half an identity — because arrival rate is the signal one is due.
     """
     global guests_minted
     guests_minted += 1
@@ -606,6 +616,7 @@ def reissue_session(request: Request, user_id: int) -> None:
     auth.end_session(conn, request.cookies.get(auth.COOKIE_NAME))
     auth.end_session(conn, getattr(request.state, "session_cookie", None))
     queue_cookie(request, auth.start_session(conn, user_id))
+    conn.commit()  # start_session leaves the commit to its caller
 
 
 @app.get("/api/account")

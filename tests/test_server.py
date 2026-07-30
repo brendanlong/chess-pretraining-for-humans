@@ -205,7 +205,7 @@ def test_healthz_is_free_and_anonymous(client, db):
     r = client.get("/healthz")
     assert r.status_code == 200 and r.json() == {"ok": True}
     # No identity: a probe that minted a guest would fill the table with rows
-    # the sweep then has to clear, and would hand the prober a session cookie.
+    # nothing reclaims, and would hand the prober a session cookie.
     assert db.execute("SELECT COUNT(*) FROM users").fetchone()[0] == before
     assert auth.COOKIE_NAME not in r.cookies
 

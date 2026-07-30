@@ -29,18 +29,6 @@ SESSION_DAYS = 365
 # total life of one token regardless of use; it's generous because the stakes
 # are a chess rating, but "generous" and "unbounded" are different claims.
 SESSION_MAX_DAYS = 730
-# A row that answered nothing and whose session has gone cold is noise, not
-# history, so it is swept. Anything with a response or a password is never
-# touched. Answering is what creates a row, so there is little to reclaim:
-# rows left by the crash window between minting an identity and recording the
-# answer that earned it, plus legacy guests from before rows were tied to
-# answering.
-#
-# Comfortably longer than the hour `session_user` waits before refreshing
-# `last_seen`, because a session in continuous use can look that stale — and
-# sweeping a live identity would silently re-identify its owner, losing whatever
-# rating they had climbed to.
-GUEST_TTL_HOURS = 3
 # Guest rows carry a random name so nothing about them is guessable, and the
 # prefix is reserved so a signup can never collide with one.
 GUEST_PREFIX = "guest_"
@@ -148,13 +136,14 @@ def check_email(email: str | None) -> str | None:
 
 
 def create_guest(conn: sqlite3.Connection, start_rating: float, calib_step: float) -> dict:
+    """Writes without committing: the caller owns the transaction, so the row
+    can commit atomically with the answer that earns it."""
     name = GUEST_PREFIX + secrets.token_hex(8)
     cur = conn.execute(
         """INSERT INTO users (name, rating, calib_step, created_at)
            VALUES (?, ?, ?, datetime('now'))""",
         (name, start_rating, calib_step),
     )
-    conn.commit()
     return get_user(conn, cur.lastrowid)  # pyright: ignore[reportArgumentType]
 
 
@@ -268,9 +257,11 @@ def delete_user(conn: sqlite3.Connection, user_id: int) -> dict[str, int]:
     data a user believes is gone — cheaper to lose the rows than to redefine
     the word.
 
-    `sessions` and `responses` both reference `users(id)`, so the row itself
-    goes last, and all of it goes in one transaction: a half-deleted account
-    is a live session pointing at nothing.
+    `responses` deliberately has no ON DELETE CASCADE — erasing the record
+    must be this explicit act, never a side effect — so it goes before the
+    `users` row it references, and all of it goes in one transaction.
+    Sessions would cascade with the row on their own; deleting them
+    explicitly is what gets their count into the report.
     """
     with conn:  # commits on success, rolls the whole thing back on failure
         counts = {
@@ -297,13 +288,15 @@ def _token_hash(token: str) -> str:
 
 
 def start_session(conn: sqlite3.Connection, user_id: int) -> str:
-    """Returns the raw token; only its hash is stored."""
+    """Returns the raw token; only its hash is stored.
+
+    Writes without committing, like `create_guest` and for the same reason:
+    a first answer's identity commits with the answer or not at all."""
     token = secrets.token_urlsafe(32)
     conn.execute(
         "INSERT INTO sessions (token_hash, user_id) VALUES (?, ?)",
         (_token_hash(token), user_id),
     )
-    conn.commit()
     return token
 
 
@@ -351,29 +344,19 @@ def revoke_sessions(conn: sqlite3.Connection, user_id: int) -> int:
 
 
 def sweep(conn: sqlite3.Connection) -> None:
-    """Drop dead sessions and the empty guest rows they leave behind.
+    """Reclaim session rows that have expired out of every way of being valid.
 
-    Only rows with no password, no trials, no responses and no warm session
-    are touched — the experimental record is never in reach. See the
-    GUEST_TTL_HOURS comment for what qualifies and why the window is sized
-    the way it is.
+    The conditions mirror `session_user`'s exactly, so a session the sweep
+    takes is one no request could have used. Nothing else needs sweeping:
+    a `users` row commits atomically with the answer that earns it, so every
+    row is history worth keeping, and the enforced foreign key means a
+    session can't outlive its user.
     """
     conn.execute(
-        "DELETE FROM sessions WHERE last_seen < datetime('now', ?)", (f"-{SESSION_DAYS} days",)
+        """DELETE FROM sessions
+           WHERE last_seen < datetime('now', ?) OR created_at < datetime('now', ?)""",
+        (f"-{SESSION_DAYS} days", f"-{SESSION_MAX_DAYS} days"),
     )
-    conn.execute(
-        """DELETE FROM users
-           WHERE password_hash IS NULL
-             AND attempts = 0
-             AND created_at IS NOT NULL
-             AND created_at < datetime('now', ?)
-             AND NOT EXISTS (SELECT 1 FROM responses WHERE responses.user_id = users.id)
-             AND NOT EXISTS (SELECT 1 FROM sessions
-                             WHERE sessions.user_id = users.id
-                               AND sessions.last_seen > datetime('now', ?))""",
-        (f"-{GUEST_TTL_HOURS} hours", f"-{GUEST_TTL_HOURS} hours"),
-    )
-    conn.execute("DELETE FROM sessions WHERE user_id NOT IN (SELECT id FROM users)")
     conn.commit()
 
 
