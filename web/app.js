@@ -9,17 +9,23 @@ const BRUSHES = ["choice-1", "choice-2"]; // arrow colors matching the two butto
 // invisible on the light squares, and its blue and purple are a pair most
 // colorblind viewers can't tell apart. The stylesheet owns the palette (see
 // its :root comment) so an arrow can never disagree with its button.
-const cssColor = (name) =>
-  getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+// The fallbacks are only reached if the stylesheet failed to load, where an
+// empty color would make chessground draw no arrow at all.
+const ROOT_STYLE = getComputedStyle(document.documentElement);
 const BRUSH_DEFS = Object.fromEntries(
   [
-    ["choice-1", "--arrow-1", 0.8],
-    ["choice-2", "--arrow-2", 0.8],
-    ["best", "--arrow-good", 0.8],
-    ["worse", "--arrow-bad", 0.8],
-  ].map(([key, varName, opacity]) => [
+    ["choice-1", "--arrow-1", "#1550c8"],
+    ["choice-2", "--arrow-2", "#b3520a"],
+    ["best", "--arrow-good", "#15781b"],
+    ["worse", "--arrow-bad", "#b3117a"],
+  ].map(([key, varName, fallback]) => [
     key,
-    { key, color: cssColor(varName), opacity, lineWidth: 10 },
+    {
+      key,
+      color: ROOT_STYLE.getPropertyValue(varName).trim() || fallback,
+      opacity: 0.8,
+      lineWidth: 10,
+    },
   ]),
 );
 

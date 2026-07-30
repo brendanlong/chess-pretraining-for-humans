@@ -299,7 +299,7 @@ kbd {
   line-height: 1.8;
 }
 #line-sans .ply { padding: 1px 4px; border-radius: 3px; }
-/* Neutral, not blue — blue is choice 1 and shouldn't mean two things. */
+/* Neutral: this marks position in the line, not one of the two moves. */
 #line-sans .ply.current { background: #4a463f; color: var(--text); }
 
 #detail { font-size: 13px; color: var(--muted); margin: 6px 0 0; }

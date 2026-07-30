@@ -99,13 +99,23 @@ pasting into an assistant.
 The palette lives entirely in `:root`, including the dark, saturated
 arrow variants the light board needs alongside the light ones the dark
 panel needs; `app.js` reads the arrow colours back out of CSS so a brush
-can't drift away from the button it is supposed to match. Both meaningful
-pairs are chosen on the blue-yellow axis — blue/orange for the two
-candidates, green/rose for best against worse — since red-green vision
-deficiencies and warm night filters both flatten the red/green and
-blue/purple pairs into a single hue. Chessground's global 0.6 dimming of
-drawn shapes is overridden, because compositing that far toward the board
-throws away the separation.
+can't drift away from the button it is supposed to match.
+
+The candidate pair is blue against orange, which sits on the blue-yellow
+axis that red-green deficiencies leave intact, and it holds up even with a
+warm night filter stacked on top — that pair has to, because colour is the
+only thing tying an arrow to its button. The reveal pair is green against
+rose, red pushed far enough toward magenta to keep a blue component;
+that is a real improvement over green/red but it is not the same
+guarantee, since deuteranopia plus a strong warm filter strips exactly the
+component it depends on. No green/red pair can do better on a cream board
+— the lightness range both colours have to sit in to stay visible is too
+narrow — and the reveal says the same thing in text anyway, so colour
+there reinforces rather than carries. `tests/test_palette.py` holds both
+pairs to the floors they are meant to clear.
+
+Chessground's global 0.6 dimming of drawn shapes is overridden, because
+compositing that far toward the board throws away the separation.
 
 Layout is mobile-first: a slim header (rating, recent accuracy, user,
 settings) over a single column, with the space under the board swapping
