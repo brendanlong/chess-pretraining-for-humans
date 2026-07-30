@@ -119,6 +119,13 @@ main {
 
 #board { width: var(--bw); height: var(--bw); }
 
+/* Vendored chessground pushes the file letters over by `left: 24px` while
+   still giving them `width: 100%`, so the row overhangs the board's right
+   edge by 24px — and since the board is the full viewport on a phone, that
+   overhang is a swipeable strip of empty page. Zero also puts each letter
+   back under its own file, and the h file back on the board. */
+.cg-wrap coords.files { left: 0; }
+
 #panel { width: var(--bw); max-width: 100%; padding: 0 12px; }
 
 @media (min-width: 900px) {
