@@ -101,11 +101,14 @@ anonymous_trial_use = auth.RateLimiter(
     message="That trial has already been answered — fetch a new one.",
 )
 
-# Guests are swept periodically rather than on a timer; there is no scheduler
-# here and arrival rate is exactly the signal that we need one. The counter is
-# per-process, so this used to fire near every wake back when the deployment
-# idled to zero; now it really is once per 100 guests, which on a quiet week is
-# a while. Bounded either way — growth between sweeps is ~100 guests.
+# Rows are swept periodically rather than on a timer; there is no scheduler here
+# and the rate at which they appear is exactly the signal that we need one. The
+# counter is per-process, so this used to fire near every wake back when the
+# deployment idled to zero; with `min_machines_running = 1` it really is once per
+# 100, which on a quiet week is a while. Slower still now that a row costs an
+# *answer* rather than an arrival — but that cuts both ways, since the same change
+# means there is far less to sweep. Bounded either way: growth between sweeps is
+# ~100 rows, and every one of them belongs to somebody who answered something.
 SWEEP_EVERY_GUESTS = 100
 guests_minted = 0
 
@@ -356,11 +359,12 @@ def pick_item(user_rating: float, user_id: int | None) -> tuple[dict | None, boo
 def healthz():
     """Liveness for the platform's health check.
 
-    Deliberately outside `/api/`: it takes no identity dependency, so a probe
-    every few seconds doesn't mint (and then sweep) a guest row, and it doesn't
-    take the database lock, so a slow query can't make a healthy machine look
-    dead and have the proxy route around it mid-answer. (A failed check does
-    that and only that — Fly doesn't restart a machine over one.)
+    Deliberately outside `/api/`: it doesn't take the database lock, so a slow
+    query can't make a healthy machine look dead and have the proxy route around
+    it mid-answer. (A failed check does that and only that — Fly doesn't restart a
+    machine over one.) It also takes no identity dependency, which mattered more
+    when arriving minted a row: a probe every few seconds would create one, and
+    the sweep would then have to clear it.
     """
     return {"ok": True}
 
