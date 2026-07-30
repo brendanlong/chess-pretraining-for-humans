@@ -25,7 +25,7 @@ from .db import DEFAULT_DB, connect
 # out, mine more games rather than recycling.
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
-app = FastAPI(title="chess-pretraining")
+app = FastAPI(title="Chess Pretraining")
 # FastAPI runs sync endpoints in a threadpool; share one connection behind a
 # lock (small tool, contention is irrelevant).
 conn = connect(DEFAULT_DB, check_same_thread=False)

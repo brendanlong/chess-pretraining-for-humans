@@ -1,4 +1,4 @@
-# chess-pretraining-for-humans
+# Chess Pretraining
 
 A pairwise move-discrimination trainer: you're shown a real position from a
 real game and two candidate moves, and you pick the better one. Stockfish
