@@ -17,15 +17,15 @@ that doesn't exist yet, so the server remembers it has spent one instead — see
 `server.anonymous_trial_use`. Note who that defends against: a token is only ever
 handed to the one client that asked for it, over TLS, in a `no-store` body, never
 in a URL or a log, so nobody else has it. The actor is the holder using two
-contexts at once, and the thing worth stopping is not the peek — replaying is how
-one client mints a fresh row per replay, and since each row is seeing the item for
-the first time, each replay counts as a first exposure and moves the item's shared
-counters. That is a targeted skew of one item's difficulty, which is worse than
-the diffuse noise `next`→`answer` can already make.
+contexts at once. What the ledger buys is that a spent trial stays spent for
+anonymous callers too: an authenticated replay is caught by the `responses` row
+it already wrote, but each anonymous replay mints a fresh identity, so that row
+is never there to find.
 
-The peek itself barely repays the effort, which is why nothing more is spent on
-it: the reveal hands over the answer as soon as you commit, so peeking buys, at
-the cost of a burnt trial, something answering would have told you for free.
+The peek it thereby prices is barely worth the effort anyway, which is why
+nothing more is spent on it: the reveal hands over the answer as soon as you
+commit, so peeking buys, at the cost of a burnt trial, something answering would
+have told you for free.
 
 The token also carries whether the trial was served *as a repeat*, so the "you
 already answered this" rule is decided from what the server offered rather than

@@ -27,9 +27,9 @@ from pathlib import Path
 
 from .db import DEFAULT_DB, connect
 
-# `id` is per-database; `attempts`/`correct` are the tally of answers given on
-# whichever deployment the row lives on, and those answers aren't coming along.
-PER_DATABASE_COLUMNS = {"id", "attempts", "correct"}
+# `id` is per-database; everything else about an item is a property of the
+# position, so it travels.
+PER_DATABASE_COLUMNS = {"id"}
 
 
 def item_columns(conn: sqlite3.Connection, schema: str = "main") -> list[str]:

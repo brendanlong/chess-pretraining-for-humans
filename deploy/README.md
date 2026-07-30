@@ -168,6 +168,14 @@ change first, if it should change.
   proxy won't stop below, so the machine stays up instead of idling out while
   someone thinks over a position. It counts only machines in `primary_region`,
   which is fine while that's where the volume forces the machine to live.
+- **Schema migrations run on connect, and one of them drops columns.** The
+  deploy that makes item difficulty static also drops `items.attempts`,
+  `items.correct` and `responses.item_rating_after` from the live database, the
+  first time the new server opens it. Every response row is kept; what goes is
+  the per-item tally of answers, which no query reads any more and which nothing
+  recomputes, because it counted answers from users who have since deleted their
+  accounts. If you want it, copy it out of a Litestream restore *before*
+  deploying — after, the 30-day backup window is the only place it exists.
 - **`VACUUM` breaks replication.** It rewrites every page and invalidates
   Litestream's tracking. `VACUUM INTO` a new file and treat it as a new
   database (stop Litestream, clear `/data/.items.db-litestream`, re-snapshot).

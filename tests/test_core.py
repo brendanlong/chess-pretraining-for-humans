@@ -1,5 +1,6 @@
 import math
 
+from trainer.label import MAX_GAP_WP, MIN_GAP_WP, difficulty_rating
 from trainer.rating import (
     CALIB_END_STEP,
     CALIB_START_STEP,
@@ -31,17 +32,22 @@ def test_mate_scores_map_to_extremes():
 
 
 def test_elo_update_direction():
-    u, i = update(1500, 1500, correct=True)
-    assert u > 1500 > i
-    u, i = update(1500, 1500, correct=False)
-    assert u < 1500 < i
+    assert update(1500, 1500, correct=True) > 1500
+    assert update(1500, 1500, correct=False) < 1500
 
 
-def test_item_rating_stays_in_seed_range():
-    _, i = update(1500, RATING_MIN, correct=True)
-    assert i == RATING_MIN
-    _, i = update(1500, RATING_MAX, correct=False)
-    assert i == RATING_MAX
+def test_difficulty_stays_on_the_rating_scale():
+    """Difficulty is `gap_wp` mapped onto the user rating scale, so the widest
+    and narrowest gaps the labeler admits still have to land inside it."""
+    assert RATING_MIN <= difficulty_rating(MIN_GAP_WP) <= RATING_MAX
+    assert RATING_MIN <= difficulty_rating(MAX_GAP_WP) <= RATING_MAX
+    # A gap wide enough to run off the bottom of the scale is clamped onto it,
+    # so `pick_item`'s nearest-rating search can always reach the easiest items.
+    assert difficulty_rating(1.0) == RATING_MIN
+
+
+def test_harder_items_rate_higher():
+    assert difficulty_rating(0.02) > difficulty_rating(0.30)
 
 
 def test_target_rating_hits_target_accuracy():

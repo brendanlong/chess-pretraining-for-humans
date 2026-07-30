@@ -31,9 +31,7 @@ CREATE TABLE IF NOT EXISTS items (
     learnable INTEGER NOT NULL,       -- shallow search agrees which move is better
     depth_deep INTEGER NOT NULL,
     depth_shallow INTEGER NOT NULL,
-    rating REAL NOT NULL,             -- adaptive difficulty rating, seeded from gap_wp
-    attempts INTEGER NOT NULL DEFAULT 0,
-    correct INTEGER NOT NULL DEFAULT 0,
+    rating REAL NOT NULL,             -- difficulty: gap_wp via label.difficulty_rating
     ply INTEGER,
     game_url TEXT,
     mover_elo INTEGER,
@@ -73,8 +71,9 @@ CREATE TABLE IF NOT EXISTS responses (
     response_ms INTEGER,
     user_rating_before REAL,
     user_rating_after REAL,
+    -- The item's difficulty as served. Recorded rather than joined so a row
+    -- stays interpretable if difficulty_rating's constants are ever retuned.
     item_rating_before REAL,
-    item_rating_after REAL,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -144,6 +143,17 @@ def connect(path: Path = DEFAULT_DB, check_same_thread: bool = True) -> sqlite3.
     for col in ("pv_best", "pv_distractor"):
         if col not in item_cols:
             conn.execute(f"ALTER TABLE items ADD COLUMN {col} TEXT")
+    # Difficulty is a function of the item alone, so the columns that existed to
+    # carry answers back into it go. `items.attempts`/`correct` were a global
+    # tally no query reads now; `responses.item_rating_after` recorded a move
+    # that no longer happens, and for the rows that have one it is a function of
+    # the before-ratings and `correct` that sit beside it in the same row.
+    for table, col in (("items", "attempts"), ("items", "correct")):
+        if col in item_cols:
+            conn.execute(f"ALTER TABLE {table} DROP COLUMN {col}")
+    response_cols = {row[1] for row in conn.execute("PRAGMA table_info(responses)")}
+    if "item_rating_after" in response_cols:
+        conn.execute("ALTER TABLE responses DROP COLUMN item_rating_after")
     # `sessions` gained ON DELETE CASCADE after databases existed, and SQLite
     # can't add a constraint in place, so an old table is rebuilt once. Orphan
     # rows from before the foreign key was enforced are shed on the way — the

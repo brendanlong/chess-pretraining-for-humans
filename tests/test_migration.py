@@ -62,6 +62,44 @@ def test_migration_preserves_users_and_responses(tmp_path):
     assert conn.execute("SELECT COUNT(*) FROM responses").fetchone()[0] == 2
 
 
+def test_migration_drops_the_columns_that_carried_answers_into_difficulty(tmp_path):
+    """Difficulty is a function of the item now, so the counters answers used to
+    feed and the post-answer item rating go — without disturbing the responses
+    sitting beside them, which are the experimental record."""
+    path = old_db(tmp_path)
+    conn = connect(path)  # brings the schema up to date, then we age it back
+    add_item(conn, FEN_TMPL.format(FEN_RANKS[0]))
+    conn.execute("ALTER TABLE items ADD COLUMN attempts INTEGER NOT NULL DEFAULT 7")
+    conn.execute("ALTER TABLE items ADD COLUMN correct INTEGER NOT NULL DEFAULT 5")
+    conn.commit()
+    conn.close()
+
+    conn = connect(path)
+    item_cols = {row[1] for row in conn.execute("PRAGMA table_info(items)")}
+    assert {"attempts", "correct"}.isdisjoint(item_cols)
+    assert "rating" in item_cols  # the difficulty itself stays
+    response_cols = {row[1] for row in conn.execute("PRAGMA table_info(responses)")}
+    assert "item_rating_after" not in response_cols
+    assert "item_rating_before" in response_cols
+    assert conn.execute("SELECT COUNT(*) FROM responses").fetchone()[0] == 2
+    assert conn.execute("SELECT COUNT(*) FROM items").fetchone()[0] == 1
+
+
+def test_migration_is_idempotent_and_takes_no_write_lock_when_current(tmp_path):
+    """Connecting to an up-to-date database must not write: the labeler can be
+    holding the write lock, and opening the server should still just work."""
+    path = old_db(tmp_path)
+    connect(path).close()
+
+    blocker = sqlite3.connect(path, isolation_level=None)
+    blocker.execute("BEGIN IMMEDIATE")  # hold the write lock, as the labeler does
+    try:
+        connect(path).close()
+    finally:
+        blocker.execute("ROLLBACK")
+        blocker.close()
+
+
 def test_legacy_rows_cannot_be_logged_into_by_guessing_the_name(tmp_path):
     conn = connect(old_db(tmp_path))
     user = auth.find_by_username(conn, "brendan")

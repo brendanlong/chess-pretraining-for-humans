@@ -1,10 +1,15 @@
 """Elo machinery for adaptive item selection.
 
-Every item carries a difficulty rating seeded from its win-probability gap
-(see label.py) and updated from real responses, because gap alone can't hold
-a target accuracy — an obvious hanging-piece capture and a subtle
-prophylactic move can share a gap. The user has a rating too; each answer is
-scored like a game between user and item.
+An item's difficulty is a fixed property of the item: its win-probability gap,
+mapped onto the rating scale by `label.difficulty_rating`. Only the user has a
+rating that moves, so an answer is scored like a game against a fixed opponent,
+and no two users are coupled through the bank.
+
+That makes the user's rating a running estimate of the gap they can reliably
+see, and it makes each response independent of every response before it —
+which is what the difficulty model in issue #27 needs, since it estimates
+per-item difficulty offline where it can be regularised and where item
+selection isn't feeding back into the thing being measured.
 
 Items are selected so the user's expected score is ~TARGET_ACCURACY, the
 perceptual-learning sweet spot: hard enough to carry signal, easy enough
@@ -16,7 +21,6 @@ import random
 
 TARGET_ACCURACY = 0.80
 K_USER = 32
-K_ITEM = 16
 SELECTION_JITTER = 75  # rating points of noise around the target difficulty
 RATING_MIN = 600
 RATING_MAX = 2500
@@ -53,11 +57,7 @@ def target_item_rating(user_rating: float) -> float:
     return user_rating + offset + random.uniform(-SELECTION_JITTER, SELECTION_JITTER)
 
 
-def update(user_rating: float, item_rating: float, correct: bool) -> tuple[float, float]:
-    e = expected_score(user_rating, item_rating)
+def update(user_rating: float, item_rating: float, correct: bool) -> float:
+    """The user's new rating after one answer against a fixed-difficulty item."""
     s = 1.0 if correct else 0.0
-    new_item = item_rating - K_ITEM * (s - e)
-    # Items stay inside the seed-prior range so a streak on a rarely-served
-    # item can't drift it out of selection reach.
-    new_item = max(RATING_MIN, min(RATING_MAX, new_item))
-    return user_rating + K_USER * (s - e), new_item
+    return user_rating + K_USER * (s - expected_score(user_rating, item_rating))

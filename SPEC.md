@@ -45,8 +45,14 @@ automatically.
   wasn't best (real human errors), with the engine's second choice as
   fallback.
 - **Difficulty lives in win-probability space**, never raw centipawns, and
-  is corrected per-item from real responses (a gap alone can't predict how
-  hard a comparison feels).
+  is a property of the item alone — fixed by the engine's gap when the item
+  is labeled, and never revised by anyone's answers. A gap alone can't
+  predict how hard a comparison *feels*, so this is knowingly approximate;
+  the correction belongs in offline analysis, which can regularise it and
+  isn't the thing choosing which items get served. Online it would make
+  every user's difficulty a function of every other user's answers, which
+  costs more — in coupling, and in a feedback loop that biases the very
+  estimate it produces — than the targeting accuracy is worth.
 - **Items must be learnable**: if shallow and deep search disagree about
   which move is better, the answer isn't reachable from the surface and
   the item is never served.
@@ -77,9 +83,9 @@ automatically.
   thread; and keeping the answers while dropping the name would leave us
   holding data the user believes is gone. Losing some responses is
   cheaper than making "we deleted it" mean something narrower than a user
-  would read it as. What survives is each item's answered/correct counters
-  and the difficulty they feed: not reversible, not attributable to
-  anyone, and the policy says so rather than rounding it up to "erased".
+  would read it as. Nothing derived from them survives either — difficulty
+  comes from the engine, not from answers — so "erased" needs no asterisk
+  beyond the backup window.
 - **Explanations are grounded in engine output.** The engine lines are the
   authority; any prose (user's pasted questions today, generated
   narration later) sits next to them, never replaces them.
@@ -98,3 +104,8 @@ automatically.
 - Transfer measurement: in-app accuracy shares the item generator's
   biases; the real test is external (rated games, or items from a
   deliberately different distribution).
+- A learning-rate measure that survives adaptive difficulty. Selection
+  holds accuracy near 80% by design, so raw accuracy is flat whatever the
+  user is doing; the rate has to come from the difficulty being sustained,
+  and needs item difficulty estimated offline rather than assumed from the
+  gap. Issue #27 has the model and the probe trials it wants.

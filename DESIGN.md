@@ -14,7 +14,7 @@ frontend. Data flows one way:
 - **Labeling** (`trainer/label.py`) runs local Stockfish per candidate:
   a deep multipv search provides ground truth (best move, both evals,
   8-ply lines for both moves); a shallow pass implements the learnability
-  filter; the win-probability gap seeds the item's difficulty rating.
+  filter; the win-probability gap fixes the item's difficulty for good.
   Gap-range flags allow mining specific difficulty bands.
   (`trainer/backfill_pvs.py` retrofits lines onto older items.)
 
@@ -23,9 +23,12 @@ frontend. Data flows one way:
 FastAPI over a single SQLite file (WAL; shared safely with a running
 labeler). Trial endpoints: next trial, answer, stats. Selection picks an
 unseen learnable item near the rating where the user's expected score is
-80%. Answers move user and item Elo ratings; new users run a calibration
-staircase first (start low, big steps, halve on miss). All responses are
-recorded with timing for later analysis.
+80%. An answer moves the user's Elo rating and nothing else — item
+difficulty is fixed at labeling time, so the `items` row a trial came from
+is never written to and no user's answers change what another is served.
+New users run a calibration staircase first (start low, big steps, halve on
+miss). All responses are recorded with timing and the rating snapshots that
+make each trial reconstructible on its own.
 
 An answer is only accepted for a trial the server actually offered, which
 `trainer/trials.py` carries in an HMAC-signed token rather than a row: the
@@ -67,8 +70,7 @@ should be a wait, not a lost signup. Password checks are metered twice (per
 name *submitted* and per address, each stopping something the other can't),
 deletion on its own key so an attack on an account's password can't block
 its owner's erase button, and answering — the one unauthenticated write, and
-the one that moves the item counters every user's difficulty targeting
-reads — per address, far above human pace. Limits are charged before the
+the one that mints rows — per address, far above human pace. Limits are charged before the
 slow work and never refunded; argon2 runs outside the database lock under a
 small concurrency cap. A guest row commits atomically with the answer that
 earns it and foreign keys are enforced, so the only garbage collection is a
@@ -165,8 +167,9 @@ can't ship without it.
 One SQLite database: `items` (positions, moves, evals, lines, difficulty),
 `users` (rating, calibration state, optional credentials), `sessions`
 (hashed cookie tokens), `responses` (every answer, timed, with rating
-snapshots). The item bank is disposable and rebuildable from the pipeline;
-responses are the experimental record.
+snapshots). The item bank is disposable and rebuildable from the pipeline —
+literally so, since nothing the app does writes to it; responses are the
+experimental record.
 
 ## Deployment (`deploy/`, `terraform/`)
 

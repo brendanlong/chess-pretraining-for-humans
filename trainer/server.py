@@ -67,10 +67,10 @@ login_limiter = auth.RateLimiter(limit=10, window_s=900)
 login_ip_limiter = auth.RateLimiter(limit=60, window_s=900)
 delete_limiter = auth.RateLimiter(limit=10, window_s=900)
 # Answering is the only unauthenticated write left — arriving costs nothing now —
-# and it is the one that moves `items.attempts`/`correct`, which every user's
-# difficulty targeting reads. A trial binding can't help here: `next`→`answer`
-# skews an item just as well as a bare `answer` did, at one extra request. So
-# this is where the volume gate belongs.
+# and it is the one that mints rows: a guest `users` row and a `responses` row
+# per call. A trial binding can't help here: `next`→`answer` writes just as much
+# as a bare `answer` did, at one extra request. So this is where the volume gate
+# belongs.
 #
 # Deliberately far above any human pace, because it sits on the core loop and
 # several real users share one address routinely: 1200/15min is 80 answers a
@@ -86,11 +86,13 @@ answer_limiter = auth.RateLimiter(
 # Not a rate limit — a spend-once ledger, which is the same data structure: a
 # bounded, in-memory, time-expiring set of keys. An anonymous trial token has no
 # session to bind to, and redeeming one *creates* the identity that records it, so
-# each replay is a brand-new row seeing the item for the first time and moving its
-# shared counters again. One captured token would otherwise skew one item's
-# difficulty as far as the volume limit allows. Per-process and lost on restart,
-# which costs at most one extra replay per token; the short anonymous token life
-# is what keeps the set small enough that eviction stays theoretical.
+# each replay is a brand-new row seeing the item for the first time: the
+# `responses` lookup that makes a spent trial unanswerable for everyone else
+# never sees it. This is what keeps that rule true for anonymous trials too, so
+# the pre-commit peek costs a burnt trial rather than nothing. Per-process and
+# lost on restart, which costs at most one extra replay per token; the short
+# anonymous token life is what keeps the set small enough that eviction stays
+# theoretical.
 anonymous_trial_use = auth.RateLimiter(
     limit=1,
     window_s=trials.ANON_TOKEN_TTL_S,
@@ -465,22 +467,20 @@ def answer(a: Answer, request: Request):
     if is_repeat and not served_as_repeat:
         raise HTTPException(409, "that trial has already been answered — fetch a new one")
     # Repeats only happen when the bank is exhausted; they get feedback like
-    # any trial but don't move ratings — a remembered answer isn't skill.
+    # any trial but don't move the rating — a remembered answer isn't skill.
     new_step = u["calib_step"]
     if is_repeat:
-        new_user_r, new_item_r = u["rating"], item["rating"]
+        new_user_r = u["rating"]
     elif is_calibrating(u):
-        # Item ratings are frozen while the user's rating is unreliable.
         new_user_r, new_step = rating.calibrate(u["rating"], u["calib_step"], correct)
-        new_item_r = item["rating"]
     else:
-        new_user_r, new_item_r = rating.update(u["rating"], item["rating"], correct)
+        new_user_r = rating.update(u["rating"], item["rating"], correct)
 
     conn.execute(
         """INSERT INTO responses
            (user_id, item_id, choice_uci, correct, response_ms,
-            user_rating_before, user_rating_after, item_rating_before, item_rating_after)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            user_rating_before, user_rating_after, item_rating_before)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             u["id"],
             item["id"],
@@ -490,24 +490,14 @@ def answer(a: Answer, request: Request):
             u["rating"],
             new_user_r,
             item["rating"],
-            new_item_r,
         ),
     )
     conn.execute(
         "UPDATE users SET rating = ?, calib_step = ?, attempts = attempts + 1 WHERE id = ?",
         (new_user_r, new_step, u["id"]),
     )
-    if not is_repeat:
-        # Only first exposures count toward an item's difficulty, for the same
-        # reason they're the only ones counted toward the user's accuracy: a
-        # remembered answer measures nothing. These counters are global, shared
-        # by every user, and survive account deletion, so a re-answer moving
-        # them would be both a skew and a contradiction of what SPEC promises.
-        conn.execute(
-            "UPDATE items SET rating = ?, attempts = attempts + 1, correct = correct + ?"
-            " WHERE id = ?",
-            (new_item_r, int(correct), item["id"]),
-        )
+    # Nothing else to write: the `items` row an answer is about is never touched,
+    # so one user's answers can't move what another user is served.
     conn.commit()
 
     return {
@@ -533,7 +523,7 @@ def answer(a: Answer, request: Request):
         "gap_wp": round(item["gap_wp"] * 100, 1),
         "distractor_source": item["distractor_source"],
         "game_url": item["game_url"],
-        "item_rating": round(new_item_r),
+        "item_rating": round(item["rating"]),
     }
 
 

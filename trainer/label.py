@@ -12,9 +12,10 @@ For each candidate position:
    disagrees with the deep search about which move is better, the item's
    answer hinges on deep calculation rather than surface features, so it is
    marked not learnable and never served (label is correct, item is noise).
-4. The deep evals are converted to win probability and the gap seeds the
-   item's difficulty rating (small gap = hard = high rating); per-item Elo
-   updates from real responses correct this prior over time.
+4. The deep evals are converted to win probability and the gap fixes the
+   item's difficulty (small gap = hard = high rating). That mapping is all
+   difficulty is: nothing downstream revises it, so an item means the same
+   thing to every user and on every deployment.
 
 Usage:
     uv run python -m trainer.label data/candidates.jsonl [--limit N]
@@ -43,8 +44,8 @@ ENGINE_WORKERS = 8
 ENGINE_THREADS = 2
 
 
-def seed_rating(gap_wp: float) -> float:
-    """Difficulty prior: a 2% win-prob gap is expert-hard, 35% is trivial."""
+def difficulty_rating(gap_wp: float) -> float:
+    """Difficulty: a 2% win-prob gap is expert-hard, 35% is trivial."""
     return max(RATING_MIN, min(RATING_MAX, 2400 - 5000 * gap_wp))
 
 
@@ -133,7 +134,7 @@ def label_candidate(cand: dict) -> dict | None:
         "learnable": learnable,
         "depth_deep": DEPTH_DEEP,
         "depth_shallow": DEPTH_SHALLOW,
-        "rating": seed_rating(gap_wp),
+        "rating": difficulty_rating(gap_wp),
         "ply": cand["ply"],
         "game_url": cand["game_url"],
         "mover_elo": cand["mover_elo"],
