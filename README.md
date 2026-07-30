@@ -76,6 +76,28 @@ If you expose this publicly, put per-IP request limiting in the proxy
 counter: the proxy's is shared across workers, survives a restart, and sheds
 load before it reaches Python.
 
+## Brand assets
+
+The favicons, the app icons, and the 1200×630 social card in `web/` are all
+generated and committed. Regenerate them after editing the art:
+
+```bash
+uv run --group assets python scripts/generate_assets.py
+```
+
+The icons come out of a bishop silhouette defined in that script; the card is
+a screenshot of `scripts/social-preview.html`, a hand-written wireframe of the
+trial screen, so nothing has to be running to rebuild it. Playwright lives in
+its own `assets` dependency group and is not installed by `uv sync` — the app
+and CI never need it (`uv run --group assets playwright install chromium`
+once, for the browser).
+
+Two pieces of borrowed art: the bishop is public domain (CC0), chosen over the
+vendored bishop precisely because a logo shouldn't carry obligations. The
+board pieces on the card are the cburnett set by Colin M.L. Burnett, CC BY-SA
+— the same art `web/vendor/chessground.cburnett.css` already draws the board
+with.
+
 ## Deploying it
 
 One Fly machine, SQLite on a volume, Litestream replicating to S3, DNS and the
