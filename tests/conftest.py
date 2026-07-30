@@ -32,7 +32,9 @@ FEN_TMPL = "rnbqkbnr/pppppppp/8/8/8/{}/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
 FEN_RANKS = ["8", "7P", "6P1"]
 
 
-def add_item(conn, fen: str) -> None:
+def add_item(conn, fen: str, **overrides) -> None:
+    """One item. `overrides` is for the tests that care what is in it — a bank
+    with a difficulty distribution, say, rather than one of identical rows."""
     conn.execute(
         """INSERT INTO items (fen, best_uci, distractor_uci, distractor_source,
              cp_best, mate_best, cp_distractor, mate_distractor, wp_best,
@@ -42,7 +44,7 @@ def add_item(conn, fen: str) -> None:
              :cp_best, :mate_best, :cp_distractor, :mate_distractor, :wp_best,
              :wp_distractor, :gap_wp, :learnable, :depth_deep, :depth_shallow,
              :rating, :ply, :game_url, :mover_elo, :time_control)""",
-        {**ITEM, "fen": fen},
+        {**ITEM, "fen": fen, **overrides},
     )
 
 

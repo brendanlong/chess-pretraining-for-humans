@@ -36,9 +36,8 @@ better as independent searches than as one wide one.
 
 ### Keeping the bank full
 
-Selection can't fail — it takes the nearest items whatever their difficulty —
-so a thin patch in the bank shows up as users being served the wrong difficulty,
-silently. `trainer.supply` is what makes it visible:
+A thin patch in the bank never raises anything — selection just serves the
+nearest items it has — so it has to be looked for:
 
 ```bash
 uv run python -m trainer.supply           # per user rating: what its band holds
@@ -46,9 +45,8 @@ uv run python -m trainer.supply --gaps    # the same shortfall, in mining units
 ```
 
 Refilling a thin band is the ordinary two steps with a gap window on each. The
-server evals mining filters on and the deep evals labeling scores with track
-each other closely, so a mined window really does aim at a difficulty — it just
-doesn't bound it, since the deep search scores some positions wider.
+window works because the server eval mining filters on tracks the deep eval that
+fixes difficulty closely enough to aim with — measured, in `trainer/mine.py`.
 
 ```bash
 curl -s -r 0-4000000000 https://database.lichess.org/standard/lichess_db_standard_rated_2026-06.pgn.zst \
@@ -59,9 +57,11 @@ uv run python -m trainer.label data/band.jsonl --workers 20 --threads 1
 ```
 
 Mining is cheap next to labeling, so mine a window generously and label what
-the shortfall asks for. Different months are independent streams and can run at
-once; `trainer.label` skips positions the bank already holds, so overlapping
-mines cost nothing but disk.
+the shortfall asks for. Months are independent streams and can be mined at
+once, and overlapping mines cost nothing but disk — but `trainer.label` reads
+the bank's positions once at startup, so two labelers over overlapping files
+each pay the full deep search for everything they share. Run those one at a
+time.
 
 ## Using it
 
