@@ -137,6 +137,9 @@ change first, if it should change.
 
 - **One machine, always.** `fly deploy --ha=false`, and don't `fly scale count`
   past 1. Two machines means two volumes and two Litestreams on one S3 prefix.
+  `min_machines_running = 1` in `fly.toml` isn't a count — it's the floor the
+  proxy won't stop below, so the one machine stays up instead of idling out
+  while someone thinks over a position.
 - **`VACUUM` breaks replication.** It rewrites every page and invalidates
   Litestream's tracking. `VACUUM INTO` a new file and treat it as a new
   database (stop Litestream, clear `/data/.items.db-litestream`, re-snapshot).
