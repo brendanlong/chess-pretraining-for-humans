@@ -20,13 +20,35 @@ don't be surprised, and don't commit a card you only meant to look at.
 
 import re
 import struct
+import subprocess
 from base64 import b64encode
 from pathlib import Path
+from shutil import which
 
 from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parent.parent
 WEB = ROOT / "web"
+
+
+def optimize(path: Path, keep_rgba: bool = False) -> None:
+    """Recompress a PNG in place, losslessly.
+
+    Chromium's encoder is tuned for speed, so what it hands back is 13-45%
+    larger than the same pixels need to be — on icons every browser fetches,
+    and a card unfurlers fetch. Nearly all of that is won at `-o2`; `-o7` is
+    here because it costs seconds on a script that runs when the art changes,
+    and buys bytes on files every visitor pays for. `-strip all` is a no-op
+    against today's Chromium, which writes no ancillary chunks; it is there so
+    a version that starts writing a timestamp can't turn every regeneration
+    into a diff.
+
+    `keep_rgba` forbids reducing to a palette. The ICO's directory hardcodes
+    32bpp for its members, and on these two files staying RGBA is smaller
+    anyway — a palette plus the tRNS chunk costs more than it saves that small.
+    """
+    flags = ["-quiet", "-o7", "-strip", "all"] + (["-nc"] if keep_rgba else [])
+    subprocess.run(["optipng", *flags, path], check=True)
 
 
 def app_palette() -> str:
@@ -94,6 +116,8 @@ MASKABLE = bishop_svg(glyph_height=0.55, corner_radius=0)
 # than a maskable icon — at 0.55 it looks lost on a home screen.
 APPLE = bishop_svg(glyph_height=0.66, corner_radius=0)
 
+ICO_SIZES = (16, 32)  # the PNGs favicon.ico wraps, so they stay RGBA
+
 PNGS = [
     ("favicon-16x16.png", 16, ROUNDED),
     ("favicon-32x32.png", 32, ROUNDED),
@@ -120,6 +144,9 @@ def write_ico(path: Path, members: list[tuple[int, bytes]]) -> None:
 
 
 def main() -> None:
+    if which("optipng") is None:
+        raise SystemExit("optipng not on PATH — install it, or the assets ship oversized")
+
     written = [WEB / "favicon.svg"]
     (WEB / "favicon.svg").write_text(ROUNDED + "\n")
 
@@ -139,6 +166,7 @@ def main() -> None:
             )
             # The rounded tile's corners must stay transparent.
             page.screenshot(path=WEB / name, omit_background=True)
+            optimize(WEB / name, keep_rgba=size in ICO_SIZES)
             written.append(WEB / name)
 
         # Straight goto, so the mock's relative links (the cburnett CSS, the
@@ -148,14 +176,17 @@ def main() -> None:
         # Appended to <head>, so it outranks the mock's own :root on order.
         page.add_style_tag(content=app_palette())
         page.screenshot(path=WEB / "social-preview.png")
+        optimize(WEB / "social-preview.png")
         written.append(WEB / "social-preview.png")
 
         browser.close()
 
     # Nothing links favicon.ico — the modern links above cover real browsers.
     # It exists because unfurlers and feed readers still probe the bare path.
+    # Reading the files back means it wraps the optimized bytes, not the raw ones.
     write_ico(
-        WEB / "favicon.ico", [(s, (WEB / f"favicon-{s}x{s}.png").read_bytes()) for s in (16, 32)]
+        WEB / "favicon.ico",
+        [(s, (WEB / f"favicon-{s}x{s}.png").read_bytes()) for s in ICO_SIZES],
     )
     written.append(WEB / "favicon.ico")
 

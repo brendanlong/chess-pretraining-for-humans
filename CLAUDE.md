@@ -16,6 +16,8 @@ don't document it.
   build-free vanilla JS in `web/` (chessground is vendored).
 - Local dev needs a `stockfish` binary on PATH; mining needs `zstd`.
   See README for the pipeline and server commands.
+- Any PNG landing in `web/` gets run through `optipng` first — the asset
+  generator does it, and a test fails if a committed one skipped it.
 - `data/` is gitignored. The item bank (`items.db` items table) is
   rebuildable from the pipeline; the `responses` table is the
   experimental record — never wipe it casually.

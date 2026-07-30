@@ -94,6 +94,10 @@ uv sync --group assets
 uv run --group assets playwright install chromium
 ```
 
+`optipng` also has to be on PATH (`apt install optipng`): the script recompresses
+each PNG it writes, losslessly, and `tests/test_assets.py` fails on any PNG in
+`web/` that arrived without that — including one added by hand.
+
 The icons come out of a bishop silhouette defined in that script; the card is
 a screenshot of `scripts/social-preview.html`, a hand-written wireframe of the
 trial screen, so nothing has to be running to rebuild it. The icons are pure
