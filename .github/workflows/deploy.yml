@@ -21,7 +21,18 @@ concurrency:
 
 jobs:
   deploy:
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    # `branches` above filters the *triggering* run's head branch, and CI runs
+    # on every pull_request — so a fork PR opened from a branch named `main`
+    # matches it. A workflow_run job gets the base repo's secrets, and the
+    # checkout below takes `head_sha`, so without the head_repository test that
+    # is a fork's commit deployed with a live token. The step that compares HEAD
+    # to origin/main happens to catch it too; that step is about deploy order,
+    # so don't let it be the only thing standing here.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      github.event.workflow_run.event == 'push')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
