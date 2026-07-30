@@ -38,10 +38,12 @@ automatically.
   it is what the eye reads at a glance; the number is what remains when it
   doesn't, and when the two arrows cross or point at the same square and
   no colour would have separated them — short of the two arriving along one
-  ray, where the arrows coincide and so do the numbers. Neither channel may hint that one
-  move is the safer one. The reveal's best-against-worse pair is held to
-  the same standard as far as a light board allows, but there both
-  reinforce a verdict the text already gives.
+  ray, where the arrows coincide and so do the numbers. The numbers can be
+  turned off, which is the other reason the colour pair has to stand on its
+  own rather than leaning on them. Neither channel may hint that one move is
+  the safer one. The reveal's best-against-worse pair is held to the same
+  standard as far as a light board allows, but there both reinforce a verdict
+  the text already gives.
 - **The correct answer is the position's best move** by full-strength
   engine analysis — never a weakened engine, and never "the less bad of two
   bad moves".

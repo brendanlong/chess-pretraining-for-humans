@@ -48,6 +48,10 @@ let activeLine = 0;
 let stepIdx = -1; // -1 = at the decision position, before any line move
 let autoplayTimer = null;
 let stepMs = +(localStorage.getItem("stepMs") || 750); // auto-play pace
+// Numbered arrows are the default: they cost a reader nothing, and without
+// them the pairing is back to colour alone. Off is for anyone who reads the
+// colours fine and would rather have an unmarked board.
+let arrowNumbers = localStorage.getItem("arrowNumbers") !== "off";
 let lastResult = null; // /api/answer payload for the current reveal
 
 // `num` is drawn as a numbered disc near the arrowhead, in the arrow's own
@@ -55,12 +59,26 @@ let lastResult = null; // /api/answer payload for the current reveal
 // alone can't carry that pairing: the two arrows often cross or share a square,
 // and a viewer who can't separate the hues has nothing else to go on.
 function arrow(uci, brush, num) {
-  return {
-    orig: uci.slice(0, 2),
-    dest: uci.slice(2, 4),
-    brush,
-    label: { text: String(num) },
-  };
+  const shape = { orig: uci.slice(0, 2), dest: uci.slice(2, 4), brush };
+  if (arrowNumbers) shape.label = { text: String(num) };
+  return shape;
+}
+
+// The badges belong to the arrows, so they come and go with them: with numbers
+// off the buttons keep their small keyboard hint and nothing else.
+function applyArrowNumbers() {
+  document.body.classList.toggle("no-arrow-numbers", !arrowNumbers);
+}
+
+const candidateArrows = () => trial.moves.map((m, i) => arrow(m.uci, BRUSHES[i], i + 1));
+
+// Redraw whatever the board is currently showing. Only the settings drawer
+// needs this — every other change of what's on the board goes through the
+// call that changed it.
+function redrawBoard() {
+  if (phase === "choosing" || phase === "submitting")
+    setBoard(trial.fen, trial.side_to_move, candidateArrows());
+  else if (phase === "revealed") renderStep();
 }
 
 // The scheme is checked rather than trusted: a `javascript:` href runs on click
@@ -266,11 +284,7 @@ async function loadTrial() {
   trial = await api("/api/next");
   el("turn-label").textContent = `${trial.side_to_move} to move`;
   el("turn-dot").className = trial.side_to_move;
-  setBoard(
-    trial.fen,
-    trial.side_to_move,
-    trial.moves.map((m, i) => arrow(m.uci, BRUSHES[i], i + 1)),
-  );
+  setBoard(trial.fen, trial.side_to_move, candidateArrows());
   trial.moves.forEach((m, i) => {
     choiceEls[i].querySelector(".san").textContent = m.san;
   });
@@ -546,15 +560,29 @@ el("delete-form").addEventListener("submit", (e) => {
   });
 });
 
-document.querySelectorAll("#speed-menu button").forEach((b) => {
-  if (+b.dataset.speed === stepMs) b.classList.add("active");
-  b.addEventListener("click", () => {
-    stepMs = +b.dataset.speed;
-    localStorage.setItem("stepMs", stepMs);
-    document.querySelectorAll("#speed-menu button").forEach((x) =>
-      x.classList.toggle("active", x === b),
-    );
-  });
+// A settings row where one of the buttons is the current value: mark it,
+// remember the choice, and hand it to whoever cares.
+function segmented(menuId, storageKey, current, onPick) {
+  const buttons = [...el(menuId).querySelectorAll("button")];
+  const mark = (v) => buttons.forEach((b) => b.classList.toggle("active", b.dataset.value === v));
+  mark(current);
+  buttons.forEach((b) =>
+    b.addEventListener("click", () => {
+      localStorage.setItem(storageKey, b.dataset.value);
+      mark(b.dataset.value);
+      onPick(b.dataset.value);
+    }),
+  );
+}
+
+segmented("speed-menu", "stepMs", String(stepMs), (v) => {
+  stepMs = +v;
+});
+
+segmented("numbers-menu", "arrowNumbers", arrowNumbers ? "on" : "off", (v) => {
+  arrowNumbers = v === "on";
+  applyArrowNumbers();
+  redrawBoard();
 });
 
 // --- input ----------------------------------------------------------------
@@ -601,5 +629,6 @@ el("prompt").addEventListener("click", () => {
 // so these are safe to race. /api/stats carries the account for the header;
 // if it fails, the page keeps its default guest view and the drawer's forms
 // still work.
+applyArrowNumbers();
 initStats();
 nextTrial();

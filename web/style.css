@@ -233,28 +233,47 @@ kbd {
 #choice-2 { border-color: var(--accent-2); }
 .choice:hover { filter: brightness(1.2); }
 .choice:disabled { cursor: default; opacity: 0.85; }
-/* The number that pairs this control with its arrow, drawn as the same disc.
-   It doubles as the keyboard hint, so unlike a <kbd> it stays on touch — the
-   pairing is the point, and a 2px border is far too little colour to carry it.
-   The panel is dark, so these take the light half of each pair while the arrow
-   discs take the dark half; both put the digit on a solid, saturated fill. */
+/* With arrow numbers off this is a keyboard hint and nothing more, so it looks
+   like one — and goes away where there is no keyboard. */
 .choice .key,
 .line-card .key {
   flex: none;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--muted);
+}
+@media (hover: none) and (pointer: coarse) {
+  body.no-arrow-numbers .choice .key,
+  body.no-arrow-numbers .line-card .key { display: none; }
+}
+
+/* With them on it is the disc the arrow carries, and has to be read as the
+   same object — a 2px border is far too little colour to pair them. The panel
+   is dark, so these take the light half of each pair while the arrow discs
+   take the dark half; both put the digit on a solid, saturated fill. The
+   colours are keyed off the body rather than layered over the rule above,
+   because #choice-1 outranks anything a body class could say. */
+body:not(.no-arrow-numbers) .choice .key,
+body:not(.no-arrow-numbers) .line-card .key {
   width: 24px;
   height: 24px;
   display: grid;
   place-items: center;
+  border: none;
   border-radius: 50%;
+  padding: 0;
   font-size: 14px;
   font-weight: 700;
   background: var(--muted);
   color: var(--bg);
 }
-#choice-1 .key { background: var(--accent-1); }
-#choice-2 .key { background: var(--accent-2); }
-.line-card.good .key { background: var(--good); }
-.line-card.bad .key { background: var(--bad); }
+body:not(.no-arrow-numbers) #choice-1 .key { background: var(--accent-1); }
+body:not(.no-arrow-numbers) #choice-2 .key { background: var(--accent-2); }
+body:not(.no-arrow-numbers) .line-card.good .key { background: var(--good); }
+body:not(.no-arrow-numbers) .line-card.bad .key { background: var(--bad); }
 
 /* --- reveal phase -------------------------------------------------------- */
 
@@ -414,21 +433,11 @@ kbd {
 }
 .setting-note { margin: 0; font-size: 12px; color: var(--muted); }
 
-#speed-menu { display: flex; gap: 8px; }
-#speed-menu button {
-  flex: 1;
-  font: inherit;
-  font-size: 13px;
-  padding: 8px 0;
-  border-radius: 8px;
-  border: 1px solid var(--line);
-  background: var(--card);
-  color: var(--muted);
-  cursor: pointer;
-}
-#speed-menu button.active { color: var(--text); border-color: var(--accent-1); }
-
-#auth-tabs { display: flex; gap: 8px; margin: 4px 0 2px; }
+/* The drawer's rows of mutually exclusive buttons, one of them current. */
+#speed-menu, #numbers-menu, #auth-tabs { display: flex; gap: 8px; }
+#auth-tabs { margin: 4px 0 2px; }
+#speed-menu button,
+#numbers-menu button,
 .auth-tab {
   flex: 1;
   font: inherit;
@@ -440,6 +449,8 @@ kbd {
   color: var(--muted);
   cursor: pointer;
 }
+#speed-menu button.active,
+#numbers-menu button.active,
 .auth-tab.active { color: var(--text); border-color: var(--accent-1); }
 
 .auth-form { display: flex; flex-direction: column; gap: 8px; }
