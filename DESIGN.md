@@ -117,10 +117,22 @@ arrow variants the light board needs alongside the light ones the dark
 panel needs; `app.js` reads the arrow colours back out of CSS so a brush
 can't drift away from the button it is supposed to match.
 
-The candidate pair is blue against orange, which sits on the blue-yellow
-axis that red-green deficiencies leave intact, and it holds up even with a
-warm night filter stacked on top — that pair has to, because colour is the
-only thing tying an arrow to its button. The reveal pair is green against
+Every arrow carries a numbered disc, drawn by chessground's own shape
+labels in the arrow's colour and repeated as a badge on the control it
+pairs with: the choice buttons while choosing, the line cards after the
+reveal. Each phase numbers whichever of those it is showing, so the discs
+always agree with what pressing 1 and 2 does at that moment. The number is
+the channel that survives two arrows crossing or landing on the same
+square, where no pair of colours would have separated them — except when
+they arrive along the same ray, a battery recapturing on one square, which
+puts both discs at the same point and is not solved here. The drawer can
+turn the numbers off, which takes the badges with them: without a disc to
+pair with, the badge is only a keyboard hint again and is styled as one.
+
+Colour is still what the eye reads first, so it carries the full weight.
+The candidate pair is blue against orange, which sits on the
+blue-yellow axis that red-green deficiencies leave intact, and it holds up
+even with a warm night filter stacked on top. The reveal pair is green against
 rose, red pushed far enough toward magenta to keep a blue component;
 that is a real improvement over green/red but it is not the same
 guarantee, since deuteranopia plus a strong warm filter strips exactly the

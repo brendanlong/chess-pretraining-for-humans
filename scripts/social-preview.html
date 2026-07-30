@@ -79,6 +79,19 @@
   .a1-head { fill: var(--arrow-1); }
   .a2-head { fill: var(--arrow-2); }
 
+  /* The numbered disc each arrow carries, in a layer of its own because the
+     app draws these at full opacity over the translucent arrows. */
+  #arrow-labels { position: absolute; inset: 0; width: 100%; height: 100%; }
+  #arrow-labels circle { stroke: #fff; stroke-width: 0.05; }
+  #arrow-labels text {
+    font-size: 0.3px;
+    font-weight: 700;
+    text-anchor: middle;
+    fill: #fff;
+  }
+  .l1 { fill: var(--arrow-1); }
+  .l2 { fill: var(--arrow-2); }
+
   /* --- panel ------------------------------------------------------------ */
 
   #panel { flex: 1; min-width: 0; }
@@ -115,16 +128,20 @@
   }
   .choice:first-child { border-color: var(--accent-1); }
   .choice:last-child { border-color: var(--accent-2); }
+  /* The same numbered disc as on the arrow, in the panel's lighter variant. */
   .choice .key {
     flex: none;
-    padding: 2px 12px;
-    border: 1px solid var(--line);
-    border-radius: 6px;
-    background: var(--panel);
+    width: 34px;
+    height: 34px;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
     font-size: 20px;
-    font-weight: 600;
-    color: var(--muted);
+    font-weight: 700;
+    color: var(--bg);
   }
+  .choice:first-child .key { background: var(--accent-1); }
+  .choice:last-child .key { background: var(--accent-2); }
 
   #tagline {
     margin: 34px 0 0;
@@ -248,6 +265,20 @@
     <!-- Nf3-e5 -->
     <line class="a2" x1="5.375" y1="5.250" x2="4.831" y2="4.162"
           stroke-width="0.2" marker-end="url(#head-2)"></line>
+  </svg>
+
+  <!--
+    The discs, backed 33/64 of a square off the destination centre along the
+    arrow, which is where chessground puts a shape label when nothing else is
+    aimed at that square: d3-h7 gives (7.5, 1.5) - 0.516*(.707, -.707), and
+    f3-e5 gives (4.5, 3.5) - 0.516*(-.447, -.894). The digit sits a little
+    below the centre so its body, not its box, is what looks centred.
+  -->
+  <svg id="arrow-labels" viewBox="0 0 8 8">
+    <circle class="l1" cx="7.135" cy="1.865" r="0.22"></circle>
+    <text x="7.135" y="1.963">1</text>
+    <circle class="l2" cx="4.731" cy="3.962" r="0.22"></circle>
+    <text x="4.731" y="4.060">2</text>
   </svg>
 </div>
 

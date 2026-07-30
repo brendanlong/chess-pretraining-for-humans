@@ -147,6 +147,32 @@ main {
    The brushes keep enough transparency to see the piece underneath. */
 .cg-wrap .cg-shapes { opacity: 1; }
 
+/* The numbered disc on each arrow (chessground renders shape labels into the
+   custom-svg layer, so the rule above doesn't reach them). Chessground fades a
+   label to match its arrow; here the number is the thing that survives when the
+   colour doesn't, so it stays opaque, and the white ring is thickened enough to
+   read where a disc lands on the other arrow. Lengths are in board units, one
+   per square, so `px` here is a square and not a pixel. */
+.cg-wrap .cg-custom-svgs circle {
+  fill-opacity: 1;
+  stroke-opacity: 1;
+  stroke-width: 0.05px;
+  /* Chessground backs a disc further off along its arrow when the destination
+     is shared, which is what keeps two of them apart. How far apart depends on
+     the angle between the arrows: two knights arriving from neighbouring
+     angles, the tightest case that isn't degenerate, leave 0.42 squares. A
+     ring that cleared even that would be too small to read, so 0.22 accepts a
+     hair of overlap there and stays legible everywhere else. */
+  r: 0.22px;
+}
+/* Chessground asks for "Noto Sans" with no fallback, and an unresolvable
+   family lands on the UA's standard font — a serif on most machines, which
+   would put serif digits on the board beside sans-serif ones on the buttons. */
+.cg-wrap .cg-custom-svgs text {
+  font-family: system-ui, sans-serif;
+  font-weight: 700;
+}
+
 #panel { width: var(--bw); max-width: 100%; padding: 0 12px; }
 
 @media (min-width: 900px) {
@@ -207,15 +233,47 @@ kbd {
 #choice-2 { border-color: var(--accent-2); }
 .choice:hover { filter: brightness(1.2); }
 .choice:disabled { cursor: default; opacity: 0.85; }
+/* With arrow numbers off this is a keyboard hint and nothing more, so it looks
+   like one — and goes away where there is no keyboard. */
 .choice .key,
 .line-card .key {
-  font-size: 12px;
-  font-weight: 400;
-  color: var(--muted);
+  flex: none;
   border: 1px solid var(--line);
   border-radius: 4px;
   padding: 1px 6px;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--muted);
 }
+@media (hover: none) and (pointer: coarse) {
+  body.no-arrow-numbers .choice .key,
+  body.no-arrow-numbers .line-card .key { display: none; }
+}
+
+/* With them on it is the disc the arrow carries, and has to be read as the
+   same object — a 2px border is far too little colour to pair them. The panel
+   is dark, so these take the light half of each pair while the arrow discs
+   take the dark half; both put the digit on a solid, saturated fill. The
+   colours are keyed off the body rather than layered over the rule above,
+   because #choice-1 outranks anything a body class could say. */
+body:not(.no-arrow-numbers) .choice .key,
+body:not(.no-arrow-numbers) .line-card .key {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 50%;
+  padding: 0;
+  font-size: 14px;
+  font-weight: 700;
+  background: var(--muted);
+  color: var(--bg);
+}
+body:not(.no-arrow-numbers) #choice-1 .key { background: var(--accent-1); }
+body:not(.no-arrow-numbers) #choice-2 .key { background: var(--accent-2); }
+body:not(.no-arrow-numbers) .line-card.good .key { background: var(--good); }
+body:not(.no-arrow-numbers) .line-card.bad .key { background: var(--bad); }
 
 /* --- reveal phase -------------------------------------------------------- */
 
@@ -375,21 +433,11 @@ kbd {
 }
 .setting-note { margin: 0; font-size: 12px; color: var(--muted); }
 
-#speed-menu { display: flex; gap: 8px; }
-#speed-menu button {
-  flex: 1;
-  font: inherit;
-  font-size: 13px;
-  padding: 8px 0;
-  border-radius: 8px;
-  border: 1px solid var(--line);
-  background: var(--card);
-  color: var(--muted);
-  cursor: pointer;
-}
-#speed-menu button.active { color: var(--text); border-color: var(--accent-1); }
-
-#auth-tabs { display: flex; gap: 8px; margin: 4px 0 2px; }
+/* The drawer's rows of mutually exclusive buttons, one of them current. */
+#speed-menu, #numbers-menu, #auth-tabs { display: flex; gap: 8px; }
+#auth-tabs { margin: 4px 0 2px; }
+#speed-menu button,
+#numbers-menu button,
 .auth-tab {
   flex: 1;
   font: inherit;
@@ -401,6 +449,8 @@ kbd {
   color: var(--muted);
   cursor: pointer;
 }
+#speed-menu button.active,
+#numbers-menu button.active,
 .auth-tab.active { color: var(--text); border-color: var(--accent-1); }
 
 .auth-form { display: flex; flex-direction: column; gap: 8px; }
