@@ -98,8 +98,10 @@ def worst(palette, first, second, on, alpha, visions=ALL_VISION, warmths=WARMTH)
     )
 
 
-# Colour is the only thing tying an arrow to its button, so the candidate pair
-# has to clear every combination, warm filter stacked on dichromacy included.
+# A number ties each arrow to its button as well, but colour is what says it at
+# a glance and a disc a fifth of a square wide is not a substitute, so the
+# candidate pair still has to clear every combination, warm filter stacked on
+# dichromacy included.
 def test_candidate_arrows_survive_everything(palette):
     assert worst(palette, "--arrow-1", "--arrow-2", BOARD, ARROW_ALPHA) > 40
 

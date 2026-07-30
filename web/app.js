@@ -50,8 +50,17 @@ let autoplayTimer = null;
 let stepMs = +(localStorage.getItem("stepMs") || 750); // auto-play pace
 let lastResult = null; // /api/answer payload for the current reveal
 
-function arrow(uci, brush) {
-  return { orig: uci.slice(0, 2), dest: uci.slice(2, 4), brush };
+// `num` is drawn as a numbered disc near the arrowhead, in the arrow's own
+// colour, matching the badge on the panel control the arrow belongs to. Colour
+// alone can't carry that pairing: the two arrows often cross or share a square,
+// and a viewer who can't separate the hues has nothing else to go on.
+function arrow(uci, brush, num) {
+  return {
+    orig: uci.slice(0, 2),
+    dest: uci.slice(2, 4),
+    brush,
+    label: { text: String(num) },
+  };
 }
 
 // The scheme is checked rather than trusted: a `javascript:` href runs on click
@@ -104,11 +113,14 @@ function stopAutoplay() {
 function renderStep() {
   const line = lines[activeLine];
   if (stepIdx < 0) {
-    // back at the decision point: show both candidate arrows again
-    setBoard(trial.fen, trial.side_to_move, [
-      arrow(lines[0].steps[0].uci, lines[0].brush),
-      arrow(lines[1].steps[0].uci, lines[1].brush),
-    ]);
+    // Back at the decision point: show both candidate arrows again. They are
+    // numbered by line, not by the button they were picked from, so the discs
+    // agree with the line cards and with what keys 1 and 2 now do.
+    setBoard(
+      trial.fen,
+      trial.side_to_move,
+      lines.map((l, i) => arrow(l.steps[0].uci, l.brush, i + 1)),
+    );
   } else {
     const step = line.steps[stepIdx];
     setBoard(step.fen, trial.side_to_move, [], {
@@ -257,7 +269,7 @@ async function loadTrial() {
   setBoard(
     trial.fen,
     trial.side_to_move,
-    trial.moves.map((m, i) => arrow(m.uci, BRUSHES[i])),
+    trial.moves.map((m, i) => arrow(m.uci, BRUSHES[i], i + 1)),
   );
   trial.moves.forEach((m, i) => {
     choiceEls[i].querySelector(".san").textContent = m.san;

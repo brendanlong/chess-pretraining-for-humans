@@ -32,12 +32,15 @@ automatically.
   making the answer cost an answer, though — someone determined to fool
   themselves through the ordinary API always can, and spending much to prevent
   that would be spending it on the wrong threat.
-- **Which arrow belongs to which button is said only in colour**, so that
-  pair has to survive red-green colour blindness and the warm filters
-  night-mode displays apply, and has to stay free of any hint that one
+- **Which arrow belongs to which button is said twice**: in colour, and in
+  a number carried by both. The colour pair still has to survive red-green
+  colour blindness and the warm filters night-mode displays apply, because
+  it is what the eye reads at a glance; the number is what remains when it
+  doesn't, and when the two arrows cross or point at the same square and
+  no colour would have separated them. Neither channel may hint that one
   move is the safer one. The reveal's best-against-worse pair is held to
-  the same standard as far as a light board allows, but there colour
-  reinforces a verdict the text already gives.
+  the same standard as far as a light board allows, but there both
+  reinforce a verdict the text already gives.
 - **The correct answer is the position's best move** by full-strength
   engine analysis — never a weakened engine, and never "the less bad of two
   bad moves".

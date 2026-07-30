@@ -147,6 +147,23 @@ main {
    The brushes keep enough transparency to see the piece underneath. */
 .cg-wrap .cg-shapes { opacity: 1; }
 
+/* The numbered disc on each arrow (chessground renders shape labels into the
+   custom-svg layer, so the rule above doesn't reach them). Chessground fades a
+   label to match its arrow; here the number is the thing that survives when the
+   colour doesn't, so it stays opaque, and the white ring is thickened enough to
+   read where a disc lands on the other arrow. Lengths are in board units, one
+   per square, so `px` here is a square and not a pixel. */
+.cg-wrap .cg-custom-svgs circle {
+  fill-opacity: 1;
+  stroke-opacity: 1;
+  stroke-width: 0.05px;
+  /* Two moves onto one square put the discs ~0.51 squares apart — chessground
+     backs a disc off further along its arrow when the destination is shared —
+     so 0.22 is the largest radius whose ring still clears its neighbour. */
+  r: 0.22px;
+}
+.cg-wrap .cg-custom-svgs text { font-weight: 700; }
+
 #panel { width: var(--bw); max-width: 100%; padding: 0 12px; }
 
 @media (min-width: 900px) {
@@ -207,15 +224,28 @@ kbd {
 #choice-2 { border-color: var(--accent-2); }
 .choice:hover { filter: brightness(1.2); }
 .choice:disabled { cursor: default; opacity: 0.85; }
+/* The number that pairs this control with its arrow, drawn as the same disc.
+   It doubles as the keyboard hint, so unlike a <kbd> it stays on touch — the
+   pairing is the point, and a 2px border is far too little colour to carry it.
+   The panel is dark, so these take the light half of each pair while the arrow
+   discs take the dark half; both put the digit on a solid, saturated fill. */
 .choice .key,
 .line-card .key {
-  font-size: 12px;
-  font-weight: 400;
-  color: var(--muted);
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  padding: 1px 6px;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  font-size: 14px;
+  font-weight: 700;
+  background: var(--muted);
+  color: var(--bg);
 }
+#choice-1 .key { background: var(--accent-1); }
+#choice-2 .key { background: var(--accent-2); }
+.line-card.good .key { background: var(--good); }
+.line-card.bad .key { background: var(--bad); }
 
 /* --- reveal phase -------------------------------------------------------- */
 
