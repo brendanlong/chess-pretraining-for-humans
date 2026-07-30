@@ -455,6 +455,47 @@ def test_sweep_drops_empty_guests_but_never_history(client, db):
     assert db.execute("SELECT COUNT(*) FROM responses").fetchone()[0] == 1
 
 
+def test_a_guest_that_answered_nothing_is_reclaimed_within_hours(db):
+    """This is what lets the arrival limit be loose enough that a real
+    first-time visitor never meets it: a flood an address can send is bounded by
+    its rate times this window, not by everything it ever sent. If reclamation
+    took a day, the limit would have to be a gate instead."""
+    with TestClient(server.app) as arrival:
+        arrival.get("/api/account")
+    # A fixed age, deliberately not derived from GUEST_TTL_HOURS: computing it
+    # from the constant would make this pass at any TTL, including the day-long
+    # one it exists to rule out.
+    db.execute("UPDATE users SET created_at = datetime('now', '-4 hours')")
+    db.execute("UPDATE sessions SET last_seen = datetime('now', '-4 hours')")
+    db.commit()
+
+    auth.sweep(db)
+
+    assert db.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0
+
+
+def test_the_sweep_cannot_reclaim_a_visitor_who_is_still_reading(db):
+    """`session_user` only refreshes `last_seen` once an hour, so an arrival who
+    hasn't answered yet can look up to an hour stale. The TTL has to clear that
+    gap, or someone slowly reading the terms gets swept out from under
+    themselves and silently re-identified on their next click."""
+    assert auth.GUEST_TTL_HOURS > 1
+    with TestClient(server.app) as reader:
+        reader.get("/api/account")
+        # Old enough to be a sweep candidate, with the stalest `last_seen` an
+        # actively-used session can have.
+        db.execute("UPDATE users SET created_at = datetime('now', '-2 days')")
+        # Just past the refresh interval — the worst case for a session in
+        # continuous use, and the case a one-hour TTL would get wrong.
+        db.execute("UPDATE sessions SET last_seen = datetime('now', '-61 minutes')")
+        db.commit()
+
+        auth.sweep(db)
+
+        assert db.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 1
+        assert reader.get("/api/account").json() == {"username": None, "guest": True}
+
+
 def test_sweep_keeps_claimed_accounts_even_when_idle(client, db):
     client.post("/api/account/signup", json=CREDS)
     db.execute("UPDATE users SET created_at = datetime('now', '-400 days')")

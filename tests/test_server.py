@@ -276,8 +276,10 @@ def test_responses_carry_security_headers(client):
 
 
 def test_guest_minting_is_rate_limited(db, monkeypatch):
-    """Arriving is enough to write two rows, and the sweep can't reclaim them
-    for a day — so the cheapest write in the app is the unauthenticated one."""
+    """Arriving is enough to write two rows, so the cheapest write in the app is
+    the unauthenticated one. The real bound on a flood is the sweep (see
+    test_a_guest_that_answered_nothing_is_reclaimed_within_hours); this limit is
+    deliberately loose, because it's the only one a real stranger can meet."""
     monkeypatch.setattr(server, "guest_limiter", auth.RateLimiter(2, 3600))
     codes = []
     for _ in range(4):
@@ -285,6 +287,20 @@ def test_guest_minting_is_rate_limited(db, monkeypatch):
             codes.append(c.get("/api/next").status_code)
     assert codes == [200, 200, 429, 429]
     assert db.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 2
+
+
+def test_the_arrival_limit_does_not_accuse_the_visitor_of_anything(monkeypatch):
+    """Every other limiter rations a guess, so "too many attempts" fits. This one
+    turns away a stranger who has done nothing, and shouldn't say they have."""
+    # The wording under test is the deployed one, not one this test invents —
+    # only the limit is lowered, so the assertions aren't circular.
+    configured = server.guest_limiter.message
+    assert "attempts" not in configured
+    monkeypatch.setattr(server, "guest_limiter", auth.RateLimiter(1, 3600, configured))
+    with TestClient(server.app) as first:
+        first.get("/api/next")
+    with TestClient(server.app) as refused:
+        assert refused.get("/api/next").json()["detail"] == configured
 
 
 def test_a_returning_session_never_spends_a_guest_slot(client, monkeypatch):

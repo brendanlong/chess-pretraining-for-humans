@@ -71,12 +71,21 @@ login_limiter = auth.RateLimiter(limit=10, window_s=900)
 login_ip_limiter = auth.RateLimiter(limit=60, window_s=900)
 delete_limiter = auth.RateLimiter(limit=10, window_s=900)
 # Arriving is enough to write a `users` row and a `sessions` row, which makes
-# the unauthenticated write path the cheapest one in the app — and the sweep
-# can't reclaim a row until GUEST_TTL_DAYS has passed, so a flood is not
-# self-healing inside the attack window. Loose enough that a shared address
-# behind NAT never notices; tight enough that filling the volume takes more
-# addresses than it's worth.
-guest_limiter = auth.RateLimiter(limit=60, window_s=3600)
+# the unauthenticated write path the cheapest one in the app.
+#
+# This is the only limit an ordinary stranger can meet, and SPEC says nothing
+# gates the first trial — so it is deliberately far looser than the others, and
+# the real bound on a flood is `auth.GUEST_TTL_HOURS`: rows with no answers are
+# reclaimed within hours, so what an address can hold is its rate times that
+# window (~1800 rows, under a megabyte) rather than everything it ever sent.
+# Tightening this instead of the TTL would be choosing to turn away real
+# first-time visitors behind one carrier NAT, which is the wrong trade — real
+# per-address volume belongs in a reverse proxy anyway.
+guest_limiter = auth.RateLimiter(
+    limit=600,
+    window_s=3600,
+    message="Too many new visitors from your network right now. Try again in a few minutes.",
+)
 
 # Guests are swept periodically rather than on a timer; there is no scheduler
 # here and arrival rate is exactly the signal that we need one. The counter is

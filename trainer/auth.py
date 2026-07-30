@@ -32,7 +32,16 @@ SESSION_MAX_DAYS = 730
 # Anyone can mint a guest just by arriving, so untouched ones are swept: a
 # guest that answered nothing and whose session has gone cold is indexable
 # noise, not history. Anything with a response or a password is never touched.
-GUEST_TTL_DAYS = 1
+#
+# Hours rather than days, because this number is what decides whether a flood
+# of arrivals is self-healing. Reclaim within hours and the arrival limit can
+# be loose enough that a real first-time visitor never meets it, which is what
+# "nothing gates the first trial" requires; reclaim in a day and the limit has
+# to be tight enough to be a gate. Comfortably more than the hour that
+# `session_user` waits before refreshing `last_seen`, so a visitor who is
+# reading rather than answering always looks warm and is never swept from
+# under themselves.
+GUEST_TTL_HOURS = 3
 # Guest rows carry a random name so nothing about them is guessable, and the
 # prefix is reserved so a signup can never collide with one.
 GUEST_PREFIX = "guest_"
@@ -335,7 +344,7 @@ def sweep(conn: sqlite3.Connection) -> None:
              AND NOT EXISTS (SELECT 1 FROM sessions
                              WHERE sessions.user_id = users.id
                                AND sessions.last_seen > datetime('now', ?))""",
-        (f"-{GUEST_TTL_DAYS} days", f"-{GUEST_TTL_DAYS} days"),
+        (f"-{GUEST_TTL_HOURS} hours", f"-{GUEST_TTL_HOURS} hours"),
     )
     conn.execute("DELETE FROM sessions WHERE user_id NOT IN (SELECT id FROM users)")
     conn.commit()
@@ -363,10 +372,16 @@ class RateLimiter:
     """
 
     MAX_KEYS = 10_000
+    DEFAULT_MESSAGE = "Too many attempts. Wait a few minutes and try again."
 
-    def __init__(self, limit: int, window_s: float):
+    def __init__(self, limit: int, window_s: float, message: str = DEFAULT_MESSAGE):
         self.limit = limit
         self.window_s = window_s
+        # The default speaks to someone who typed something wrong. Not every
+        # limiter rations a guess: the one in front of guest minting turns away
+        # a stranger who has done nothing at all, and telling them they have
+        # made too many attempts is both untrue and unhelpful.
+        self.message = message
         self._hits: dict[str, list[float]] = {}
         self._lock = threading.Lock()  # endpoints no longer serialize elsewhere
 
@@ -404,7 +419,7 @@ class RateLimiter:
         now = time.monotonic() if now is None else now
         with self._lock:
             if len(self._live(key, now)) >= self.limit:
-                raise RateLimited("Too many attempts. Wait a few minutes and try again.")
+                raise RateLimited(self.message)
             self._record(key, now)
 
     def clear(self, key: str) -> None:

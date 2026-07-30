@@ -74,8 +74,13 @@ deletion is keyed separately: the one irreversible thing a user might need to
 do *because* they're under attack must not be blockable from outside.
 
 Signup is keyed on address alone because there is no account to key on yet, and
-so is guest minting, because arriving is enough to write two rows and the sweep
-can't reclaim them for a day. "Address" behind a proxy means a header the proxy
+so is guest minting, because arriving is enough to write two rows. That last
+limit is the only one an ordinary stranger can meet, and nothing may gate the
+first trial, so it is deliberately loose and the sweep does the real work: guests
+that answered nothing are reclaimed within hours, which bounds a flood to a rate
+times that window instead of everything it ever sent. Tightening the limit rather
+than the sweep would mean turning away real first-time visitors sharing one
+carrier NAT. "Address" behind a proxy means a header the proxy
 overwrites (`CLIENT_IP_HEADER`), never the socket: trusting forwarded headers
 makes uvicorn believe the *leftmost* `X-Forwarded-For` entry, which a proxy
 appends to rather than replaces, so it is the caller's to invent and a flood
