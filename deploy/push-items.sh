@@ -27,15 +27,20 @@ export_db=$(mktemp -u -t items-export-XXXXXX.db)
 trap 'rm -f "$export_db"' EXIT
 
 uv run python -m trainer.push_items --db "$LOCAL_DB" export --out "$export_db"
-fly ssh sftp put "$export_db" "$REMOTE_INCOMING"
+fly ssh sftp put "$export_db" "$REMOTE_INCOMING" </dev/null
 # From here on the volume holds a copy too — clean it up however we exit,
 # including the interrupted prompt below.
-trap 'rm -f "$export_db"; fly ssh console -C "rm -f $REMOTE_INCOMING" || true' EXIT
+trap 'rm -f "$export_db"; fly ssh console -C "rm -f $REMOTE_INCOMING" </dev/null || true' EXIT
 
 # --dry-run first: the counts are the only chance to notice you exported the
 # wrong file before it's in the live bank.
-fly ssh console -C "$REMOTE_PYTHON -m trainer.push_items --db $REMOTE_DB merge --dry-run $REMOTE_INCOMING"
+#
+# </dev/null on every ssh: the remote command inherits our stdin and drains it,
+# so without this the dry-run swallows the answer to the prompt below and the
+# read that follows sees EOF. Piping `y` in then silently skips the merge —
+# safe, but it looks like the push worked.
+fly ssh console -C "$REMOTE_PYTHON -m trainer.push_items --db $REMOTE_DB merge --dry-run $REMOTE_INCOMING" </dev/null
 read -r -p "merge these into $REMOTE_DB? [y/N] " reply
 if [ "$reply" = "y" ] || [ "$reply" = "Y" ]; then
-    fly ssh console -C "$REMOTE_PYTHON -m trainer.push_items --db $REMOTE_DB merge $REMOTE_INCOMING"
+    fly ssh console -C "$REMOTE_PYTHON -m trainer.push_items --db $REMOTE_DB merge $REMOTE_INCOMING" </dev/null
 fi
