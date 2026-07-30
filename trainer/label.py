@@ -46,6 +46,11 @@ MIN_GAP_WP = 0.015
 # curve exists to prevent, reintroduced through the labeler instead. This is
 # above the widest gap the current bank holds (0.648), so it binds on nothing.
 MAX_GAP_WP = 0.70
+# One engine per worker, each given a couple of threads: a laptop-sized default
+# that leaves the machine usable. Stockfish scales badly across threads compared
+# with running independent searches, so on a bigger box raise `--workers` toward
+# the core count before raising `--threads` (measured on 24 cores: 20x1 labels
+# 1.6x faster than 8x2).
 ENGINE_WORKERS = 8
 ENGINE_THREADS = 2
 
@@ -146,15 +151,18 @@ def label_candidate(cand: dict) -> dict | None:
 
 
 def main() -> None:
-    global MIN_GAP_WP, MAX_GAP_WP
+    global MIN_GAP_WP, MAX_GAP_WP, ENGINE_WORKERS, ENGINE_THREADS
     parser = argparse.ArgumentParser()
     parser.add_argument("candidates", type=Path)
     parser.add_argument("--db", type=Path, default=DEFAULT_DB)
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--min-gap-wp", type=float, default=MIN_GAP_WP)
     parser.add_argument("--max-gap-wp", type=float, default=MAX_GAP_WP)
+    parser.add_argument("--workers", type=int, default=ENGINE_WORKERS)
+    parser.add_argument("--threads", type=int, default=ENGINE_THREADS)
     args = parser.parse_args()
     MIN_GAP_WP, MAX_GAP_WP = args.min_gap_wp, args.max_gap_wp
+    ENGINE_WORKERS, ENGINE_THREADS = args.workers, args.threads
 
     conn = connect(args.db)
     existing = {row["fen"] for row in conn.execute("SELECT fen FROM items")}

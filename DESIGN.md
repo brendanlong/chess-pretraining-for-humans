@@ -20,6 +20,10 @@ frontend. Data flows one way:
   reasoning sits beside the constants. Gap-range flags allow mining
   specific difficulty bands.
   (`trainer/backfill_pvs.py` retrofits lines onto older items.)
+- **Supply** (`trainer/supply.py`) reports what the bank can serve at each
+  user rating, and what a refill would have to mine to fix a thin one. Why a
+  thin band is otherwise invisible, and why the shortfall is stated in gaps,
+  is in the module.
 
 ## Server (`trainer/server.py`)
 
