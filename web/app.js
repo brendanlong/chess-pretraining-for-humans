@@ -384,12 +384,16 @@ async function choose(i) {
 async function initStats() {
   try {
     const s = await api("/api/stats");
-    if (s.account) setAccount(s.account);
+    if (s.account) account = s.account;
     if (s.accuracy_last_50 != null)
       el("stat-acc").textContent = Math.round(s.accuracy_last_50 * 100) + "%";
   } catch (e) {
+    // Fall through to setAccount anyway: the drawer's account sections start
+    // hidden in the HTML, so the guest view (and its sign-in forms) has to be
+    // applied even when stats can't be fetched.
     console.warn(e);
   }
+  setAccount(account);
 }
 
 // --- account --------------------------------------------------------------
