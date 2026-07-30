@@ -100,20 +100,26 @@ def test_migration_re_derives_difficulty_that_drifted_off_the_formula(tmp_path):
 
     conn = connect(path)
     item = conn.execute("SELECT gap_wp, rating FROM items").fetchone()
-    assert item["rating"] == difficulty_rating(0.2) != 1234.5
+    assert item["rating"] == difficulty_rating(item["gap_wp"]) != 1234.5
 
 
 def test_regrade_runs_exactly_once(tmp_path):
     """The one migration a read can't guard: a rating carries no mark of which
     scale produced it, so a second pass would move someone already correct."""
     path = old_db(tmp_path)
-    once = connect(path).execute("SELECT rating FROM users").fetchone()["rating"]
+    first = connect(path)
+    once = first.execute("SELECT rating FROM users").fetchone()["rating"]
+    first.close()
     assert once == regraded_user_rating(1420.0)
 
     for _ in range(3):
-        conn = connect(path)
-    assert conn.execute("SELECT rating FROM users").fetchone()["rating"] == once
+        again = connect(path)
+        assert again.execute("SELECT rating FROM users").fetchone()["rating"] == once
+        again.close()
+    conn = connect(path)
     assert conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0] == "1"
+    assert conn.execute("SELECT value FROM meta WHERE key='regraded_at'").fetchone() is not None
+    conn.close()
 
 
 def test_a_fresh_database_is_not_regraded(tmp_path):

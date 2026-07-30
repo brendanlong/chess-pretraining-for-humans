@@ -12,14 +12,28 @@ log = logging.getLogger(__name__)
 
 
 def _schema_version(conn: sqlite3.Connection) -> int:
+    """0 for a database written before `meta` existed.
+
+    An unreadable value is treated as newer than us rather than older: the
+    migrations it gates are one-way, and running one against a file we can't
+    identify is the failure that isn't recoverable.
+    """
     row = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
-    return int(row["value"]) if row else 0
+    if row is None:
+        return 0
+    try:
+        return int(row["value"])
+    except ValueError:
+        log.error("meta.schema_version is %r, not a number — skipping migrations", row["value"])
+        return SCHEMA_VERSION
 
 
 # In a container the database lives on a mounted volume, not in the checkout,
 # and the server has no argv to take a path from.
 DEFAULT_DB = Path(os.environ.get("TRAINER_DB", "data/items.db"))
 USERS_NAME_INDEX = "idx_users_name_nocase"
+# Bumped only for migrations that can't tell from the data whether they ran.
+SCHEMA_VERSION = 1
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS items (
@@ -40,7 +54,7 @@ CREATE TABLE IF NOT EXISTS items (
     learnable INTEGER NOT NULL,       -- shallow search agrees which move is better
     depth_deep INTEGER NOT NULL,
     depth_shallow INTEGER NOT NULL,
-    rating REAL NOT NULL,             -- difficulty: gap_wp via label.difficulty_rating
+    rating REAL NOT NULL,             -- difficulty: gap_wp via rating.difficulty_rating
     ply INTEGER,
     game_url TEXT,
     mover_elo INTEGER,
@@ -53,7 +67,7 @@ CREATE TABLE IF NOT EXISTS items (
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY,
     name TEXT UNIQUE NOT NULL,  -- chosen username once claimed; opaque 'guest_…' before
-    rating REAL NOT NULL DEFAULT 700,
+    rating REAL NOT NULL DEFAULT 575,  -- rating.USER_START; every insert sets it explicitly
     calib_step REAL NOT NULL DEFAULT 250,  -- staircase step; < ~40 means calibrated
     attempts INTEGER NOT NULL DEFAULT 0,
     password_hash TEXT,  -- NULL means guest
@@ -179,28 +193,48 @@ def connect(path: Path = DEFAULT_DB, check_same_thread: bool = True) -> sqlite3.
     # was rounded for storage. Registering the function rather than repeating
     # the formula in SQL keeps one definition of difficulty.
     conn.create_function("difficulty_rating", 1, difficulty_rating, deterministic=True)
-    if conn.execute(
-        "SELECT 1 FROM items WHERE rating != difficulty_rating(gap_wp) LIMIT 1"
-    ).fetchone():
-        conn.execute(
-            "UPDATE items SET rating = difficulty_rating(gap_wp)"
-            " WHERE rating != difficulty_rating(gap_wp)"
-        )
-    # Regrading users is the one migration that can't be guarded by a read: a
-    # rating carries no mark of which scale produced it, and applying the
-    # transform twice would move someone who was already correct. Hence `meta`.
+    conn.create_function("regraded_user_rating", 1, rating.regraded_user_rating, deterministic=True)
+    # Item difficulty is re-derived, because "a pure function of `gap_wp`" has to
+    # be true of the rows, not just of the code that writes new ones. Users are
+    # regraded in the same transaction, because the two are one change: a rating
+    # means nothing except against the difficulties it selects, so moving the
+    # items without moving the users would silently re-aim everyone.
     #
-    # It has to happen in the same breath as the item re-derivation above,
-    # because the two are one change: a rating means nothing except against the
-    # difficulties it selects, so moving the items without moving the users
-    # would silently re-aim everyone.
-    if _schema_version(conn) < 1:
-        for row in conn.execute("SELECT id, rating FROM users").fetchall():
+    # The item half is guarded by a read of the thing it changes and so is
+    # naturally idempotent. The user half can't be — a rating carries no mark of
+    # which scale produced it, and a second pass would move someone already
+    # correct — so it is gated on `meta`, and the gate is re-read inside
+    # `BEGIN IMMEDIATE` because two servers starting together would otherwise
+    # both see version 0 and both regrade. The lock is taken only when a read
+    # says there is work, so an already-current database still opens without one.
+    items_stale = conn.execute(
+        "SELECT 1 FROM items WHERE rating != difficulty_rating(gap_wp) LIMIT 1"
+    ).fetchone()
+    if items_stale or _schema_version(conn) < SCHEMA_VERSION:
+        conn.commit()  # release the implicit transaction the ALTERs above opened
+        conn.execute("BEGIN IMMEDIATE")
+        try:
             conn.execute(
-                "UPDATE users SET rating = ? WHERE id = ?",
-                (rating.regraded_user_rating(row["rating"]), row["id"]),
+                "UPDATE items SET rating = difficulty_rating(gap_wp)"
+                " WHERE rating != difficulty_rating(gap_wp)"
             )
-        conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '1')")
+            if _schema_version(conn) < SCHEMA_VERSION:
+                conn.execute("UPDATE users SET rating = regraded_user_rating(rating)")
+                conn.execute(
+                    "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
+                    (str(SCHEMA_VERSION),),
+                )
+                # When, so offline analysis can split `responses` on it: rows on
+                # either side carry rating snapshots from different scales, and
+                # nothing else in the record says where the boundary is.
+                conn.execute(
+                    "INSERT OR REPLACE INTO meta (key, value)"
+                    " VALUES ('regraded_at', datetime('now'))"
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
     # `sessions` gained ON DELETE CASCADE after databases existed, and SQLite
     # can't add a constraint in place, so an old table is rebuilt once. Orphan
     # rows from before the foreign key was enforced are shed on the way — the

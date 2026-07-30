@@ -189,8 +189,10 @@ change first, if it should change.
   Items are re-derived on every connect and self-correct; the user pass is
   guarded by `meta.schema_version` because a rating carries no mark of which
   scale produced it, and running it twice would move people who were already
-  right. If you ever restore a pre-regrade backup over a regraded database,
-  clear that key or the users stay on the old scale while the items move.
+  right. **Never clear or lower that key by hand** — a restore brings the whole
+  file, so a pre-regrade backup arrives without it and is regraded correctly on
+  the next open, while clearing it on a database that has already been regraded
+  is precisely the double pass it exists to prevent.
 - **`VACUUM` breaks replication.** It rewrites every page and invalidates
   Litestream's tracking. `VACUUM INTO` a new file and treat it as a new
   database (stop Litestream, clear `/data/.items.db-litestream`, re-snapshot).

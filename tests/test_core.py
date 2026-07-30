@@ -3,6 +3,7 @@ from itertools import pairwise
 
 import pytest
 
+from trainer.label import MAX_GAP_WP, MIN_GAP_WP
 from trainer.rating import (
     CALIB_END_STEP,
     CALIB_START_STEP,
@@ -44,6 +45,20 @@ def test_elo_update_direction():
     assert update(1500, 1500, correct=False) < 1500
 
 
+def test_elo_cannot_walk_a_rating_off_the_scale():
+    """The staircase clamps, and Elo has to as well: a long run of misses would
+    otherwise put a user past the end of the scale, where every target picks the
+    same easiest handful of items."""
+    r = USER_MIN
+    for _ in range(200):
+        r = update(r, difficulty_rating(0.5), correct=False)
+    assert r == USER_MIN
+    r = USER_MAX
+    for _ in range(200):
+        r = update(r, difficulty_rating(MIN_GAP_WP), correct=True)
+    assert r == USER_MAX
+
+
 def test_difficulty_is_strictly_decreasing_over_every_gap_a_bank_can_hold():
     """The property selection actually needs. Banks mined with a wider
     `--max-gap-wp` exist and reach a 0.65 gap, and any two of those items must
@@ -52,7 +67,12 @@ def test_difficulty_is_strictly_decreasing_over_every_gap_a_bank_can_hold():
     gaps = [g / 1000 for g in range(1, 900)]
     ratings = [difficulty_rating(g) for g in gaps]
     assert all(a > b for a, b in pairwise(ratings))
-    assert min(ratings) > RATING_MIN and max(ratings) < RATING_MAX  # nothing clamps
+    # Not just "inside the bounds" — the exponential is positive by
+    # construction, so that would be vacuous. The bank's widest real gap has to
+    # stay far enough off the floor to leave the easy end room to spread.
+    assert difficulty_rating(0.648) > 20
+    assert difficulty_rating(0.35) - difficulty_rating(0.648) > 200
+    assert difficulty_rating(0.9) > RATING_MIN and difficulty_rating(MIN_GAP_WP) < RATING_MAX
 
 
 def test_difficulty_is_smooth_where_the_evidence_runs_out():
@@ -89,6 +109,22 @@ def test_regrade_is_monotone():
     """Two users' ratings can't cross, or the regrade would reorder them."""
     out = [regraded_user_rating(r) for r in range(400, 2600, 25)]
     assert all(a < b for a, b in pairwise(out))
+
+
+def test_regrade_stays_on_the_scale_for_any_stored_rating():
+    """The old scale clamped to [400, 2600], but a hand-edited row or an
+    `account` fix could hold anything, and a rating outside the bounds would
+    make `calibrate` snap on the first answer."""
+    for old in (-1e9, 0, 400, 2600, 1e9, float("inf")):
+        assert USER_MIN <= regraded_user_rating(old) <= USER_MAX
+
+
+def test_every_user_on_the_scale_is_aimed_at_an_item_the_bank_can_hold():
+    """A target below the easiest item is what used to hand every beginner the
+    same clamped block, so the whole user range has to map to a real gap."""
+    for r in range(USER_MIN, USER_MAX, 50):
+        gap = target_gap(r)
+        assert 0 <= gap <= MAX_GAP_WP, f"rating {r} aims at gap {gap}"
 
 
 def test_target_rating_hits_target_accuracy():
