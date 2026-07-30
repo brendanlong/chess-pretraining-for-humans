@@ -47,7 +47,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "backups" {
     filter {}
 
     noncurrent_version_expiration {
-      noncurrent_days = var.backup_retention_days
+      noncurrent_days = var.noncurrent_version_days
     }
     # Every one of those retirements leaves a delete marker behind, and
     # Litestream lists this prefix on every sync. Without this the listing

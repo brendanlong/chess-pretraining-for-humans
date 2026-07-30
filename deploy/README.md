@@ -117,8 +117,17 @@ through the same path a lost volume does, which is the path that gets
 exercised. Keep `items.db.bad` until you're satisfied, then delete it — it's
 on the volume and Litestream is not replicating it.
 
-Snapshot retention is 720h (`litestream.yml`); Litestream's own default is 24h,
-which would have meant a Friday mistake was unrecoverable by Monday.
+### How far back you can go, and why it stops there
+
+Litestream's own default retention is 24h, which would make a Friday mistake
+unrecoverable by Monday. But the window has a ceiling as well as a floor:
+`web/privacy.html` tells users that a deleted account survives in backups for
+at most 30 days, and a deleted row sits in every snapshot taken before the
+delete. So the recovery window is 21 days (`snapshot.retention` in
+`litestream.yml`) plus 7 for the bucket's noncurrent versions — 28, under the
+promise. `terraform/variables.tf` checks that sum at plan time; raising either
+half fails the plan and points here. The published number is the thing to
+change first, if it should change.
 
 ## Things that will bite
 

@@ -1,5 +1,8 @@
 # See deploy/README.md for the one-time bootstrap.
 app = "chess-pretraining"
+# Ashburn. web/privacy.html tells users the app is hosted in the United States
+# and reserves the region itself as an operational choice, so this can move —
+# within the country, or the page changes with it.
 primary_region = "iad"
 
 # SIGINT is what Litestream forwards to the server; the 30s matches its

@@ -1,5 +1,10 @@
 variable "aws_region" {
-  description = "Region for the backup bucket. Route 53 is global."
+  description = <<-EOT
+    Region for the backup bucket. Route 53 is global. web/privacy.html says
+    the app and its backups are in the United States and treats the specific
+    region as ours to change — so this may move, but not out of the country
+    without changing that page.
+  EOT
   type        = string
   default     = "us-east-1"
 }
@@ -41,11 +46,44 @@ variable "backup_bucket" {
   type        = string
 }
 
-variable "backup_retention_days" {
+# The two windows below are halves of one number the privacy policy publishes.
+# A row deleted in the app is still inside every snapshot taken before the
+# delete; those snapshots live for `snapshot_retention_days`, and Litestream
+# then removes them, which under versioning only makes them noncurrent for a
+# further `noncurrent_version_days`. The sum is how long deleted data really
+# survives, and web/privacy.html tells users what that number is.
+
+variable "snapshot_retention_days" {
   description = <<-EOT
-    How long a deleted or superseded backup object stays recoverable. This is
-    the window for noticing a mistake, so it wants to be longer than a weekend.
+    Point-in-time recovery window. Must equal `snapshot.retention` in
+    deploy/litestream.yml, which is where Litestream actually reads it —
+    this copy exists so the arithmetic below can be checked.
   EOT
   type        = number
-  default     = 90
+  default     = 21
+}
+
+variable "noncurrent_version_days" {
+  description = <<-EOT
+    How long a backup object stays recoverable after Litestream deletes it.
+    Versioning is there to survive a mistaken `rm` of the replica, and that
+    mistake gets noticed in days, not months.
+  EOT
+  type        = number
+  default     = 7
+
+  validation {
+    condition     = var.noncurrent_version_days + var.snapshot_retention_days <= var.promised_deletion_days
+    error_message = <<-EOT
+      Backups would outlive the promise in web/privacy.html ("deleted rows
+      persist in encrypted backups for up to N days"). Shorten a window, or
+      change the policy first — it is a public commitment, not a default.
+    EOT
+  }
+}
+
+variable "promised_deletion_days" {
+  description = "The number web/privacy.html publishes. Change that page with it."
+  type        = number
+  default     = 30
 }

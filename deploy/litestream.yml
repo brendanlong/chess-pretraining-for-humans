@@ -15,6 +15,13 @@ dbs:
 # Litestream defaults both of these to 24h, which would mean a mistake noticed
 # on Monday is already unrecoverable. Snapshots are cheap next to the value of
 # the experimental record.
+#
+# The ceiling is web/privacy.html, which tells users how long a deleted account
+# survives in backups: a row deleted in the app is still inside every snapshot
+# taken before the delete. 504h = 21 days, leaving room for the bucket's
+# noncurrent-version window on top — keep this equal to
+# `snapshot_retention_days` in terraform/variables.tf, where the sum is
+# checked.
 snapshot:
   interval: 24h
-  retention: 720h
+  retention: 504h
