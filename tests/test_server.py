@@ -364,16 +364,13 @@ def test_answering_is_rate_limited_but_arriving_is_free(client, db, monkeypatch)
     assert db.execute("SELECT COUNT(*) FROM responses").fetchone()[0] == 1
 
 
-def test_a_rate_limit_can_say_what_it_is_actually_rationing(monkeypatch):
+def test_a_rate_limit_can_say_what_it_is_actually_rationing(client, monkeypatch):
     """The default wording speaks to someone who typed something wrong, which is
     not every limiter — so each carries its own message."""
-    limiter = auth.RateLimiter(1, 900, "a message of its own")
-    monkeypatch.setattr(server, "answer_limiter", limiter)
-    with TestClient(server.app) as c:
-        answer(c, next_trial(c))
-        assert c.post("/api/answer", json=answer_body(next_trial(c))).json()["detail"] == (
-            "a message of its own"
-        )
+    monkeypatch.setattr(server, "answer_limiter", auth.RateLimiter(1, 900, "a message of its own"))
+    answer(client, next_trial(client))
+    refused = client.post("/api/answer", json=answer_body(next_trial(client)))
+    assert refused.json()["detail"] == "a message of its own"
     assert auth.RateLimiter(0, 900).message == auth.RateLimiter.DEFAULT_MESSAGE
 
 
