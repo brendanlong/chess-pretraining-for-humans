@@ -157,12 +157,21 @@ main {
   fill-opacity: 1;
   stroke-opacity: 1;
   stroke-width: 0.05px;
-  /* Two moves onto one square put the discs ~0.51 squares apart — chessground
-     backs a disc off further along its arrow when the destination is shared —
-     so 0.22 is the largest radius whose ring still clears its neighbour. */
+  /* Chessground backs a disc further off along its arrow when the destination
+     is shared, which is what keeps two of them apart. How far apart depends on
+     the angle between the arrows: two knights arriving from neighbouring
+     angles, the tightest case that isn't degenerate, leave 0.42 squares. A
+     ring that cleared even that would be too small to read, so 0.22 accepts a
+     hair of overlap there and stays legible everywhere else. */
   r: 0.22px;
 }
-.cg-wrap .cg-custom-svgs text { font-weight: 700; }
+/* Chessground asks for "Noto Sans" with no fallback, and an unresolvable
+   family lands on the UA's standard font — a serif on most machines, which
+   would put serif digits on the board beside sans-serif ones on the buttons. */
+.cg-wrap .cg-custom-svgs text {
+  font-family: system-ui, sans-serif;
+  font-weight: 700;
+}
 
 #panel { width: var(--bw); max-width: 100%; padding: 0 12px; }
 

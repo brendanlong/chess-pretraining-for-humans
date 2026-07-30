@@ -37,7 +37,8 @@ automatically.
   colour blindness and the warm filters night-mode displays apply, because
   it is what the eye reads at a glance; the number is what remains when it
   doesn't, and when the two arrows cross or point at the same square and
-  no colour would have separated them. Neither channel may hint that one
+  no colour would have separated them — short of the two arriving along one
+  ray, where the arrows coincide and so do the numbers. Neither channel may hint that one
   move is the safer one. The reveal's best-against-worse pair is held to
   the same standard as far as a light board allows, but there both
   reinforce a verdict the text already gives.

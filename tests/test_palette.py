@@ -99,7 +99,7 @@ def worst(palette, first, second, on, alpha, visions=ALL_VISION, warmths=WARMTH)
 
 
 # A number ties each arrow to its button as well, but colour is what says it at
-# a glance and a disc a fifth of a square wide is not a substitute, so the
+# a glance and a disc a fifth of a square in radius is not a substitute, so the
 # candidate pair still has to clear every combination, warm filter stacked on
 # dichromacy included.
 def test_candidate_arrows_survive_everything(palette):
