@@ -7,7 +7,8 @@ primary_region = "iad"
 
 # SIGINT is what Litestream forwards to the server; the 30s matches its
 # shutdown sync, and Fly's 5s default would cut that short on every deploy and
-# every auto-stop — losing the tail of whatever was just answered.
+# every other stop — `fly machine restart`, a host migration — losing the tail
+# of whatever was just answered.
 kill_signal = "SIGINT"
 kill_timeout = 30
 
@@ -34,12 +35,22 @@ initial_size = "1gb"
 [http_service]
 internal_port = 8080
 force_https = true
-# Stopping when idle is safe here — the volume outlives the machine, and
-# uvicorn cold-starts in about a second. Not "suspend": that skips the clean
-# shutdown Litestream needs to flush its last writes.
+# Keep one machine up. A user thinking over a position sends no requests, so
+# scaling to zero puts the cold start on the move they just committed — the
+# moment the app should feel quickest. The floor costs a shared-cpu-1x running
+# full time; that buys away the idle stop, not restarts in general (a deploy
+# still restarts, and this deploys on every green build of main).
+#
+# The two lines under it look dead now — the proxy can't stop the only machine
+# below the floor — and neither is. `min_machines_running` has no effect at all
+# unless `auto_stop_machines` is "stop" or "suspend", so deleting that line
+# quietly restores scale-to-zero. And nothing starts a machine to satisfy the
+# floor: `auto_start_machines` is what brings one back on the next request if
+# it ends up stopped some other way. "stop" not "suspend", because suspend
+# skips the clean shutdown Litestream needs to flush its last writes.
 auto_stop_machines = "stop"
 auto_start_machines = true
-min_machines_running = 0
+min_machines_running = 1
 
 [[http_service.checks]]
 path = "/healthz"
