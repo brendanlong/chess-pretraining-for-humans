@@ -39,11 +39,13 @@ DEPTH_DEEP = 18
 DEPTH_SHALLOW = 8
 PV_PLIES = 8  # how much of each line to keep for the reveal replay
 MIN_GAP_WP = 0.015
-# The easy end stops where `difficulty_rating` does: past a 0.36 gap the formula
-# is below RATING_MIN and every item clamps to the same difficulty, which
-# selection then cannot tell apart. Banks already hold a block of those — see
-# issue #29 — but there is no reason to mine more.
-MAX_GAP_WP = 0.35
+# The easy end has to reach past where beginners are aimed, not stop short of
+# it. A user at USER_START is targeting a gap around 0.39 and the floor of the
+# user scale around 0.56, so a bank capped much below that serves everyone weak
+# the same sliver of items at the boundary — which is the failure `rating`'s
+# curve exists to prevent, reintroduced through the labeler instead. This is
+# above the widest gap the current bank holds (0.648), so it binds on nothing.
+MAX_GAP_WP = 0.70
 ENGINE_WORKERS = 8
 ENGINE_THREADS = 2
 

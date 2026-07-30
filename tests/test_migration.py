@@ -9,7 +9,7 @@ import sqlite3
 
 from trainer import account, auth
 from trainer.db import connect
-from trainer.rating import difficulty_rating
+from trainer.rating import difficulty_rating, regraded_user_rating
 
 from .conftest import FEN_RANKS, FEN_TMPL, add_item
 
@@ -56,7 +56,7 @@ def test_migration_preserves_users_and_responses(tmp_path):
     conn = connect(path)
 
     user = conn.execute("SELECT * FROM users WHERE name = 'brendan'").fetchone()
-    assert user["rating"] == 1420.0
+    assert user["rating"] == regraded_user_rating(1420.0)
     assert user["attempts"] == 3
     assert user["password_hash"] is None  # a legacy row is just a guest
     assert user["created_at"] is not None  # backfilled, not left NULL
@@ -100,7 +100,33 @@ def test_migration_re_derives_difficulty_that_drifted_off_the_formula(tmp_path):
 
     conn = connect(path)
     item = conn.execute("SELECT gap_wp, rating FROM items").fetchone()
-    assert item["rating"] == difficulty_rating(item["gap_wp"]) == 1400
+    assert item["rating"] == difficulty_rating(item["gap_wp"]) != 1234.5
+
+
+def test_regrade_runs_exactly_once(tmp_path):
+    """The one migration a read can't guard: a rating carries no mark of which
+    scale produced it, so a second pass would move someone already correct."""
+    path = old_db(tmp_path)
+    first = connect(path)
+    once = first.execute("SELECT rating FROM users").fetchone()["rating"]
+    first.close()
+    assert once == regraded_user_rating(1420.0)
+
+    for _ in range(3):
+        again = connect(path)
+        assert again.execute("SELECT rating FROM users").fetchone()["rating"] == once
+        again.close()
+    conn = connect(path)
+    assert conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0] == "1"
+    assert conn.execute("SELECT value FROM meta WHERE key='regraded_at'").fetchone() is not None
+    conn.close()
+
+
+def test_a_fresh_database_is_not_regraded(tmp_path):
+    """A new database has nothing on the old scale, so it must be stamped as
+    current rather than left for the regrade to walk on the next open."""
+    conn = connect(tmp_path / "fresh.db")
+    assert conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0] == "1"
 
 
 def test_migration_is_idempotent_and_takes_no_write_lock_when_current(tmp_path):

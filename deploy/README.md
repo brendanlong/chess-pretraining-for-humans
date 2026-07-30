@@ -181,6 +181,18 @@ change first, if it should change.
   every answer, and its own migrations won't put them back, so it boots happily
   and then 500s on `/api/answer` for every user. Rolling back past this release
   means restoring the database too, not just `flyctl releases rollback`.
+- **The difficulty regrade moves every rating in the database, once.** The
+  release that fits the gap-to-difficulty curve rewrites `items.rating` from
+  `gap_wp` and `users.rating` onto the same scale, the first time the new server
+  opens the file. Nobody's trials change — the regrade preserves the gap each
+  user was being served — but every displayed Elo does, so expect the question.
+  Items are re-derived on every connect and self-correct; the user pass is
+  guarded by `meta.schema_version` because a rating carries no mark of which
+  scale produced it, and running it twice would move people who were already
+  right. **Never clear or lower that key by hand** — a restore brings the whole
+  file, so a pre-regrade backup arrives without it and is regraded correctly on
+  the next open, while clearing it on a database that has already been regraded
+  is precisely the double pass it exists to prevent.
 - **`VACUUM` breaks replication.** It rewrites every page and invalidates
   Litestream's tracking. `VACUUM INTO` a new file and treat it as a new
   database (stop Litestream, clear `/data/.items.db-litestream`, re-snapshot).
