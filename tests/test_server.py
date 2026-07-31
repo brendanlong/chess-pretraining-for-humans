@@ -219,15 +219,27 @@ def test_every_page_declares_the_real_og_image_size(client, name):
 
 
 def is_ours(href: str) -> bool:
-    """A URL of our own: no scheme, and not the protocol-relative `//host/x`."""
-    return not urlsplit(href).scheme and not href.startswith("//")
+    """A page of ours: a relative URL, or an absolute one at the production
+    host — the same page either way, so both have to answer for themselves.
+    `mailto:` and friends reach another app rather than a page.
+    """
+    parts = urlsplit(href)
+    return parts.scheme in ("", "http", "https") and parts.netloc in ("", urlsplit(PROD).netloc)
 
 
 @pytest.mark.parametrize("name", WEB_PAGES)
 def test_our_own_pages_open_in_the_app(client, name):
-    """An installed app hands a new browsing context to an in-app browser, so a
-    target on one of our own links reads the terms in a sheet outside the app,
-    with no way back to it. Off-site links are where that's the point."""
+    """These pages are the app, so they have to open in it.
+
+    An installed app shows a new browsing context as an in-app browser sheet:
+    our own terms would arrive wearing someone else's chrome, behind a Done
+    button people reliably miss. Nothing here wants that — a `target` on one
+    of our own links buys nothing back, since navigating in place loses
+    nothing on a page with no state.
+
+    Only off-site links are a judgment call, so only this direction is fixed;
+    `index.html` says which way it went and why.
+    """
     path = "/" if name == "index.html" else f"/{name}"
     escaping = [
         a["href"]

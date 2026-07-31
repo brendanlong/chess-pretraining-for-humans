@@ -171,12 +171,15 @@
     </div>
     <div class="setting">
       <span class="setting-label">About</span>
-      <!-- Our own pages navigate in place: a new browsing context is where an
-           installed PWA loses the user to an in-app browser, outside the app. -->
+      <!-- Our own pages navigate in place; only the outside world gets a new
+           context, and only from here, because leaving this page drops an
+           in-flight trial and whatever is typed into the signup form. The
+           legal pages have no such state, so their off-site links navigate
+           in place too: taking the back button away buys nothing there. -->
       <p class="setting-note legal-links">Your answers are research data.
         <a href="terms.html">Terms of use</a> ·
         <a href="privacy.html">Privacy policy</a> ·
-        <a href="https://github.com/brendanlong/chess-pretraining-for-humans" target="_blank" rel="noopener">Source on GitHub</a>
+        <a href="https://github.com/brendanlong/chess-pretraining-for-humans" target="_blank" rel="noopener noreferrer">Source on GitHub</a>
       </p>
     </div>
   </div>
