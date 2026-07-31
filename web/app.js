@@ -37,6 +37,7 @@ const PROMPT_HTML = el("prompt").innerHTML;
 let cg = null;
 let trial = null; // current /api/next payload
 let pendingTrial = null; // prefetched /api/next promise, or null
+let pendingAbort = null; // its AbortController, for dropping it early
 let phase = "loading"; // loading | choosing | submitting | revealed | error
 let shownAt = 0;
 let streak = 0;
@@ -249,11 +250,14 @@ async function copyForClaude() {
   setTimeout(() => (btn.innerHTML = old), 1500);
 }
 
-async function api(path, body) {
-  const res = await fetch(path, body && {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+async function api(path, body, init) {
+  const res = await fetch(path, {
+    ...init,
+    ...(body && {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
   });
   if (!res.ok) {
     const text = await res.text();
@@ -278,12 +282,36 @@ async function api(path, body) {
 // by the `responses` row an answer writes, never by having been offered.
 //
 // Only ever called after an answer, which is what mints an identity, so the
-// token is bound to a real user — and the one identity change that doesn't
-// reload the page (signup) claims that same row, so it stays redeemable.
-// Failure resolves to null instead of rejecting: nothing is awaiting this yet,
-// and a prefetch that couldn't run is not an error the user should ever see.
+// token is bound to a real user. Signup is the one identity change that
+// doesn't reload the page, and it usually claims that same row — but not when
+// it creates one outright, so it drops the prefetch rather than relying on
+// which branch it took. Failure resolves to null instead of rejecting: nothing
+// is awaiting this yet, and a prefetch that couldn't run is not an error the
+// user should ever see.
+//
+// The deadline is what keeps a prefetch from turning into a Next that never
+// returns. Issuing the request into the reveal means it can be minutes old and
+// sitting on a socket the network moved out from under — a phone changing
+// cells — by the time it is awaited, and nothing at that point can tell a dead
+// request from a slow one. Aborting resolves it to null, which falls through
+// to a live fetch. Well past any healthy round trip, so a slow connection
+// still gets the benefit.
+const PREFETCH_DEADLINE_MS = 8000;
+
 function prefetchTrial() {
-  pendingTrial = api("/api/next").catch(() => null);
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), PREFETCH_DEADLINE_MS);
+  pendingAbort = ctl;
+  pendingTrial = api("/api/next", null, { signal: ctl.signal })
+    .catch(() => null)
+    .finally(() => clearTimeout(timer));
+}
+
+// For the cases where the trial it holds stopped being the right one to serve.
+function dropPrefetch() {
+  pendingAbort?.abort();
+  pendingAbort = null;
+  pendingTrial = null;
 }
 
 async function loadTrial() {
@@ -301,6 +329,7 @@ async function loadTrial() {
   // here, where an error does have somewhere to go.
   const prefetched = pendingTrial;
   pendingTrial = null;
+  pendingAbort = null; // this one is being awaited, not dropped
   trial = (prefetched && (await prefetched)) || (await api("/api/next"));
   el("turn-label").textContent = `${trial.side_to_move} to move`;
   el("turn-dot").className = trial.side_to_move;
@@ -353,9 +382,6 @@ async function choose(i) {
       // was issued to changed under us. Retrying the same pick would fail
       // forever, so fetch a trial this session can actually answer.
       el("prompt").textContent = "That trial has expired — loading a fresh one…";
-      // Whatever made this token unredeemable applies to a prefetched one too,
-      // so drop it rather than walking into the same 409 on the next answer.
-      pendingTrial = null;
       nextTrial();
       return;
     }
@@ -538,6 +564,10 @@ el("signup-form").addEventListener("submit", (e) => {
   // Signing up claims the guest row this session has been playing on, so
   // there is nothing to reload: same user, now with a name.
   submitAuth(e.submitter ?? el("signup-form").querySelector("button"), async () => {
+    // Except for a prefetch: signing up reissues the session, so one still in
+    // flight resolves against no identity and comes back a stranger's trial —
+    // rating 575, trial 1, and unanswerable by the account that lands on it.
+    dropPrefetch();
     setAccount(
       await api("/api/account/signup", {
         username: el("signup-username").value,

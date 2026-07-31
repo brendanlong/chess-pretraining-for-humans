@@ -526,25 +526,26 @@ def answer(a: Answer, request: Request):
     }
 
 
+# Only first exposures count toward accuracy: repeats (served only once the
+# bank is exhausted) can be answered from memory of the reveal. Named because
+# its cost is load-bearing and a test asserts the plan it gets — the inner
+# question has to be answered from an index covering `item_id`, or this is
+# quadratic in one user's history. See `idx_responses_item` in `db.py`.
+FIRST_EXPOSURES_SQL = """
+    SELECT r.correct, r.user_rating_after
+      FROM responses r
+     WHERE r.user_id = ?
+       AND NOT EXISTS (SELECT 1 FROM responses p
+                       WHERE p.user_id = r.user_id
+                         AND p.item_id = r.item_id AND p.id < r.id)
+     ORDER BY r.id"""
+
+
 @app.get("/api/stats")
 @locked
 def stats(user_id: int | None = OptionalUserId):
     u = auth.get_user(conn, user_id) if user_id is not None else None
-    # Only first exposures count toward accuracy: repeats (served only once
-    # the bank is exhausted) can be answered from memory of the reveal.
-    rows = [
-        dict(r)
-        for r in conn.execute(
-            """SELECT r.correct, r.user_rating_after
-               FROM responses r
-               WHERE r.user_id = ?
-                 AND NOT EXISTS (SELECT 1 FROM responses p
-                                 WHERE p.user_id = r.user_id
-                                   AND p.item_id = r.item_id AND p.id < r.id)
-               ORDER BY r.id""",
-            (user_id or 0,),
-        )
-    ]
+    rows = [dict(r) for r in conn.execute(FIRST_EXPOSURES_SQL, (user_id or 0,))]
     total_attempts = conn.execute(
         "SELECT COUNT(*) FROM responses WHERE user_id = ?", (user_id or 0,)
     ).fetchone()[0]

@@ -118,8 +118,10 @@ the reveal shows evals in centipawns and win probability, auto-plays the
 chosen move's engine line (switchable to the other, steppable, speed
 configurable), and can copy the position + both lines as plain text for
 pasting into an assistant. The next trial is fetched while the reveal is on
-screen, so pressing Next costs no round trip — `/api/next` writes nothing, and
-the server's few milliseconds of work are dwarfed by the wire either way.
+screen, so pressing Next usually costs no round trip — `/api/next` writes
+nothing, so a prefetch nobody redeems is only a query. It carries a deadline,
+because a request issued into the reveal can be awaited long after the network
+it was made on is gone, and a Next that waits forever is worse than a slow one.
 
 The palette lives entirely in `:root`, including the dark, saturated
 arrow variants the light board needs alongside the light ones the dark
