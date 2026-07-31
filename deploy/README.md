@@ -6,7 +6,7 @@ the pipeline; `responses` is not, which is why there's a backup story at all.
 
 | File | What it is |
 | --- | --- |
-| `../Dockerfile` | uv build of the server; no Stockfish, no zstd |
+| `../Dockerfile` | uv build of the server and esbuild of the frontend; no Stockfish, no zstd |
 | `../fly.toml` | one machine, volume at `/data`, health check on `/healthz` |
 | `entrypoint.sh` | restore-if-empty, then run uvicorn under Litestream |
 | `litestream.yml` | replication config (`/etc/litestream.yml` in the image) |

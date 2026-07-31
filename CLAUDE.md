@@ -24,8 +24,12 @@ still handles.
 
 ## Working on the code
 
-- Python 3.12 via `uv`; tests with `uv run pytest`. Frontend is
-  build-free vanilla JS in `web/` (chessground is vendored).
+- Python 3.12 via `uv`; tests with `uv run pytest`. Frontend is vanilla
+  JS in `web/`; `npm ci` vendors chessground into it and `npm run build`
+  bundles it into `web-dist/`, which the server prefers when present.
+  The build may only make files smaller — digests, caching and
+  compression all belong to `trainer/assets.py`, so that editing `web/`
+  and serving it with no build stays honest about what ships.
 - Local dev needs a `stockfish` binary on PATH; mining needs `zstd`.
   See README for the pipeline and server commands.
 - Any PNG landing in `web/` gets run through `optipng` first — the asset

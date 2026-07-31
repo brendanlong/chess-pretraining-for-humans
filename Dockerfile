@@ -3,6 +3,19 @@
 
 FROM litestream/litestream:0.5.15 AS litestream
 
+# Bundles and minifies web/ into web-dist/. Node lives only in this stage: the
+# runtime serves the output and has no idea it was built.
+FROM node:22-slim AS web
+WORKDIR /app
+COPY package.json package-lock.json ./
+COPY scripts/ scripts/
+RUN npm ci
+COPY web/ web/
+# `vendor` again rather than trusting npm's postinstall to have done it: that
+# ran before web/ was copied, and which order two COPY layers land in is not
+# something this should quietly depend on.
+RUN npm run vendor && npm run build
+
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS build
 # only-system: a uv-managed interpreter would be downloaded into this stage and
 # the venv would point at a path the runtime stage doesn't have.
@@ -24,7 +37,9 @@ RUN useradd --system --uid 10001 --shell /usr/sbin/nologin trainer
 WORKDIR /app
 COPY --from=build /app/.venv .venv
 COPY trainer/ trainer/
-COPY web/ web/
+# Only the built tree. With no web/ beside it there is nothing for the server
+# to pick the wrong one of, and the sources never reach the image.
+COPY --from=web /app/web-dist web-dist/
 COPY deploy/litestream.yml /etc/litestream.yml
 COPY deploy/entrypoint.sh /usr/local/bin/entrypoint.sh
 

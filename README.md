@@ -154,3 +154,10 @@ uv run ruff format .       # format
 uv run pyright             # types
 npm ci && npm run lint     # eslint over web/ (vendor excluded)
 ```
+
+`npm ci` also copies chessground into `web/vendor/`, which the pages load
+directly — so run it once before serving, and the server needs nothing else.
+`npm run build` produces `web-dist/`, the bundled and minified tree the image
+serves; the server prefers it when it exists, so build it to check what ships
+and delete it to go back to editing the sources. CI runs the tests against
+both, because the two are meant to differ only in size.

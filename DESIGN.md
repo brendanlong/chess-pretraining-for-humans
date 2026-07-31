@@ -139,22 +139,38 @@ the same reason in reverse: a throttled request should mint nothing at all.
 
 ## Frontend (`web/`)
 
-`trainer/assets.py` reads `web/` once at startup and rewrites every reference
-to carry a digest of what it points at, so an asset URL names its own contents
-and can be cached forever; the pages that carry those URLs are the only thing
-revalidated on a repeat visit. Done at startup rather than by a build step
-because there is no build step to add it to, and one you have to remember to
-run is one that will be forgotten — this reads the disk, so it cannot disagree
-with it. Reaching an asset without its digest is still served, briefly cached:
-a bookmark has no way to learn the file moved on.
+Two steps, and the split between them is the point. `scripts/build-web.mjs`
+(esbuild) bundles and minifies `web/` into `web-dist/`, and does nothing else —
+it renames nothing, rewrites no reference, and decides nothing about caching.
+`trainer/assets.py` then reads whichever tree the server was pointed at, once at
+startup, and does all of the semantics: it rewrites every reference to carry a
+digest of what it points at, so an asset URL names its own contents and can be
+cached forever, and it precompresses each one. So there is one implementation of
+what a URL means, it reads the disk rather than a manifest that could disagree
+with it, and the two trees differ only in size — which is what lets a dev
+checkout serve the sources with no build and still be running the app the image
+serves. CI runs the suite against both to hold them to it.
 
-Vanilla JS on vendored chessground; no build step, no client-side chess
-logic — the server precomputes SAN and per-ply FENs so the client only
-renders. Candidate moves are drawn as arrows; answers by tap or keyboard;
-the reveal shows evals in centipawns and win probability, auto-plays the
-chosen move's engine line (switchable to the other, steppable, speed
-configurable), and can copy the position + both lines as plain text for
-pasting into an assistant.
+The pages carrying those digests are the only thing revalidated on a repeat
+visit. Reaching an asset without its digest is still served, briefly cached: a
+bookmark has no way to learn the file moved on. Compression is maximum-effort
+because it happens once per boot rather than per request — about a tenth of a
+second for the tree — and the encoding is part of the ETag, since it is part of
+the body.
+
+Bundling is arranged so no HTML changes between the trees: `board.css` exists
+only to `@import` chessground's three stylesheets, which a browser follows on
+its own and esbuild inlines. Chessground itself is a pinned npm dependency,
+copied into `web/vendor/` by `scripts/vendor.mjs` on `npm ci` so the pages can
+reach it at a URL; both that directory and `web-dist/` are output, and neither
+is committed.
+
+Vanilla JS, and no client-side chess logic — the server precomputes SAN and
+per-ply FENs so the client only renders. Candidate moves are drawn as arrows;
+answers by tap or keyboard; the reveal shows evals in centipawns and win
+probability, auto-plays the chosen move's engine line (switchable to the other,
+steppable, speed configurable), and can copy the position + both lines as plain
+text for pasting into an assistant.
 
 The palette lives entirely in `:root`, including the dark, saturated
 arrow variants the light board needs alongside the light ones the dark
