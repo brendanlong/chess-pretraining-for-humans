@@ -1,5 +1,6 @@
 import ast
 import contextlib
+import re
 import sqlite3
 import struct
 import threading
@@ -9,7 +10,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from trainer import auth, server, trials
+from trainer import assets, auth, server, trials
 from trainer.db import connect
 
 from .conftest import ITEM, answer, answer_body, next_trial
@@ -39,7 +40,9 @@ class Head(HTMLParser):
                 if key in attr:
                     self.meta[(key, attr[key])] = attr.get("content", "")
         elif tag == "link" and attr.get("href"):
-            self.links.add(attr["href"])
+            # Without the digest: what these assertions are about is which files
+            # a page pulls in, not the version it pulls them in at.
+            self.links.add(attr["href"].split("?")[0])
         elif tag == "script":
             self.scripts.append(attr)
         elif tag == "title":
@@ -660,3 +663,51 @@ def test_a_signed_in_read_does_not_wait_on_a_writer(client, db, monkeypatch):
     finally:
         holder.rollback()
         holder.close()
+
+
+def test_assets_are_cached_forever_and_the_page_that_names_them_is_not(client):
+    """The bargain: a URL that names its own contents can be kept forever, so
+    the only thing a returning visitor has to ask about is the page itself."""
+    page = client.get("/")
+    assert page.headers["cache-control"] == assets.ENTRY_POINT
+
+    referenced = re.findall(r'(?:src|href)="([^"]+\?v=[^"]+)"', page.text)
+    assert referenced, "the page should reference versioned assets"
+    for href in referenced:
+        served = client.get("/" + href)
+        assert served.status_code == 200, href
+        assert served.headers["cache-control"] == assets.IMMUTABLE, href
+
+
+def test_an_asset_reached_without_its_digest_is_not_pinned(client):
+    """A bookmark or a crawler has no way to be told the file moved on, so it
+    must not be handed a copy it will keep for a year."""
+    assert client.get("/app.js").headers["cache-control"] == assets.UNVERSIONED
+    assert client.get("/app.js?v=wrong").headers["cache-control"] == assets.UNVERSIONED
+
+
+def test_a_digest_changes_when_the_file_does(tmp_path):
+    """The whole scheme rests on this, and on it reaching *through* a file: the
+    page's URL for app.js has to change when the module app.js imports does."""
+    web = tmp_path / "web"
+    (web / "vendor").mkdir(parents=True)
+    (web / "vendor" / "lib.js").write_text("export const a = 1;\n")
+    (web / "app.js").write_text('import { a } from "./vendor/lib.js";\n')
+    (web / "index.html").write_text('<script src="app.js"></script>\n')
+
+    before = assets.build(web)
+    (web / "vendor" / "lib.js").write_text("export const a = 2;\n")
+    after = assets.build(web)
+
+    assert before["/vendor/lib.js"].digest != after["/vendor/lib.js"].digest
+    assert before["/app.js"].digest != after["/app.js"].digest  # through the import
+    assert before["/index.html"].body != after["/index.html"].body  # and into the page
+
+
+def test_the_entry_point_still_revalidates_cheaply(client):
+    """`no-cache` means asking every time, which is only cheap if the answer can
+    be 304 rather than the page again."""
+    first = client.get("/")
+    again = client.get("/", headers={"If-None-Match": first.headers["etag"]})
+    assert again.status_code == 304
+    assert not again.content

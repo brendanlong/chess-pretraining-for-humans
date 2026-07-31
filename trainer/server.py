@@ -5,6 +5,7 @@ Run:
 """
 
 import contextlib
+import hashlib
 import logging
 import os
 import random
@@ -15,10 +16,9 @@ from pathlib import Path
 import chess
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import auth, db, rating, trials
+from . import assets, auth, db, rating, trials
 from .db import DEFAULT_DB, connect
 
 log = logging.getLogger(__name__)
@@ -868,4 +868,30 @@ def delete_account(body: Deletion, request: Request):
     return {"deleted": True, "responses_deleted": counts["responses"]}
 
 
-app.mount("/", StaticFiles(directory=WEB_DIR, html=True), name="web")
+# Read once at startup: the tree is a few hundred KB, and holding it means the
+# digests in `assets` can't disagree with what gets served under them.
+WEB = assets.build(WEB_DIR)
+
+
+@app.get("/{path:path}")
+@app.head("/{path:path}")
+def static_file(path: str, request: Request) -> Response:
+    """The frontend. Registered last, so the API routes above win.
+
+    An entry point is revalidated on every visit and everything else is cached
+    forever, which is only safe because everything else is reached through a URL
+    that names its own contents.
+    """
+    asset = WEB.get("/" + path if path else "/")
+    if asset is None:
+        return JSONResponse({"detail": "not found"}, status_code=404)
+    tag = f'"{asset.digest or hashlib.sha256(asset.body).hexdigest()[:12]}"'
+    headers = {
+        "Cache-Control": asset.cache_control(request.query_params.get(assets.VERSION_PARAM)),
+        "ETag": tag,
+    }
+    # The entry points are the ones that get here with a stale copy in hand, and
+    # answering 304 saves sending a page to say it hasn't changed.
+    if request.headers.get("if-none-match") == tag:
+        return Response(status_code=304, headers=headers)
+    return Response(asset.body, media_type=asset.media_type, headers=headers)
