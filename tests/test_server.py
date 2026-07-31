@@ -1,6 +1,8 @@
 import ast
 import contextlib
+import sqlite3
 import struct
+import threading
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -8,6 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from trainer import auth, server, trials
+from trainer.db import connect
 
 from .conftest import ITEM, answer, answer_body, next_trial
 
@@ -558,3 +561,65 @@ def test_a_failed_block_leaves_the_connection_usable(db):
         raise ValueError("boom")
     with server.writing() as tx:  # the next block still works
         tx.execute("SELECT 1")
+
+
+def test_an_answer_that_waits_out_the_lock_is_told_to_retry(client, db, monkeypatch):
+    """A write can lose the lock race — to another answer, or to the bank
+    refresh the runbook merges into the live database. The request was fine, so
+    500 says the one thing that isn't true ("don't bother trying again"); the
+    client can and should. A short timeout here because the real one is ten
+    seconds and this test would rather not be.
+    """
+    trial = next_trial(client)
+    # The server opens its connections per thread, so the wait has to be short
+    # before the one serving this request exists.
+    monkeypatch.setattr(server.db, "BUSY_TIMEOUT_MS", 50)
+    monkeypatch.setattr(server, "_threads", threading.local())
+
+    holder = connect(server.DB_PATH, check_same_thread=False)
+    holder.execute("BEGIN IMMEDIATE")
+    holder.execute("UPDATE users SET rating = rating")  # holds the write lock
+    try:
+        r = client.post("/api/answer", json=answer_body(trial))
+    finally:
+        holder.rollback()
+        holder.close()
+
+    assert r.status_code == 503, r.text
+    assert "busy" in r.json()["detail"].lower()
+    # Nothing was recorded, so the retry is a clean first exposure.
+    assert db.execute("SELECT COUNT(*) FROM responses").fetchone()[0] == 0
+
+
+def test_a_real_database_error_is_still_a_500(client, monkeypatch):
+    """Only SQLITE_BUSY is transient. A broken query is a bug, and telling the
+    caller to retry it would just invite them to hammer."""
+
+    def broken(*_args, **_kwargs):
+        raise sqlite3.OperationalError("no such column: nope")
+
+    monkeypatch.setattr(server, "pick_item", broken)
+    assert client.get("/api/next").status_code == 500
+
+
+def test_a_signed_in_read_does_not_wait_on_a_writer(client, db, monkeypatch):
+    """The read path refreshes a session's sliding expiry, and SQLite takes the
+    write lock for an UPDATE whether or not a row matches — so left to the
+    statement's own WHERE, every request from a signed-in caller queued behind
+    whatever was writing, and failed if that outlasted the busy timeout. A page
+    load has no business depending on a bank refresh.
+    """
+    answer(client, next_trial(client))  # earns a session
+    monkeypatch.setattr(server.db, "BUSY_TIMEOUT_MS", 50)
+    monkeypatch.setattr(server, "_threads", threading.local())
+
+    holder = connect(server.DB_PATH, check_same_thread=False)
+    holder.execute("BEGIN IMMEDIATE")
+    holder.execute("UPDATE users SET rating = rating")
+    try:
+        assert client.get("/api/next").status_code == 200
+        assert client.get("/api/stats").status_code == 200
+        assert client.get("/api/account").status_code == 200
+    finally:
+        holder.rollback()
+        holder.close()

@@ -318,13 +318,23 @@ def touch_session(conn: db.Queryable, token: str | None) -> None:
     path, and a read that quietly writes is a read that has to be told whose
     transaction it is in. One statement, so on the server's connection it is
     durable on its own and inside a `writing()` block it rides along.
+
+    Asked before it is done, rather than left to the UPDATE's own WHERE clause,
+    because SQLite takes the write lock for an UPDATE whether or not any row
+    matches — and this one matches at most once an hour. Left as one statement,
+    every request from a signed-in caller queued behind whatever was writing and
+    failed outright if that ran past the busy timeout, which is a strange way for
+    a page load to depend on a bank refresh. A SELECT takes no write lock at all.
     """
-    if token:
-        conn.execute(
-            "UPDATE sessions SET last_seen = datetime('now') WHERE token_hash = ?"
-            " AND last_seen < datetime('now', '-1 hour')",
-            (_token_hash(token),),
-        )
+    if not token:
+        return
+    th = _token_hash(token)
+    due = conn.execute(
+        "SELECT 1 FROM sessions WHERE token_hash = ? AND last_seen < datetime('now', '-1 hour')",
+        (th,),
+    ).fetchone()
+    if due:
+        conn.execute("UPDATE sessions SET last_seen = datetime('now') WHERE token_hash = ?", (th,))
 
 
 def end_session(conn: db.Queryable, token: str | None) -> None:

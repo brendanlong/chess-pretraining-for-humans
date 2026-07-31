@@ -43,6 +43,10 @@ def _schema_version(conn: sqlite3.Connection) -> int:
 # In a container the database lives on a mounted volume, not in the checkout,
 # and the server has no argv to take a path from.
 DEFAULT_DB = Path(os.environ.get("TRAINER_DB", "data/items.db"))
+# How long a statement waits for a lock someone else holds. Generous because the
+# writer it waits on may be a bank refresh merging into the live database, and
+# failing an answer because an operator was mid-runbook is worse than a pause.
+BUSY_TIMEOUT_MS = 10_000
 USERS_NAME_INDEX = "idx_users_name_nocase"
 # Bumped only for migrations that can't tell from the data whether they ran.
 SCHEMA_VERSION = 1
@@ -170,7 +174,7 @@ def open_connection(
     # has to wait out when someone else holds the lock — the labeler, or another
     # request's transaction. Set afterwards it would apply to everything except
     # the statements that most need it, which would get Python's shorter default.
-    conn.execute("PRAGMA busy_timeout=10000")
+    conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
     return conn
 
 

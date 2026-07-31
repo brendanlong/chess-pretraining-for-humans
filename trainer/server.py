@@ -5,6 +5,7 @@ Run:
 """
 
 import contextlib
+import logging
 import os
 import random
 import sqlite3
@@ -20,6 +21,8 @@ from pydantic import BaseModel
 
 from . import auth, db, rating, trials
 from .db import DEFAULT_DB, connect
+
+log = logging.getLogger(__name__)
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
@@ -351,6 +354,28 @@ def unhandled_error(request: Request, exc: Exception) -> Response:
     the cookie has to be re-applied here too — otherwise a crash while serving
     a brand-new visitor strands the guest it just created, once per retry."""
     return finalize(request, JSONResponse({"detail": "internal error"}, status_code=500))
+
+
+# A write that waited out `busy_timeout` for the lock — someone else's
+# transaction, or a bank refresh merging on the live database. Nothing is wrong
+# with the request, so answering 500 tells the client the one thing that isn't
+# true: 500 is "don't bother trying that again", and this is the opposite. The
+# frontend already returns a failed answer to the choosing state, so a 503 with
+# a reason turns a silently lost answer into the same pick a moment later.
+#
+# Narrowed to SQLITE_BUSY on purpose. Every other OperationalError — a column
+# that isn't there, a malformed file — is a bug or a broken database, and
+# telling a caller to retry those would be an invitation to hammer.
+BUSY_MESSAGE = "The database is busy right now. Try again in a moment."
+
+
+@app.exception_handler(sqlite3.OperationalError)
+def database_busy(request: Request, exc: sqlite3.OperationalError) -> Response:
+    if not (getattr(exc, "sqlite_errorname", "") or "").startswith("SQLITE_BUSY"):
+        log.exception("database error serving %s", request.url.path, exc_info=exc)
+        return unhandled_error(request, exc)
+    log.warning("busy timeout serving %s", request.url.path)
+    return finalize(request, JSONResponse({"detail": BUSY_MESSAGE}, status_code=503))
 
 
 def optional_user_id(request: Request) -> int | None:
