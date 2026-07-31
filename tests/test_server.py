@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 
 from trainer import auth, server, trials
 
-from .conftest import answer, answer_body, next_trial
+from .conftest import ITEM, answer, answer_body, next_trial
 
 
 class Head(HTMLParser):
@@ -72,7 +72,7 @@ def test_no_repeats_until_exhausted_then_flagged(client, db):
     # bank exhausted: repeats are flagged and rating-inert
     t = next_trial(client)
     assert t["repeat"] is True
-    assert t["items_remaining"] == 0
+    assert client.get("/api/stats").json()["items_remaining"] == 0
     rating_before = user_row(db, client)["rating"]
     result = answer(client, t)
     assert result["repeat"] is True
@@ -81,12 +81,23 @@ def test_no_repeats_until_exhausted_then_flagged(client, db):
 
 
 def test_first_exposure_accuracy_excludes_repeats(client):
-    for _ in range(4):  # 2 fresh + 2 repeats
-        answer(client, next_trial(client))
+    """Repeats are answerable from memory of the reveal, so they say nothing
+    about skill and must not move the reported accuracy either way."""
+
+    def answer_with(trial, uci):
+        answer(client, trial, [m["uci"] for m in trial["moves"]].index(uci))
+
+    for _ in range(2):  # the whole bank, answered correctly
+        answer_with(next_trial(client), ITEM["best_uci"])
+    assert client.get("/api/stats").json()["accuracy_last_50"] == 1.0
+
+    for _ in range(2):  # now repeats, answered wrongly
+        t = next_trial(client)
+        assert t["repeat"] is True
+        answer_with(t, ITEM["distractor_uci"])
     stats = client.get("/api/stats").json()
-    assert stats["attempts"] == 4
-    assert stats["first_exposures"] == 2
-    assert len(stats["rating_history"]) == 2
+    assert stats["attempts"] == 4  # all four were recorded
+    assert stats["accuracy_last_50"] == 1.0  # but only the two fresh ones counted
 
 
 def test_first_exposure_filter_is_answered_from_an_index_covering_item_id(db):
@@ -100,7 +111,7 @@ def test_first_exposure_filter_is_answered_from_an_index_covering_item_id(db):
     box is a flake. Note that the losing plan is a SEARCH too, over a range
     instead of a row: which index gets used is the whole assertion.
     """
-    plan = db.execute("EXPLAIN QUERY PLAN " + server.FIRST_EXPOSURES_SQL, (1,)).fetchall()
+    plan = db.execute("EXPLAIN QUERY PLAN " + server.RECENT_FIRST_EXPOSURES_SQL, (1,)).fetchall()
     inner = [row[-1] for row in plan if "p" in row[-1].split()]
     assert inner, f"no plan step for the inner query: {[r[-1] for r in plan]}"
     assert "idx_responses_item" in inner[0], inner[0]

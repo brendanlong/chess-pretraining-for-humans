@@ -40,6 +40,7 @@ let phase = "loading"; // loading | choosing | submitting | revealed | error
 let shownAt = 0;
 let streak = 0;
 let accWindow = []; // local last-50 correctness (feedback trials only)
+let freshLeft = null; // unseen items, seeded by /api/stats and counted down here
 
 // Reveal replay state: two engine lines, one active, stepped through on the
 // main board. lines[i] = {mv, tag, cls, brush, steps}
@@ -290,7 +291,6 @@ async function loadTrial() {
   });
   el("stat-rating").textContent = ratingLabel(trial.user_rating, trial.calibrating);
   el("stat-trial").textContent = trial.trial_number;
-  el("stat-remaining").textContent = trial.items_remaining;
   if (trial.repeat) el("repeat-note").hidden = false;
   phase = "choosing";
   shownAt = performance.now();
@@ -349,6 +349,10 @@ async function choose(i) {
   if (!result.repeat) {
     accWindow.push(result.correct ? 1 : 0);
     if (accWindow.length > 50) accWindow.shift();
+    // Counted down here rather than re-read per trial: answering a fresh item
+    // is exactly what consumes one, so the server needn't scan the bank to
+    // tell us a number we can derive.
+    if (freshLeft !== null) el("stat-remaining").textContent = --freshLeft;
   }
   el("stat-streak").textContent = streak;
   if (accWindow.length)
@@ -413,6 +417,10 @@ async function initStats() {
     if (s.account) account = s.account;
     if (s.accuracy_last_50 != null)
       el("stat-acc").textContent = Math.round(s.accuracy_last_50 * 100) + "%";
+    if (s.items_remaining != null) {
+      freshLeft = s.items_remaining;
+      el("stat-remaining").textContent = freshLeft;
+    }
   } catch (e) {
     // Fall through to setAccount anyway: the drawer's account sections start
     // hidden in the HTML, so the guest view (and its sign-in forms) has to be
