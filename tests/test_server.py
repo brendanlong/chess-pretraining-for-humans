@@ -22,17 +22,20 @@ class Head(HTMLParser):
         super().__init__()
         self.meta: dict[tuple[str, str], str] = {}
         self.links: set[str] = set()
+        self.scripts: list[dict[str, str]] = []
         self.title = ""
         self._in_title = False
 
     def handle_starttag(self, tag, attrs):
-        attr = {k: v for k, v in attrs if v is not None}
+        attr = {k: ("" if v is None else v) for k, v in attrs}
         if tag == "meta":
             for key in ("name", "property"):
                 if key in attr:
                     self.meta[(key, attr[key])] = attr.get("content", "")
         elif tag == "link" and attr.get("href"):
             self.links.add(attr["href"])
+        elif tag == "script":
+            self.scripts.append(attr)
         elif tag == "title":
             self._in_title = True
 
@@ -362,6 +365,39 @@ def test_responses_carry_security_headers(client):
         assert "frame-ancestors 'none'" in h["content-security-policy"]
         assert h["x-content-type-options"] == "nosniff"
         assert h["referrer-policy"] == "same-origin"
+
+
+def csp_directives(response) -> dict[str, list[str]]:
+    parts = response.headers["content-security-policy"].split(";")
+    return {d.split()[0]: d.split()[1:] for d in (p.strip() for p in parts) if d}
+
+
+@pytest.mark.parametrize("name", WEB_PAGES)
+def test_the_page_counter_is_on_every_page_and_allowed_by_the_csp(client, name):
+    """The counter is the one thing the pages load from off-site, so its two
+    origins are the whole CSP allowlist — and a CSP refusal is silent in a way
+    a missing count isn't obviously traceable to. Both halves are checked
+    against the served HTML so neither can move without the other."""
+    served = client.get("/" if name == "index.html" else f"/{name}")
+    tags = [s for s in Head.of(served.text).scripts if "data-goatcounter" in s]
+    assert len(tags) == 1, f"{name} should load the counter exactly once"
+    tag = tags[0]
+
+    csp = csp_directives(served)
+    script_origin = tag["src"].rsplit("/", 1)[0]
+    # The beacon is sendBeacon (connect-src), falling back to an image.
+    endpoint_origin = "/".join(tag["data-goatcounter"].split("/")[:3])
+    assert script_origin in csp["script-src"]
+    assert endpoint_origin in csp["connect-src"]
+    assert endpoint_origin in csp["img-src"]
+    # A protocol-relative src would inherit http: on a plaintext first hop.
+    assert tag["src"].startswith("https://") and "async" in tag
+
+    # The policy is what makes loading it honest, so it has to say who it is
+    # and point at their terms.
+    policy = client.get("/privacy.html").text
+    assert "GoatCounter" in policy
+    assert "https://www.goatcounter.com/help/privacy" in policy
 
 
 def test_answering_is_rate_limited_but_arriving_is_free(client, db, monkeypatch):

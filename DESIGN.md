@@ -69,8 +69,9 @@ rather than a gate in front of it. Sessions are a table of hashed tokens, so
 a database read grants no logins; the token is rotated on every privilege
 change and expires both on idleness and absolutely. `SameSite=Lax` plus
 `no-store` on every API response is the CSRF-and-shared-cache story, and a
-CSP with no allowlist (everything the page loads is ours) is what stops a
-hostile string in mined data from being script.
+CSP is what stops a hostile string in mined data from being script. Its
+allowlist is two named origins, both the hosted page counter — everything
+else the page loads is ours.
 
 Abuse control is rate limiting, not captchas — the cost of a wrong guess
 should be a wait, not a lost signup. Password checks are metered twice (per
