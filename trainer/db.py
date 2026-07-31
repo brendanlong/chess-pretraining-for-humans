@@ -110,6 +110,13 @@ CREATE TABLE IF NOT EXISTS meta (
 
 CREATE INDEX IF NOT EXISTS idx_items_rating ON items(rating);
 CREATE INDEX IF NOT EXISTS idx_responses_user ON responses(user_id, id);
+-- Both response indexes earn their keep, on different halves of /api/stats.
+-- The one above serves "this user's answers, in order"; this one serves the
+-- first-exposure filter, which asks per row whether an earlier response to the
+-- same item exists. Without `item_id` in the index that inner question rescans
+-- every row the user has, so the endpoint is quadratic in one user's history —
+-- 700ms at 5k answers, and it holds the database lock for all of it.
+CREATE INDEX IF NOT EXISTS idx_responses_item ON responses(user_id, item_id, id);
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 """
 

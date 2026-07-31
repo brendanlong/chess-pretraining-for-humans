@@ -89,6 +89,28 @@ def test_first_exposure_accuracy_excludes_repeats(client):
     assert len(stats["rating_history"]) == 2
 
 
+def test_first_exposure_filter_seeks_rather_than_rescanning_a_users_history(db):
+    """The filter above asks, per response, whether an earlier one hit the same
+    item. Answered by a scan of everything that user has ever done, /api/stats
+    is quadratic in one history — and it holds the database lock throughout, so
+    a long-serving user's page load stalls every trial in flight. Measured at
+    5k responses that was 700ms against 3ms. Asserting the plan rather than a
+    duration because the difference that matters is seek-vs-scan, and a timing
+    threshold on a shared CI box is a flake.
+    """
+    plan = db.execute(
+        """EXPLAIN QUERY PLAN
+           SELECT r.correct FROM responses r WHERE r.user_id = 1
+             AND NOT EXISTS (SELECT 1 FROM responses p
+                             WHERE p.user_id = r.user_id
+                               AND p.item_id = r.item_id AND p.id < r.id)
+           ORDER BY r.id"""
+    ).fetchall()
+    subquery = [row[-1] for row in plan if "p" in row[-1].split()]
+    assert subquery, f"no plan step for the inner query: {[r[-1] for r in plan]}"
+    assert "SEARCH" in subquery[0] and "idx_responses_item" in subquery[0], subquery[0]
+
+
 def test_legal_pages_are_served_and_reachable_before_signing_up(client):
     """A guest records responses without ever opening the signup form, so the
     first page it lands on has to link the terms and the policy itself."""

@@ -117,7 +117,9 @@ renders. Candidate moves are drawn as arrows; answers by tap or keyboard;
 the reveal shows evals in centipawns and win probability, auto-plays the
 chosen move's engine line (switchable to the other, steppable, speed
 configurable), and can copy the position + both lines as plain text for
-pasting into an assistant.
+pasting into an assistant. The next trial is fetched while the reveal is on
+screen, so pressing Next costs no round trip — `/api/next` writes nothing, and
+the server's few milliseconds of work are dwarfed by the wire either way.
 
 The palette lives entirely in `:root`, including the dark, saturated
 arrow variants the light board needs alongside the light ones the dark

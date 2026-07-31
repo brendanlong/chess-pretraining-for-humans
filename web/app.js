@@ -36,6 +36,7 @@ const PROMPT_HTML = el("prompt").innerHTML;
 
 let cg = null;
 let trial = null; // current /api/next payload
+let pendingTrial = null; // prefetched /api/next promise, or null
 let phase = "loading"; // loading | choosing | submitting | revealed | error
 let shownAt = 0;
 let streak = 0;
@@ -270,6 +271,21 @@ async function api(path, body) {
   return res.json();
 }
 
+// The reveal is the only idle stretch in the loop, and the next trial is a
+// round trip the server answers in a few milliseconds — so spend it there
+// rather than after the user asks for it. `/api/next` writes nothing, so a
+// prefetch nobody redeems costs a query and is forgotten; seen-ness is defined
+// by the `responses` row an answer writes, never by having been offered.
+//
+// Only ever called after an answer, which is what mints an identity, so the
+// token is bound to a real user — and the one identity change that doesn't
+// reload the page (signup) claims that same row, so it stays redeemable.
+// Failure resolves to null instead of rejecting: nothing is awaiting this yet,
+// and a prefetch that couldn't run is not an error the user should ever see.
+function prefetchTrial() {
+  pendingTrial = api("/api/next").catch(() => null);
+}
+
 async function loadTrial() {
   phase = "loading";
   stopAutoplay();
@@ -281,7 +297,11 @@ async function loadTrial() {
   el("prompt").innerHTML = PROMPT_HTML;
   choiceEls.forEach((b) => (b.disabled = false));
 
-  trial = await api("/api/next");
+  // Take the prefetch if one landed; a failed one falls back to a live fetch
+  // here, where an error does have somewhere to go.
+  const prefetched = pendingTrial;
+  pendingTrial = null;
+  trial = (prefetched && (await prefetched)) || (await api("/api/next"));
   el("turn-label").textContent = `${trial.side_to_move} to move`;
   el("turn-dot").className = trial.side_to_move;
   setBoard(trial.fen, trial.side_to_move, candidateArrows());
@@ -333,6 +353,9 @@ async function choose(i) {
       // was issued to changed under us. Retrying the same pick would fail
       // forever, so fetch a trial this session can actually answer.
       el("prompt").textContent = "That trial has expired — loading a fresh one…";
+      // Whatever made this token unredeemable applies to a prefetched one too,
+      // so drop it rather than walking into the same 409 on the next answer.
+      pendingTrial = null;
       nextTrial();
       return;
     }
@@ -342,6 +365,12 @@ async function choose(i) {
     el("prompt").textContent = `${err.message} — pick again to retry`;
     return;
   }
+
+  // Before the reveal is built, so the request overlaps rendering it. It has to
+  // be after the answer landed, not before: the trial it picks is selected
+  // against the rating this answer just moved, and it carries the trial number
+  // and remaining count that go with it.
+  prefetchTrial();
 
   el("stat-rating").textContent = ratingLabel(result.user_rating, result.calibrating);
 
