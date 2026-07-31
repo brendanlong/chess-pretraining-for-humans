@@ -487,6 +487,22 @@ def test_only_writing_ends_a_transaction_in_the_request_path():
     """
     allowed = {"writing"}  # the one owner
     offenders = []
+    # Inside a transaction, the ambient connection must not be named: `writing()`
+    # hands out a handle with no commit on it, and reaching past that handle for
+    # the module-level `conn` is how a block stops being one transaction.
+    tree = ast.parse(Path(server.__file__).read_text())
+    for fn in [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]:
+        for node in ast.walk(fn):
+            is_writing = isinstance(node, ast.With) and any(
+                isinstance(i.context_expr, ast.Call)
+                and getattr(i.context_expr.func, "id", "") == "writing"
+                for i in node.items
+            )
+            if not is_writing:
+                continue
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.Name) and sub.id == "conn":
+                    offenders.append(f"server.py::{fn.name} names `conn` inside writing()")
     for path in (Path(server.__file__), Path(auth.__file__)):
         tree = ast.parse(path.read_text())
         for func in [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]:

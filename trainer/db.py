@@ -4,11 +4,23 @@ import logging
 import os
 import sqlite3
 from pathlib import Path
+from typing import Protocol
 
 from . import rating
 from .rating import difficulty_rating
 
 log = logging.getLogger(__name__)
+
+
+class Queryable(Protocol):
+    """Anything that can run a statement: a connection, or a transaction handle.
+
+    What the storage helpers ask for, so that a caller inside a transaction can
+    hand them something that has no way to end it (`server.Transaction`) and a
+    script can hand them a plain connection.
+    """
+
+    def execute(self, sql: str, parameters=(), /) -> sqlite3.Cursor: ...
 
 
 def _schema_version(conn: sqlite3.Connection) -> int:

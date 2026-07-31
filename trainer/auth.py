@@ -14,12 +14,13 @@ import contextlib
 import hashlib
 import re
 import secrets
-import sqlite3
 import threading
 import time
 
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
+
+from . import db
 
 COOKIE_NAME = "sid"
 SESSION_DAYS = 365
@@ -135,7 +136,7 @@ def check_email(email: str | None) -> str | None:
 # --- users ----------------------------------------------------------------
 
 
-def create_guest(conn: sqlite3.Connection, start_rating: float, calib_step: float) -> dict:
+def create_guest(conn: db.Queryable, start_rating: float, calib_step: float) -> dict:
     """Writes without committing: the caller owns the transaction, so the row
     can commit atomically with the answer that earns it."""
     name = GUEST_PREFIX + secrets.token_hex(8)
@@ -147,7 +148,7 @@ def create_guest(conn: sqlite3.Connection, start_rating: float, calib_step: floa
     return get_user(conn, cur.lastrowid)  # pyright: ignore[reportArgumentType]
 
 
-def get_user(conn: sqlite3.Connection, user_id: int) -> dict:
+def get_user(conn: db.Queryable, user_id: int) -> dict:
     row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
     if row is None:
         raise AuthError("no such user")
@@ -163,7 +164,7 @@ def display_name(user: dict) -> str | None:
     return None if is_guest(user) else user["name"]
 
 
-def find_by_username(conn: sqlite3.Connection, name: str) -> dict | None:
+def find_by_username(conn: db.Queryable, name: str) -> dict | None:
     """The row a typed username refers to, or None.
 
     Raises rather than picking one when two rows answer to the same name. That
@@ -191,13 +192,13 @@ def validate_signup(username: str, password: str, email: str | None) -> tuple[st
     return username, check_email(email)
 
 
-def check_name_free(conn: sqlite3.Connection, username: str) -> None:
+def check_name_free(conn: db.Queryable, username: str) -> None:
     if find_by_username(conn, username):
         raise AuthError("That username is taken.")
 
 
 def create_account(
-    conn: sqlite3.Connection,
+    conn: db.Queryable,
     username: str,
     password_hash: str,
     email: str | None,
@@ -219,7 +220,7 @@ def create_account(
     return get_user(conn, cur.lastrowid)  # pyright: ignore[reportArgumentType]
 
 
-def check_claimable(conn: sqlite3.Connection, user_id: int, username: str) -> None:
+def check_claimable(conn: db.Queryable, user_id: int, username: str) -> None:
     """The database half of signup validation, cheap enough to run before the
     password hash — otherwise a taken name costs an argon2 each time it's
     probed, which is both an enumeration oracle and free work for an attacker.
@@ -230,7 +231,7 @@ def check_claimable(conn: sqlite3.Connection, user_id: int, username: str) -> No
 
 
 def claim(
-    conn: sqlite3.Connection, user_id: int, username: str, password_hash: str, email: str | None
+    conn: db.Queryable, user_id: int, username: str, password_hash: str, email: str | None
 ) -> dict:
     """Attach credentials to an existing (guest) row. Nothing else changes:
     rating, calibration state and responses carry over untouched.
@@ -246,7 +247,7 @@ def claim(
     return get_user(conn, user_id)
 
 
-def delete_user(conn: sqlite3.Connection, user_id: int) -> dict[str, int]:
+def delete_user(conn: db.Queryable, user_id: int) -> dict[str, int]:
     """Erase a user row and everything that points at it. Returns row counts.
 
     The one place in the app that destroys research data on purpose. The
@@ -282,7 +283,7 @@ def _token_hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
-def start_session(conn: sqlite3.Connection, user_id: int) -> str:
+def start_session(conn: db.Queryable, user_id: int) -> str:
     """Returns the raw token; only its hash is stored.
 
     Writes without committing, like `create_guest` and for the same reason:
@@ -295,7 +296,7 @@ def start_session(conn: sqlite3.Connection, user_id: int) -> str:
     return token
 
 
-def session_user(conn: sqlite3.Connection, token: str | None) -> dict | None:
+def session_user(conn: db.Queryable, token: str | None) -> dict | None:
     """The user a session token names, refreshing its sliding expiry."""
     if not token:
         return None
@@ -310,7 +311,7 @@ def session_user(conn: sqlite3.Connection, token: str | None) -> dict | None:
     return dict(row) if row else None
 
 
-def touch_session(conn: sqlite3.Connection, token: str | None) -> None:
+def touch_session(conn: db.Queryable, token: str | None) -> None:
     """Refresh a session's sliding expiry, at most hourly.
 
     Separate from reading the session because it is the only write on the read
@@ -326,12 +327,12 @@ def touch_session(conn: sqlite3.Connection, token: str | None) -> None:
         )
 
 
-def end_session(conn: sqlite3.Connection, token: str | None) -> None:
+def end_session(conn: db.Queryable, token: str | None) -> None:
     if token:
         conn.execute("DELETE FROM sessions WHERE token_hash = ?", (_token_hash(token),))
 
 
-def revoke_sessions(conn: sqlite3.Connection, user_id: int) -> int:
+def revoke_sessions(conn: db.Queryable, user_id: int) -> int:
     """Sign a user out everywhere. Returns the number of sessions dropped.
 
     What a password change is *for*, when the reason for it is that someone
@@ -344,7 +345,7 @@ def revoke_sessions(conn: sqlite3.Connection, user_id: int) -> int:
     return cur.rowcount
 
 
-def sweep(conn: sqlite3.Connection) -> None:
+def sweep(conn: db.Queryable) -> None:
     """Reclaim session rows that have expired out of every way of being valid.
 
     The conditions mirror `session_user`'s exactly, so a session the sweep

@@ -5,7 +5,6 @@ Run:
 """
 
 import contextlib
-import functools
 import os
 import random
 import sqlite3
@@ -195,6 +194,22 @@ def spend(limiter: auth.RateLimiter, key: str) -> None:
         raise auth_error(e) from e
 
 
+class Transaction:
+    """What `writing()` hands out: a connection with no way to end it.
+
+    The same shape as Prisma's interactive-transaction client, and for the same
+    reason — its proxy simply has no commit on it, so the block's outcome is the
+    only thing that can decide. Helpers take `db.Queryable`, which this
+    satisfies, so a helper that wanted to commit could not name the method.
+    """
+
+    def __init__(self, connection):
+        self._connection = connection
+
+    def execute(self, sql, parameters=(), /):
+        return self._connection.execute(sql, parameters)
+
+
 @contextlib.contextmanager
 def writing():
     """Everything inside commits together, or none of it does.
@@ -212,14 +227,7 @@ def writing():
     """
     conn.execute("BEGIN IMMEDIATE")
     try:
-        yield
-        # Nothing inside may commit. One that does ends this transaction early
-        # and everything after it lands unprotected — which is invisible, so it
-        # is asserted rather than trusted. Three helpers used to do it.
-        if not conn.in_transaction:
-            raise RuntimeError(
-                "a call inside writing() ended the transaction; the block was not atomic"
-            )
+        yield Transaction(conn)
         conn.commit()
     except BaseException:
         # Unconditional, and after the commit as well as the body: `commit()`
@@ -229,17 +237,6 @@ def writing():
         # open is a no-op, so there is nothing to be gained by asking first.
         conn.rollback()
         raise
-
-
-def writes(fn):
-    """For endpoints whose whole body is one transaction."""
-
-    @functools.wraps(fn)
-    def wrapper(*args, **kwargs):
-        with writing():
-            return fn(*args, **kwargs)
-
-    return wrapper
 
 
 # --- identity -------------------------------------------------------------
@@ -347,7 +344,7 @@ def optional_user_id(request: Request) -> int | None:
 OptionalUserId = Depends(optional_user_id)
 
 
-def start_identity(request: Request) -> dict:
+def start_identity(tx: Transaction, request: Request) -> dict:
     """Create the row that answering earns, and hand its session out.
 
     The only place a `users` row is born from ordinary traffic. The caller owns
@@ -360,9 +357,9 @@ def start_identity(request: Request) -> dict:
     global guests_minted
     guests_minted += 1
     if guests_minted % SWEEP_EVERY_GUESTS == 1:
-        auth.sweep(conn)
-    user = auth.create_guest(conn, rating.USER_START, rating.CALIB_START_STEP)
-    queue_cookie(request, auth.start_session(conn, user["id"]))
+        auth.sweep(tx)
+    user = auth.create_guest(tx, rating.USER_START, rating.CALIB_START_STEP)
+    queue_cookie(request, auth.start_session(tx, user["id"]))
     return user
 
 
@@ -510,8 +507,8 @@ def answer(a: Answer, request: Request):
     # reads the item to build the reveal, and a failure there must not undo
     # the answer — or the identity it minted, whose cookie the middleware has
     # already promised to hand out.
-    with writing():
-        u = auth.session_user(conn, request.cookies.get(auth.COOKIE_NAME))
+    with writing() as tx:
+        u = auth.session_user(tx, request.cookies.get(auth.COOKIE_NAME))
         # The token comes first, before anything that reads the item — because
         # *every* answer about an item is a fact about it. The response below is the
         # answer key outright, and even "that isn't one of the offered moves" tells
@@ -532,7 +529,7 @@ def answer(a: Answer, request: Request):
             except auth.RateLimited as e:
                 raise HTTPException(409, str(e)) from e
 
-        item = conn.execute("SELECT * FROM items WHERE id = ?", (a.item_id,)).fetchone()
+        item = tx.execute("SELECT * FROM items WHERE id = ?", (a.item_id,)).fetchone()
         if item is None:  # only reachable if the bank dropped it mid-trial
             raise HTTPException(404, "unknown item")
         item = dict(item)
@@ -542,11 +539,11 @@ def answer(a: Answer, request: Request):
         if u is None:
             # Answering is what earns an identity. Nothing before this point wrote a
             # row, which is what keeps arriving free and the first trial ungated.
-            u = start_identity(request)
+            u = start_identity(tx, request)
 
         correct = a.choice_uci == item["best_uci"]
         is_repeat = (
-            conn.execute(
+            tx.execute(
                 "SELECT 1 FROM responses WHERE user_id = ? AND item_id = ? LIMIT 1",
                 (u["id"], item["id"]),
             ).fetchone()
@@ -567,7 +564,7 @@ def answer(a: Answer, request: Request):
         else:
             new_user_r = rating.update(u["rating"], item["rating"], correct)
 
-        conn.execute(
+        tx.execute(
             """INSERT INTO responses
                (user_id, item_id, choice_uci, correct, response_ms,
                 user_rating_before, user_rating_after, item_rating_before)
@@ -583,7 +580,7 @@ def answer(a: Answer, request: Request):
                 item["rating"],
             ),
         )
-        conn.execute(
+        tx.execute(
             "UPDATE users SET rating = ?, calib_step = ?, attempts = attempts + 1 WHERE id = ?",
             (new_user_r, new_step, u["id"]),
         )
@@ -683,7 +680,7 @@ class Deletion(BaseModel):
     password: str
 
 
-def reissue_session(request: Request, user_id: int) -> None:
+def reissue_session(tx: Transaction, request: Request, user_id: int) -> None:
     """Point this browser at `user_id` on a brand-new token.
 
     Rotating on every privilege change means a token planted before signup
@@ -691,9 +688,9 @@ def reissue_session(request: Request, user_id: int) -> None:
     """
     # Both the token we arrived with and one minted for us moments ago by
     # start_identity (whose cookie we are about to overwrite).
-    auth.end_session(conn, request.cookies.get(auth.COOKIE_NAME))
-    auth.end_session(conn, getattr(request.state, "session_cookie", None))
-    queue_cookie(request, auth.start_session(conn, user_id))
+    auth.end_session(tx, request.cookies.get(auth.COOKIE_NAME))
+    auth.end_session(tx, getattr(request.state, "session_cookie", None))
+    queue_cookie(request, auth.start_session(tx, user_id))
 
 
 @app.get("/api/account")
@@ -713,16 +710,16 @@ def signup(body: Signup, request: Request):
         # session must not cost an argon2 hash (~50ms and 64 MiB).
         username, email = auth.validate_signup(body.username, body.password, body.email)
         user_id = optional_user_id(request)
-        with writing():
+        with writing() as tx:
             if user_id is None:
-                auth.check_name_free(conn, username)
+                auth.check_name_free(tx, username)
             else:
-                auth.check_claimable(conn, user_id, username)
+                auth.check_claimable(tx, user_id, username)
         password_hash = auth.hash_password(body.password)  # slow; not in a transaction
-        with writing():
+        with writing() as tx:
             if user_id is None:
                 u = auth.create_account(
-                    conn,
+                    tx,
                     username,
                     password_hash,
                     email,
@@ -730,8 +727,8 @@ def signup(body: Signup, request: Request):
                     rating.CALIB_START_STEP,
                 )
             else:
-                u = auth.claim(conn, user_id, username, password_hash, email)
-            reissue_session(request, u["id"])
+                u = auth.claim(tx, user_id, username, password_hash, email)
+            reissue_session(tx, request, u["id"])
     except auth.AuthError as e:
         raise auth_error(e) from e
     return account_payload(u)
@@ -755,11 +752,11 @@ def login(body: Login, request: Request):
         # timing says nothing either.
         if not auth.verify_password(auth.credential_for(u), body.password) or u is None:
             raise HTTPException(400, "Wrong username or password.")
-        with writing():
+        with writing() as tx:
             # The row was read before the verify; re-check that the credential
             # we matched is still the current one, so a password rotated away
             # mid-login (trainer.account set-password) can't open a session.
-            current = conn.execute(
+            current = tx.execute(
                 "SELECT 1 FROM users WHERE id = ? AND password_hash = ?",
                 (u["id"], u["password_hash"]),
             ).fetchone()
@@ -767,7 +764,7 @@ def login(body: Login, request: Request):
                 raise HTTPException(400, "Wrong username or password.")
             # Drop the session we arrived with (typically a fresh guest's)
             # rather than leaving a live token pointing at an abandoned row.
-            reissue_session(request, u["id"])
+            reissue_session(tx, request, u["id"])
         # Only reachable by knowing the password, so an attacker can't use it
         # to reset the count — and forgetting it would only over-throttle.
         login_limiter.clear(login_key(name))
@@ -777,9 +774,9 @@ def login(body: Login, request: Request):
 
 
 @app.post("/api/account/logout")
-@writes
 def logout(request: Request):
-    auth.end_session(conn, request.cookies.get(auth.COOKIE_NAME))
+    with writing() as tx:
+        auth.end_session(tx, request.cookies.get(auth.COOKIE_NAME))
     queue_cookie(request, None)
     return {"ok": True}
 
@@ -828,17 +825,17 @@ def delete_account(body: Deletion, request: Request):
         # lock is the one thing every writer contends for.
         if not auth.verify_password(auth.credential_for(u), body.password):
             raise HTTPException(400, "Wrong password.")
-        with writing():
+        with writing() as tx:
             # The row was read before the verify, so re-check that the hash we
             # matched is still the current one — a password rotated away
             # mid-request must not authorize destroying the account.
-            current = conn.execute(
+            current = tx.execute(
                 "SELECT 1 FROM users WHERE id = ? AND password_hash = ?",
                 (u["id"], u["password_hash"]),
             ).fetchone()
             if current is None:
                 raise HTTPException(400, "Wrong password.")
-            counts = auth.delete_user(conn, u["id"])
+            counts = auth.delete_user(tx, u["id"])
             # Deleting the sessions already revoked this cookie server-side;
             # clear it too so the browser lands on a fresh guest rather than
             # presenting a token for a row that no longer exists.
