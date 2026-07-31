@@ -1,11 +1,20 @@
-# The image needs the app and its lock file, nothing else. `data/` in
+# The image needs the app and its lock files, nothing else. `data/` in
 # particular must never be baked in: the live database lives on a volume, and
 # a copy inside the image would shadow an empty mount and look like the bank.
 *
 !pyproject.toml
 !uv.lock
+!package.json
+!package-lock.json
 !trainer/
 !web/
+!scripts/
 !deploy/
 **/__pycache__/
 **/*.pyc
+# Both are build output, and the build stage makes its own. Copying the host's
+# would put whatever a developer happens to have lying around into the image,
+# which is the one thing a pinned dependency is supposed to rule out.
+web/vendor/
+web-dist/
+node_modules/

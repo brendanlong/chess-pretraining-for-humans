@@ -1,25 +1,34 @@
-"""Content-addressed URLs for everything the frontend loads.
+"""Content-addressed, pre-compressed URLs for everything the frontend loads.
 
 An asset that can't change under a URL can be cached forever, which is the only
 way to stop a returning visitor spending a round trip per file asking whether it
 changed. So every reference to one carries a digest of what it points at, and
 the answer to "has this changed" is in the URL rather than in a request.
 
-Computed here rather than by a build step, because the whole frontend is
-build-free and a step you have to remember to run is a step that will be
-forgotten — this cannot drift from what is on disk, since it reads the disk. The
-tree is small enough (a few hundred KB) that holding it in memory is cheaper
-than opening the files again per request.
+Both the digests and the compressed copies are computed here, at startup,
+against whatever tree the server was pointed at — the sources in a dev checkout,
+`scripts/build-web.mjs`'s bundled output in the image. The build step
+deliberately does neither: it only makes files smaller and fewer, so there is
+one implementation of what a URL means and what may be cached, and it reads the
+disk rather than trusting a manifest that could disagree with it. Compressing
+the whole tree at brotli's maximum costs about a tenth of a second once per
+boot, which is not worth a second code path to avoid.
+
+The tree is small enough (a few hundred KB) that holding it, and its compressed
+variants, in memory is cheaper than opening the files again per request.
 
 HTML is deliberately left unversioned and uncacheable: it is the entry point, so
 something has to be fetched to learn the digests, and that something is this.
 """
 
+import gzip
 import hashlib
 import mimetypes
 import re
 from dataclasses import dataclass
 from pathlib import Path
+
+import brotli
 
 # A year, which is the convention for "forever"; `immutable` additionally stops
 # a reload from revalidating it.
@@ -33,6 +42,13 @@ ENTRY_POINT = "no-cache"
 
 VERSION_PARAM = "v"
 _TEXT = {".html", ".css", ".js", ".webmanifest", ".svg", ".json"}
+# Under this, the framing and the extra header cost about what the compression
+# saves. The files it excludes are icons and the manifest.
+_MIN_COMPRESS = 512
+# Tried in this order, so the server's preference wins rather than the client's:
+# every browser that offers brotli also offers gzip, and would otherwise decide
+# by a quality value it set arbitrarily.
+_ENCODINGS = ("br", "gzip")
 
 
 @dataclass(frozen=True)
@@ -40,11 +56,61 @@ class Asset:
     body: bytes
     media_type: str
     digest: str | None  # None for the entry points, which aren't versioned
+    encoded: dict[str, bytes]  # content-encoding -> body; empty for the incompressible
 
     def cache_control(self, asked_for: str | None) -> str:
         if self.digest is None:
             return ENTRY_POINT
         return IMMUTABLE if asked_for == self.digest else UNVERSIONED
+
+    def negotiate(self, accept_encoding: str) -> tuple[bytes, str | None]:
+        """The best copy this client will take, and what to call it."""
+        accepted = _accepted(accept_encoding)
+        for encoding in _ENCODINGS:
+            if encoding in accepted and encoding in self.encoded:
+                return self.encoded[encoding], encoding
+        return self.body, None
+
+
+def _accepted(header: str) -> set[str]:
+    """Encoding names the client will take, dropping any it explicitly refused.
+
+    `br;q=0` means "not this one", and is the whole reason to parse rather than
+    substring-match the header: a client that ruled brotli out has to be handed
+    something else, and answering with it anyway is a response it can't read.
+    """
+    accepted = set()
+    for part in header.split(","):
+        name, _, params = part.strip().partition(";")
+        quality = 1.0
+        for param in params.split(";"):
+            key, _, value = param.partition("=")
+            if key.strip().lower() == "q":
+                try:
+                    quality = float(value)
+                except ValueError:
+                    quality = 0.0
+        if quality > 0:
+            accepted.add(name.strip().lower())
+    return accepted
+
+
+def _compress(path: str, body: bytes) -> dict[str, bytes]:
+    """Every encoding worth offering for one file, at maximum effort.
+
+    Affordable only because it happens once at startup rather than per request,
+    which is also what makes the maximum the right setting: the usual reason to
+    compress lightly is that the CPU is on the request path, and here it isn't.
+    """
+    if not path.endswith(tuple(_TEXT)) or len(body) < _MIN_COMPRESS:
+        return {}
+    # mtime=0 so a gzip body is a function of its input alone — two boots of the
+    # same tree should not disagree about any byte they serve.
+    candidates = {
+        "br": brotli.compress(body, quality=11),
+        "gzip": gzip.compress(body, 9, mtime=0),
+    }
+    return {name: packed for name, packed in candidates.items() if len(packed) < len(body)}
 
 
 def _digest(body: bytes) -> str:
@@ -111,6 +177,8 @@ def build(root: Path) -> dict[str, Asset]:
     for path, body in bodies.items():
         if path.endswith(".html"):
             body = rewrite(body, digests)
-        assets["/" + path] = Asset(body, _media_type(path), digests.get(path))
+        assets["/" + path] = Asset(
+            body, _media_type(path), digests.get(path), _compress(path, body)
+        )
     assets["/"] = assets["/index.html"]
     return assets

@@ -1,13 +1,18 @@
 {
   "name": "chess-pretraining",
   "private": true,
-  "description": "Lint config for the static frontend in web/ (no build step)",
+  "description": "Lint and build for the static frontend in web/",
   "type": "module",
   "scripts": {
+    "vendor": "node scripts/vendor.mjs",
+    "postinstall": "npm run vendor",
+    "build": "node scripts/build-web.mjs",
     "lint": "eslint web"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "chessground": "9.2.1",
+    "esbuild": "0.25.12",
     "eslint": "^10.7.0",
     "globals": "^17.7.0"
   }

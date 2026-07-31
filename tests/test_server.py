@@ -1,5 +1,6 @@
 import ast
 import contextlib
+import gzip
 import re
 import sqlite3
 import struct
@@ -7,6 +8,7 @@ import threading
 from html.parser import HTMLParser
 from pathlib import Path
 
+import brotli
 import pytest
 from fastapi.testclient import TestClient
 
@@ -711,3 +713,95 @@ def test_the_entry_point_still_revalidates_cheaply(client):
     again = client.get("/", headers={"If-None-Match": first.headers["etag"]})
     assert again.status_code == 304
     assert not again.content
+
+
+def fetch(client, path: str, accept_encoding: str):
+    """A GET under one Accept-Encoding.
+
+    The client decompresses what comes back, exactly as a browser does, so the
+    body these assert on is the decoded one and `content-length` is what
+    actually crossed the wire.
+    """
+    return client.get(path, headers={"Accept-Encoding": accept_encoding})
+
+
+def test_a_client_that_takes_brotli_is_sent_brotli(client):
+    """The whole reason compression is precomputed: the smallest copy is the
+    default one, not something the server decides it can afford per request."""
+    plain = fetch(client, "/app.js", "")
+    sent = fetch(client, "/app.js", "br, gzip")
+    assert sent.headers["content-encoding"] == "br"
+    assert sent.content == plain.content  # decoded, so brotli round-tripped
+    assert int(sent.headers["content-length"]) < len(plain.content) / 2
+
+
+def test_a_client_that_refuses_brotli_is_sent_something_it_can_read(client):
+    """`br;q=0` is a refusal, and is the reason the header is parsed rather than
+    searched for a substring — answering in brotli anyway sends a body the
+    client has just said it cannot decode."""
+    sent = fetch(client, "/app.js", "br;q=0, gzip")
+    assert sent.headers["content-encoding"] == "gzip"
+    assert sent.content == fetch(client, "/app.js", "").content
+
+
+def test_a_client_that_offers_nothing_is_sent_the_file_itself(client):
+    plain = fetch(client, "/app.js", "")
+    assert "content-encoding" not in plain.headers
+    assert int(plain.headers["content-length"]) == len(plain.content)
+
+
+def test_an_already_compressed_file_is_not_compressed_again(client):
+    """A PNG gains nothing and would cost a decode on the way out."""
+    assert "content-encoding" not in fetch(client, "/favicon-32x32.png", "br, gzip").headers
+
+
+def test_a_compressed_variant_is_the_file_it_claims_to_be():
+    """Checked against the bytes rather than through a client, because a client
+    that decodes for you can't tell a wrong body from a right one."""
+    built = assets.build(server.WEB_DIR)["/app.js"]
+    assert brotli.decompress(built.encoded["br"]) == built.body
+    assert gzip.decompress(built.encoded["gzip"]) == built.body
+
+
+def test_every_asset_says_it_varies_by_encoding(client):
+    """Including the ones with no variants to offer. A shared cache that stored
+    one without `Vary` would hand it to a client that asked for something else,
+    and which files have variants is not the client's business to track."""
+    for path in ("/", "/app.js", "/style.css", "/favicon-32x32.png"):
+        assert client.get(path).headers["vary"] == "Accept-Encoding", path
+
+
+def test_two_encodings_of_one_file_do_not_share_a_tag(client):
+    """An ETag names a body, and these are different bodies. Sharing one lets a
+    cache answer 304 to a client holding the copy it can't read."""
+    tags = {enc: fetch(client, "/app.js", enc).headers["etag"] for enc in ("br", "gzip", "")}
+    assert len(set(tags.values())) == 3, tags
+    # And the tag it does hand out is the one that comes back as a 304.
+    for encoding, tag in tags.items():
+        again = client.get("/app.js", headers={"Accept-Encoding": encoding, "If-None-Match": tag})
+        assert again.status_code == 304, encoding
+
+
+def test_the_build_changes_how_big_the_frontend_is_and_nothing_else():
+    """web-dist/ is web/ made smaller and fewer — that is the whole contract
+    with `scripts/build-web.mjs`, and it is what lets a dev checkout serve the
+    sources and still be running the app the image serves.
+
+    So every page has to come out the far side naming the same files. Bundling
+    happens *below* that line: board.css swallows the three chessground
+    stylesheets, and no page can tell.
+    """
+    built = server._ROOT / "web-dist"
+    if not built.is_dir():
+        pytest.skip("web-dist/ not built — `npm run build`")
+
+    def references(tree: Path) -> dict[str, set[str]]:
+        pattern = r'(?:src|href)="([^"]+)"'
+        return {
+            path: {ref.split("?")[0] for ref in re.findall(pattern, asset.body.decode())}
+            for path, asset in assets.build(tree).items()
+            if path.endswith(".html")
+        }
+
+    source, dist = references(server._ROOT / "web"), references(built)
+    assert source == dist

@@ -28,6 +28,17 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --frozen
+      # Node is here, not just in the `web` job, because the suite has to run
+      # against the tree the image actually serves — which only exists once the
+      # frontend is built. `npm ci` also vendors chessground into web/, without
+      # which the source tree is incomplete.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: build web-dist
+        run: npm run build
       # The PNGs-are-squeezed test needs it, and fails rather than skips when
       # it's missing. `update` first: the runner image's apt index can be a
       # week stale, and a superseded pool file 404s without it.
@@ -39,8 +50,14 @@ jobs:
         run: uv run ruff format --check .
       - name: pyright
         run: uv run pyright
-      - name: pytest
+      # Twice, because the two trees are meant to differ only in size and this
+      # is what holds them to it: once against web-dist/ (what ships, and what
+      # the server picks by default when it's there), once against the sources
+      # a dev checkout runs with no build.
+      - name: pytest (built tree)
         run: uv run pytest -q
+      - name: pytest (source tree)
+        run: TRAINER_WEB_DIR=web uv run pytest -q
 
   web:
     runs-on: ubuntu-latest

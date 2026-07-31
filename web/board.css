@@ -1,0 +1,14 @@
+/* Chessground's three stylesheets, behind one URL.
+ *
+ * The indirection is what lets the build bundle without touching any HTML: a
+ * browser follows these @imports on its own, and esbuild inlines them, so
+ * index.html says `board.css` either way and the built tree differs from the
+ * source tree only in size. Keeping the board's styles out of style.css is
+ * what keeps terms.html and privacy.html — which link style.css and draw no
+ * board — from paying for them.
+ *
+ * Order matters and is chessground's: base geometry, then the board's
+ * squares, then the piece art. */
+@import "vendor/chessground.base.css";
+@import "vendor/chessground.brown.css";
+@import "vendor/chessground.cburnett.css";

@@ -23,7 +23,25 @@ from .db import DEFAULT_DB, connect
 
 log = logging.getLogger(__name__)
 
-WEB_DIR = Path(__file__).resolve().parent.parent / "web"
+_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _web_dir() -> Path:
+    """The frontend tree to serve: the build's output if it was run, else the sources.
+
+    The two differ only in size — `scripts/build-web.mjs` bundles and minifies
+    and changes nothing else — so this can prefer whichever is there rather than
+    having to be told. The image contains only `web-dist/`; a dev checkout has
+    `web/` and needs no build to run. `TRAINER_WEB_DIR` is how the tests reach
+    whichever one they aren't currently running against.
+    """
+    if override := os.environ.get("TRAINER_WEB_DIR"):
+        return Path(override)
+    built = _ROOT / "web-dist"
+    return built if built.is_dir() else _ROOT / "web"
+
+
+WEB_DIR = _web_dir()
 
 # Which of the two moves is the correct one is decided by a coin flip, and that
 # flip is the answer to the trial. The default `random` module is a Mersenne
@@ -885,13 +903,25 @@ def static_file(path: str, request: Request) -> Response:
     asset = WEB.get("/" + path if path else "/")
     if asset is None:
         return JSONResponse({"detail": "not found"}, status_code=404)
-    tag = f'"{asset.digest or hashlib.sha256(asset.body).hexdigest()[:12]}"'
+    body, encoding = asset.negotiate(request.headers.get("accept-encoding", ""))
+    # The encoding is part of the tag because it is part of the body. A cache
+    # holding both copies has to be able to tell them apart, and `Vary` alone
+    # only tells it to keep them separate, not which one it has.
+    variant = f"-{encoding}" if encoding else ""
+    tag = f'"{asset.digest or hashlib.sha256(asset.body).hexdigest()[:12]}{variant}"'
     headers = {
         "Cache-Control": asset.cache_control(request.query_params.get(assets.VERSION_PARAM)),
         "ETag": tag,
+        # Set even on the copies with no variants to offer: a shared cache that
+        # stored one without it would serve it to a client that asked for
+        # something else, and which files have variants is not the client's to
+        # know.
+        "Vary": "Accept-Encoding",
     }
+    if encoding:
+        headers["Content-Encoding"] = encoding
     # The entry points are the ones that get here with a stale copy in hand, and
     # answering 304 saves sending a page to say it hasn't changed.
     if request.headers.get("if-none-match") == tag:
         return Response(status_code=304, headers=headers)
-    return Response(asset.body, media_type=asset.media_type, headers=headers)
+    return Response(body, media_type=asset.media_type, headers=headers)
