@@ -103,7 +103,7 @@ def db(tmp_path, monkeypatch, item_count):
     # connection to the same file, for tests that want to look at rows directly.
     monkeypatch.setattr(server, "DB_PATH", path)
     monkeypatch.setattr(server, "_threads", threading.local())
-    monkeypatch.setattr(server, "conn", server._PerThreadConnection())
+    monkeypatch.setattr(server, "conn", server.AmbientConnection())
     # Fresh limiters per test, so one test's attempts can't starve another's.
     # (TestClient reports one host for everyone, so they all share a key.)
     for name, limiter in (

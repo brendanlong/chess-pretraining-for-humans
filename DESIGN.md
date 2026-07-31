@@ -44,13 +44,15 @@ ORM's interactive transaction, and for the same reason: the block's outcome is
 then the only thing that can end it. Storage helpers take that handle
 (`db.Queryable`), so one that wanted to commit could not name the method.
 
-The connection underneath enforces the rest, because SQLite has no nested
-transaction to make any of it safe: a statement on its own commits itself,
-which is what the read paths want, but while a transaction is open the ambient
-connection refuses to run one, refuses to start a second transaction, and
-refuses to commit or roll back at all. What used to be a stray `commit()` that
-was harmless in one caller and silently un-atomicked another is now an error in
-the second case and impossible to spell in the first.
+Both objects expose `execute` and nothing else, which is most of what makes
+this hold. Neither has a commit to call — outside a transaction a statement
+commits itself, and inside one the block owns the ending — so the stray
+`commit()` that was harmless in one caller and silently un-atomicked another
+can't be written at all, and neither can the `cursor()` that would have got
+back to the raw connection. The one thing left to catch at runtime is the case
+that looks like it works: running a statement on the ambient connection while a
+transaction is open, which is how a block quietly stops being one. That, and
+nesting, raise — SQLite has no nested transaction to make either safe.
 
 Trial endpoints: next trial, answer, stats. Selection picks an
 unseen learnable item near the rating where the user's expected score is

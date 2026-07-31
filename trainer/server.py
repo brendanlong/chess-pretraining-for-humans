@@ -11,7 +11,6 @@ import random
 import sqlite3
 import threading
 from pathlib import Path
-from typing import cast
 
 import chess
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
@@ -69,16 +68,20 @@ class OutsideTransaction(RuntimeError):
     """Raised for a use of the connection that `writing()` should have owned."""
 
 
-class _PerThreadConnection:
-    """The ambient connection, with the unsafe uses removed.
+class AmbientConnection:
+    """The database outside any transaction: one statement, standing alone.
 
-    A statement here is a statement in its own right: with no transaction open
-    it commits itself, which is what the read paths want. What it must never be
-    is a way *into* a transaction someone else opened — reaching past the handle
-    is how a block silently stops being one, so it refuses rather than obliges.
-    Ending a transaction it doesn't own is refused for the same reason, and a
-    stray `commit()` no longer gets to be a no-op that happens to be harmless
-    today.
+    Exposes `execute` and nothing else — not because commit and rollback would
+    be misused, but because there is no version of them that is right here. A
+    statement run through this commits itself, so there is nothing to commit;
+    and a transaction, if one is open, belongs to the `writing()` block that
+    opened it, so there is nothing here to end. Leaving them off means the
+    question never comes up, and takes `cursor()` and friends — every other
+    route back to the raw connection — off with them.
+
+    Running a statement while a transaction *is* open is the one case worth an
+    error rather than an omission: it is legal, it looks like it works, and it
+    is how a block silently stops being one transaction.
     """
 
     def execute(self, sql, parameters=(), /):
@@ -90,19 +93,10 @@ class _PerThreadConnection:
             )
         return connection.execute(sql, parameters)
 
-    def commit(self):
-        raise OutsideTransaction("only writing() may commit")
 
-    def rollback(self):
-        raise OutsideTransaction("only writing() may roll back")
-
-    def __getattr__(self, name):
-        return getattr(thread_connection(), name)
-
-
-# Typed as what it stands in for: every `auth.*(conn, ...)` call site takes a
-# real connection, and this forwards to one.
-conn: sqlite3.Connection = cast(sqlite3.Connection, _PerThreadConnection())
+# Typed as what it is rather than cast to a connection: the storage helpers ask
+# for `Queryable`, and so this stays checkable rather than asserted.
+conn: db.Queryable = AmbientConnection()
 
 # Not a captcha (see auth.RateLimiter). Several limits, keyed on different
 # things on purpose, because they defend different things.

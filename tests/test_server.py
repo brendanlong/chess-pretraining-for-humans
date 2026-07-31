@@ -538,6 +538,10 @@ def test_the_ambient_connection_refuses_every_use_that_writing_should_own(db):
     held a transaction, ending it early. SQLite has no nested transaction to
     make that safe, so the connection refuses rather than obliging.
     """
+    # Ending a transaction isn't refused here, it's absent — and so is every
+    # other route back to the raw connection that could have ended one.
+    assert [name for name in dir(server.conn) if not name.startswith("_")] == ["execute"]
+
     # Reaching past the handle for the connection underneath.
     with pytest.raises(server.OutsideTransaction), server.writing():
         server.conn.execute("SELECT 1")
@@ -545,12 +549,6 @@ def test_the_ambient_connection_refuses_every_use_that_writing_should_own(db):
     # Opening a second transaction on top of one already open.
     with pytest.raises(server.OutsideTransaction), server.writing(), server.writing():
         pass
-
-    with pytest.raises(server.OutsideTransaction):  # ending one it doesn't own
-        server.conn.commit()
-
-    with pytest.raises(server.OutsideTransaction):
-        server.conn.rollback()
 
 
 def test_a_failed_block_leaves_the_connection_usable(db):
