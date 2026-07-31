@@ -300,7 +300,18 @@ def start_session(conn: sqlite3.Connection, user_id: int) -> str:
     return token
 
 
-def session_user(conn: sqlite3.Connection, token: str | None) -> dict | None:
+def session_user(
+    conn: sqlite3.Connection, token: str | None, *, own_transaction: bool = True
+) -> dict | None:
+    """The user a session token names, refreshing its sliding expiry.
+
+    `own_transaction=False` for callers that are already inside one — the touch
+    then rides along with their commit instead of ending their transaction
+    early, which for /api/answer would silently un-atomic the read-modify-write
+    of the rating it is about to move. It cannot be detected instead of
+    declared: the touch is itself a write, so `in_transaction` is true either
+    way by the time we could ask.
+    """
     if not token:
         return None
     th = _token_hash(token)
@@ -319,7 +330,8 @@ def session_user(conn: sqlite3.Connection, token: str | None) -> dict | None:
         " AND last_seen < datetime('now', '-1 hour')",
         (th,),
     )
-    conn.commit()
+    if own_transaction:
+        conn.commit()
     return dict(row)
 
 

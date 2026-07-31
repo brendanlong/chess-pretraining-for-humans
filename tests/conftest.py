@@ -1,3 +1,5 @@
+import threading
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -84,11 +86,19 @@ def no_real_database(monkeypatch):
 @pytest.fixture
 def db(tmp_path, monkeypatch, item_count):
     # TestClient runs the app in its own thread, like uvicorn's threadpool does.
-    conn = connect(tmp_path / "test.db", check_same_thread=False)
+    path = tmp_path / "test.db"
+    conn = connect(path, check_same_thread=False)
     for i in range(item_count):
         add_item(conn, FEN_TMPL.format(FEN_RANKS[i]))
     conn.commit()
-    monkeypatch.setattr(server, "conn", conn)
+    # Point the server at this file rather than handing it this connection: the
+    # server opens one per thread and each owns its own transaction, so a test
+    # that shared a single connection with it would be exercising a concurrency
+    # story the real thing doesn't have. The returned handle is a separate
+    # connection to the same file, for tests that want to look at rows directly.
+    monkeypatch.setattr(server, "DB_PATH", path)
+    monkeypatch.setattr(server, "_threads", threading.local())
+    monkeypatch.setattr(server, "conn", server._PerThreadConnection())
     # Fresh limiters per test, so one test's attempts can't starve another's.
     # (TestClient reports one host for everyone, so they all share a key.)
     for name, limiter in (

@@ -28,7 +28,16 @@ frontend. Data flows one way:
 ## Server (`trainer/server.py`)
 
 FastAPI over a single SQLite file (WAL; shared safely with a running
-labeler). Trial endpoints: next trial, answer, stats. Selection picks an
+labeler), one connection per threadpool thread. A transaction belongs to a
+connection, so sharing one would serialize every request whether or not it
+wrote; separate connections let WAL do what it is for, and leave SQLite to
+serialize the writers. Endpoints that write take one explicitly and up front
+(`writing()`), because a rating is read, computed in Python, and written
+back — two overlapping answers that both read first would lose one. How much
+of that is scaling headroom is a question of how many cores the machine has,
+which is the point: it is now a setting rather than a rewrite.
+
+Trial endpoints: next trial, answer, stats. Selection picks an
 unseen learnable item near the rating where the user's expected score is
 80%. An answer moves the user's Elo rating and nothing else — item
 difficulty is fixed at labeling time, so the `items` row a trial came from
@@ -79,7 +88,7 @@ deletion on its own key so an attack on an account's password can't block
 its owner's erase button, and answering — the one unauthenticated write, and
 the one that mints rows — per address, far above human pace. Limits are
 charged before the slow work and never refunded; argon2 runs outside the
-database lock under a small concurrency cap. A guest row commits atomically
+write transaction under a small concurrency cap. A guest row commits atomically
 with the answer that earns it and foreign keys are enforced, so the only
 garbage collection is a periodic sweep of expired session rows — user rows
 are always history worth keeping. "Address" behind a proxy means a header
@@ -101,8 +110,9 @@ setting a password there also signs the account's existing sessions out.
 
 Two ordering constraints are easy to get wrong. Identity resolution is a
 dependency, but it yields a user *id*: FastAPI finishes dependencies before
-the endpoint body, so a row read there would be a pre-lock snapshot and
-concurrent answers would overwrite each other's ratings. And the session
+the endpoint body — possibly on another thread, and so another connection —
+so a row read there would be a snapshot from outside the endpoint's
+transaction and concurrent answers would overwrite each other's ratings. And the session
 cookie is applied by middleware (and by the catch-all error handler, which
 sits outside it) rather than by the endpoint, so a request that mints a
 guest and then fails still hands the identity out instead of orphaning it.

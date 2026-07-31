@@ -4,9 +4,11 @@ Run:
     uv run uvicorn trainer.server:app --host 0.0.0.0 --port <port>
 """
 
+import contextlib
 import functools
 import os
 import random
+import sqlite3
 import threading
 from pathlib import Path
 
@@ -16,7 +18,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import auth, rating, trials
+from . import auth, db, rating, trials
 from .db import DEFAULT_DB, connect
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
@@ -29,10 +31,51 @@ WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 rng = random.SystemRandom()
 
 app = FastAPI(title="Chess Pretraining")
-# FastAPI runs sync endpoints in a threadpool; share one connection behind a
-# lock (small tool, contention is irrelevant).
-conn = connect(DEFAULT_DB, check_same_thread=False)
-db_lock = threading.Lock()
+
+# Which database the per-thread connections below open. A module-level name
+# rather than a constant so the tests can point a whole server at a scratch file.
+DB_PATH = DEFAULT_DB
+
+# Migrations run once, here, on a connection nobody serves requests from.
+connect(DB_PATH).close()
+
+# One connection per thread, which is one per in-flight request: FastAPI runs
+# sync endpoints in a threadpool, and the pool's size is the ceiling on how many
+# of these can exist. A connection per thread rather than one shared behind a
+# mutex, because a transaction is a property of a connection — sharing one means
+# every request serializes whether or not it writes, and two threads inside one
+# transaction is not a thing SQLite has an opinion about because it cannot see
+# it. Separate connections let WAL do what it is for: readers run concurrently
+# with each other and with the single writer.
+#
+# `conn` stays a module-level name that behaves like a connection, so callers —
+# and the tests, which substitute a real connection here — need know nothing
+# about this.
+_threads = threading.local()
+
+
+def thread_connection() -> sqlite3.Connection:
+    existing = getattr(_threads, "conn", None)
+    if existing is None:
+        existing = db.open_connection(DB_PATH)
+        _threads.conn = existing
+    return existing
+
+
+class _PerThreadConnection:
+    def __getattr__(self, name):
+        return getattr(thread_connection(), name)
+
+    # Spelled out because Python looks dunders up on the type, never through
+    # __getattr__ — and `with conn:` is how `auth.erase` gets its atomicity.
+    def __enter__(self):
+        return thread_connection().__enter__()
+
+    def __exit__(self, *exc):
+        return thread_connection().__exit__(*exc)
+
+
+conn = _PerThreadConnection()
 
 # Not a captcha (see auth.RateLimiter). Several limits, keyed on different
 # things on purpose, because they defend different things.
@@ -149,19 +192,37 @@ def spend(limiter: auth.RateLimiter, key: str) -> None:
         raise auth_error(e) from e
 
 
-def locked(fn):
+@contextlib.contextmanager
+def writing():
+    """Everything inside commits together, or none of it does.
+
+    `IMMEDIATE` takes the write lock up front rather than on the first write,
+    which is what makes read-modify-write safe: an answer reads a rating,
+    computes the next one in Python, and writes it back, so two overlapping
+    answers that both read before either wrote would lose one of them. Taking
+    the lock at the start means the second one waits (`busy_timeout`) instead
+    of racing. Deferred — SQLite's default — would let both read and then fail
+    one at upgrade time, which is the same stall plus an error.
+
+    Held for as little as possible, and never across argon2: this is the one
+    lock in the process that every writer contends for.
+    """
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        yield
+    except BaseException:
+        conn.rollback()
+        raise
+    conn.commit()
+
+
+def writes(fn):
+    """For endpoints whose whole body is one transaction."""
+
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
-        with db_lock:
-            try:
-                return fn(*args, **kwargs)
-            except BaseException:
-                # The connection is shared, so a transaction left open here
-                # would be adopted — and committed — by whoever takes the lock
-                # next. Rolling back is also what makes /api/answer's identity
-                # mint atomic: a failure after the mint erases it.
-                conn.rollback()
-                raise
+        with writing():
+            return fn(*args, **kwargs)
 
     return wrapper
 
@@ -251,13 +312,16 @@ def optional_user_id(request: Request) -> int | None:
     at is carried by a signed token instead (`trials`).
 
     Returns an *id*, not a row. FastAPI resolves sync dependencies in a
-    separate threadpool call that finishes before the endpoint body starts, so
-    a row read here would be a snapshot from an already-released critical
-    section — two overlapping answers would both write ratings derived from
-    the same stale row. Endpoints re-read under their own lock.
+    separate threadpool call — possibly on another thread, and so another
+    connection — that finishes before the endpoint body starts. A row read here
+    would be a snapshot from outside the endpoint's transaction, and two
+    overlapping answers would both write ratings derived from it. Endpoints
+    that need the row re-read it inside `writing()`.
+
+    The session touch this performs is a single statement and commits itself,
+    which is why it needs no transaction of its own.
     """
-    with db_lock:
-        user = auth.session_user(conn, request.cookies.get(auth.COOKIE_NAME))
+    user = auth.session_user(conn, request.cookies.get(auth.COOKIE_NAME))
     return user["id"] if user is not None else None
 
 
@@ -267,11 +331,10 @@ OptionalUserId = Depends(optional_user_id)
 def start_identity(request: Request) -> dict:
     """Create the row that answering earns, and hand its session out.
 
-    The only place a `users` row is born from ordinary traffic. Caller holds
-    `db_lock` and owns the transaction: the row and its session commit together
-    with the response that earns them, so a failure anywhere in between rolls
-    the identity back (see `locked`) instead of leaving a row that answered
-    nothing. The sweep rides along here — before the mint, so its commit can't
+    The only place a `users` row is born from ordinary traffic. The caller owns
+    the transaction: the row and its session commit together with the response
+    that earns them, so a failure anywhere in between rolls the identity back
+    (see `writing`) instead of leaving a row that answered nothing. The sweep rides along here — before the mint, so its commit can't
     publish half an identity — because arrival rate is the signal one is due.
     """
     global guests_minted
@@ -372,7 +435,6 @@ def healthz():
 
 
 @app.get("/api/next")
-@locked
 def next_item(user_id: int | None = OptionalUserId):
     """Serve a trial. Writes nothing — a first-time visitor has no row yet, and
     getting one is what answering earns."""
@@ -409,7 +471,7 @@ class Answer(BaseModel):
 
 
 @app.post("/api/answer")
-@locked
+@writes
 def answer(a: Answer, request: Request):
     """Record an answer and reveal the engine's verdict.
 
@@ -422,7 +484,7 @@ def answer(a: Answer, request: Request):
     # Read the row inside the lock that also writes it back: rating and
     # calibration updates below are read-modify-write, so a snapshot taken
     # before the lock would let two overlapping answers clobber each other.
-    u = auth.session_user(conn, request.cookies.get(auth.COOKIE_NAME))
+    u = auth.session_user(conn, request.cookies.get(auth.COOKIE_NAME), own_transaction=False)
     # The token comes first, before anything that reads the item — because
     # *every* answer about an item is a fact about it. The response below is the
     # answer key outright, and even "that isn't one of the offered moves" tells
@@ -551,7 +613,6 @@ RECENT_FIRST_EXPOSURES_SQL = f"""
 
 
 @app.get("/api/stats")
-@locked
 def stats(user_id: int | None = OptionalUserId):
     u = auth.get_user(conn, user_id) if user_id is not None else None
     recent = [r["correct"] for r in conn.execute(RECENT_FIRST_EXPOSURES_SQL, (user_id or 0,))]
@@ -611,7 +672,6 @@ def reissue_session(request: Request, user_id: int) -> None:
 
 
 @app.get("/api/account")
-@locked
 def account(user_id: int | None = OptionalUserId):
     return account_payload(auth.get_user(conn, user_id) if user_id is not None else None)
 
@@ -628,13 +688,13 @@ def signup(body: Signup, request: Request):
         # session must not cost an argon2 hash (~50ms and 64 MiB).
         username, email = auth.validate_signup(body.username, body.password, body.email)
         user_id = optional_user_id(request)
-        with db_lock:
+        with writing():
             if user_id is None:
                 auth.check_name_free(conn, username)
             else:
                 auth.check_claimable(conn, user_id, username)
         password_hash = auth.hash_password(body.password)  # slow; not under the lock
-        with db_lock:
+        with writing():
             if user_id is None:
                 u = auth.create_account(
                     conn,
@@ -663,7 +723,7 @@ def login(body: Login, request: Request):
     spend(login_ip_limiter, client_key(request))
     spend(login_limiter, login_key(name))
     try:
-        with db_lock:
+        with writing():
             u = auth.find_by_username(conn, name)
         # Verify outside the lock: argon2 is deliberately slow, and holding the
         # single database lock through it would stall every trial in flight.
@@ -671,7 +731,7 @@ def login(body: Login, request: Request):
         # timing says nothing either.
         if not auth.verify_password(auth.credential_for(u), body.password) or u is None:
             raise HTTPException(400, "Wrong username or password.")
-        with db_lock:
+        with writing():
             # The row was read before the verify; re-check that the credential
             # we matched is still the current one, so a password rotated away
             # mid-login (trainer.account set-password) can't open a session.
@@ -693,7 +753,7 @@ def login(body: Login, request: Request):
 
 
 @app.post("/api/account/logout")
-@locked
+@writes
 def logout(request: Request):
     auth.end_session(conn, request.cookies.get(auth.COOKIE_NAME))
     queue_cookie(request, None)
@@ -721,7 +781,7 @@ def delete_account(body: Deletion, request: Request):
     session has nothing to delete. Signup avoids the same trap the same way.
     """
     try:
-        with db_lock:
+        with writing():
             u = auth.session_user(conn, request.cookies.get(auth.COOKIE_NAME))
         if u is None or auth.is_guest(u):
             raise HTTPException(
@@ -745,7 +805,7 @@ def delete_account(body: Deletion, request: Request):
         # flight shares that lock.
         if not auth.verify_password(auth.credential_for(u), body.password):
             raise HTTPException(400, "Wrong password.")
-        with db_lock:
+        with writing():
             # The row was read before the verify, so re-check that the hash we
             # matched is still the current one — a password rotated away
             # mid-request must not authorize destroying the account.

@@ -122,7 +122,14 @@ CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 """
 
 
-def connect(path: Path = DEFAULT_DB, check_same_thread: bool = True) -> sqlite3.Connection:
+def open_connection(path: Path = DEFAULT_DB, check_same_thread: bool = True) -> sqlite3.Connection:
+    """A connection to an already-migrated database: settings only, no schema.
+
+    Every setting SQLite scopes to the connection rather than the file has to
+    be applied to each one, which is the whole reason this is separate — a
+    server holding one connection per thread opens many, and only the first
+    has any business running migrations.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, check_same_thread=check_same_thread)
     conn.row_factory = sqlite3.Row
@@ -133,12 +140,17 @@ def connect(path: Path = DEFAULT_DB, check_same_thread: bool = True) -> sqlite3.
     # violated the constraint before it was enforced are tolerated (SQLite only
     # checks writes) and age out through the session sweep.
     conn.execute("PRAGMA foreign_keys=ON")
-    # Before the schema, not after it: adding a table or an index to SCHEMA
-    # makes that first connect a write, and this is the timeout that write has
-    # to wait out if the labeler holds the lock. Set afterwards it would apply
-    # to everything except the one statement that most needs it, which would
-    # get Python's shorter default instead.
+    # Set before anything that might write, because this is the timeout a write
+    # has to wait out when someone else holds the lock — the labeler, or another
+    # request's transaction. Set afterwards it would apply to everything except
+    # the statements that most need it, which would get Python's shorter default.
     conn.execute("PRAGMA busy_timeout=10000")
+    return conn
+
+
+def connect(path: Path = DEFAULT_DB, check_same_thread: bool = True) -> sqlite3.Connection:
+    """Open a database and bring its schema up to date."""
+    conn = open_connection(path, check_same_thread)
     conn.executescript(SCHEMA)
     conn.execute("PRAGMA journal_mode=WAL")
     user_cols = {row[1] for row in conn.execute("PRAGMA table_info(users)")}

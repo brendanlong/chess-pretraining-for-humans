@@ -435,6 +435,61 @@ def test_concurrent_answers_all_land(db, item_count):
         assert row["user_rating_after"] != row["user_rating_before"]
 
 
+@pytest.mark.parametrize("item_count", [3])  # one to mint the identity, two to race
+def test_two_tabs_answering_at_once_do_not_lose_a_rating_update(client, db, item_count, monkeypatch):
+    """One identity, two trials in flight, answered simultaneously.
+
+    Nothing stops this: trial tokens are signed rather than stored, so two tabs
+    each hold a redeemable one. Both answers move the same row's rating, and a
+    rating is read-modify-write — the arithmetic is Python's, not SQL's — so
+    without a transaction that takes the write lock *before* the read, both
+    would read the same starting rating and the second commit would erase the
+    first. `attempts` would still say two, because `attempts = attempts + 1` is
+    resolved by SQLite; only the rating would quietly be wrong, which is what
+    makes this worth a test rather than a comment.
+    """
+    # Widen the read-modify-write window. Left at its real width the two
+    # threads interleave inside it too rarely for a test to mean anything —
+    # this one passed against a deliberately broken transaction ten times out
+    # of ten before the sleep went in.
+    real_calibrate = server.rating.calibrate
+
+    def slow_calibrate(*args, **kwargs):
+        time.sleep(0.05)
+        return real_calibrate(*args, **kwargs)
+
+    monkeypatch.setattr(server.rating, "calibrate", slow_calibrate)
+
+    # Establish the identity first. Two trials fetched before one exists are
+    # both issued to nobody, and answering either mints the row that makes the
+    # other's token belong to someone else — a 409, and not the race under test.
+    answer(client, next_trial(client))
+    # Two *distinct* items: selection is a random pick among the nearest unseen
+    # and nothing reserves one, so asking twice can name the same item.
+    tabs = {}
+    while len(tabs) < 2:
+        t = next_trial(client)
+        assert t["repeat"] is False
+        tabs[t["item_id"]] = t
+    threads = [threading.Thread(target=lambda t=t: answer(client, t)) for t in tabs.values()]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    user = db.execute("SELECT rating, attempts FROM users").fetchone()
+    assert user["attempts"] == 3  # the one that minted the row, plus the two raced
+    # Both are in the record, and the second picked up where the first left off:
+    # chain the snapshots and they have to meet in the middle.
+    rows = list(
+        db.execute("SELECT user_rating_before, user_rating_after FROM responses ORDER BY id")
+    )
+    assert len(rows) == 3
+    for earlier, later in zip(rows, rows[1:], strict=False):
+        assert earlier["user_rating_after"] == later["user_rating_before"]
+    assert rows[-1]["user_rating_after"] == user["rating"]
+
+
 def test_garbage_cookie_falls_back_to_a_fresh_guest(client):
     client.cookies.set(auth.COOKIE_NAME, "not-a-real-token")
     r = client.get("/api/account")
