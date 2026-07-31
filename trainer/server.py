@@ -401,7 +401,10 @@ def next_item(user_id: int | None = OptionalUserId):
         "side_to_move": "white" if chess.Board(item["fen"]).turn else "black",
         "moves": [{"uci": m, "san": san(item["fen"], m)} for m in moves],
         "repeat": is_repeat,
-        "items_remaining": unseen_count(user_id),
+        # No fresh-item count here. It costs a pass over the bank to compute and
+        # the only thing that reads it is a counter in the settings drawer, which
+        # /api/stats already answers once per page load — so the hottest endpoint
+        # in the app was paying, per trial, for a number nobody was looking at.
         "trial_number": (u["attempts"] if u else 0) + 1,
         "user_rating": round(u["rating"] if u else rating.USER_START),
         "calibrating": is_calibrating(u) if u else True,
@@ -536,42 +539,40 @@ def answer(a: Answer, request: Request):
     }
 
 
-# Only first exposures count toward accuracy: repeats (served only once the
-# bank is exhausted) can be answered from memory of the reveal. Named because
-# its cost is load-bearing and a test asserts the plan it gets — the inner
-# question has to be answered from an index covering `item_id`, or this is
-# quadratic in one user's history. See `idx_responses_item` in `db.py`.
-FIRST_EXPOSURES_SQL = """
-    SELECT r.correct, r.user_rating_after
+# Accuracy is over first exposures only: repeats, served once the bank is
+# exhausted, can be answered from memory of the reveal rather than from skill.
+#
+# Newest-first with a limit, which is what keeps this endpoint a constant cost
+# rather than one that grows with a user's history — the window is all anyone
+# reads, so there is no reason to walk a career to compute it. The inner
+# question ("is there an earlier answer to this item") must be answered from an
+# index covering `item_id`; a test asserts that plan, because without it this
+# reverts to quadratic. See `idx_responses_item` in `db.py`.
+ACCURACY_WINDOW = 50
+RECENT_FIRST_EXPOSURES_SQL = f"""
+    SELECT r.correct
       FROM responses r
      WHERE r.user_id = ?
        AND NOT EXISTS (SELECT 1 FROM responses p
                        WHERE p.user_id = r.user_id
                          AND p.item_id = r.item_id AND p.id < r.id)
-     ORDER BY r.id"""
+     ORDER BY r.id DESC
+     LIMIT {ACCURACY_WINDOW}"""
 
 
 @app.get("/api/stats")
 @locked
 def stats(user_id: int | None = OptionalUserId):
     u = auth.get_user(conn, user_id) if user_id is not None else None
-    rows = [dict(r) for r in conn.execute(FIRST_EXPOSURES_SQL, (user_id or 0,))]
-    total_attempts = conn.execute(
-        "SELECT COUNT(*) FROM responses WHERE user_id = ?", (user_id or 0,)
-    ).fetchone()[0]
-    last50 = rows[-50:]
-    n_items, n_learnable = conn.execute("SELECT COUNT(*), SUM(learnable) FROM items").fetchone()
+    recent = [r["correct"] for r in conn.execute(RECENT_FIRST_EXPOSURES_SQL, (user_id or 0,))]
     return {
         "user_rating": round(u["rating"] if u else rating.USER_START),
-        "attempts": total_attempts,
-        "first_exposures": len(rows),
-        "accuracy": round(sum(r["correct"] for r in rows) / len(rows), 3) if rows else None,
-        "accuracy_last_50": round(sum(r["correct"] for r in last50) / len(last50), 3)
-        if last50
-        else None,
-        "rating_history": [round(r["user_rating_after"]) for r in rows],
-        "items_total": n_items,
-        "items_learnable": n_learnable or 0,
+        # Off the row already read above rather than a COUNT over `responses`:
+        # the answer that appends a response is the same one that increments
+        # this, so counting them again asks the database a question it has
+        # already written down.
+        "attempts": u["attempts"] if u else 0,
+        "accuracy_last_50": round(sum(recent) / len(recent), 3) if recent else None,
         "items_remaining": unseen_count(user_id),
         "account": account_payload(u),
     }
