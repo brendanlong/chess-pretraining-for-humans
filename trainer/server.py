@@ -41,18 +41,10 @@ DB_PATH = DEFAULT_DB
 # Migrations run once, here, on a connection nobody serves requests from.
 connect(DB_PATH).close()
 
-# One connection per thread, which is one per in-flight request: FastAPI runs
-# sync endpoints in a threadpool, and the pool's size is the ceiling on how many
-# of these can exist. A connection per thread rather than one shared behind a
-# mutex, because a transaction is a property of a connection — sharing one means
-# every request serializes whether or not it writes, and two threads inside one
-# transaction is not a thing SQLite has an opinion about because it cannot see
-# it. Separate connections let WAL do what it is for: readers run concurrently
-# with each other and with the single writer.
-#
-# `conn` stays a module-level name that behaves like a connection, so callers —
-# and the tests, which substitute a real connection here — need know nothing
-# about this.
+# One connection per thread, because a transaction belongs to a connection:
+# sharing one would serialize every request, writing or not, and put two threads
+# inside one transaction where SQLite cannot see them to object. Separate
+# connections let WAL run readers alongside the single writer.
 _threads = threading.local()
 
 
@@ -71,17 +63,13 @@ class OutsideTransaction(RuntimeError):
 class AmbientConnection:
     """The database outside any transaction: one statement, standing alone.
 
-    Exposes `execute` and nothing else — not because commit and rollback would
-    be misused, but because there is no version of them that is right here. A
-    statement run through this commits itself, so there is nothing to commit;
-    and a transaction, if one is open, belongs to the `writing()` block that
-    opened it, so there is nothing here to end. Leaving them off means the
-    question never comes up, and takes `cursor()` and friends — every other
-    route back to the raw connection — off with them.
+    `execute` and nothing else, because nothing else means anything here — a
+    statement commits itself, and an open transaction belongs to the `writing()`
+    block that opened it. Omitting them also omits `cursor()`, which would reach
+    the connection underneath.
 
-    Running a statement while a transaction *is* open is the one case worth an
-    error rather than an omission: it is legal, it looks like it works, and it
-    is how a block silently stops being one transaction.
+    Running a statement while a transaction is open raises instead, because that
+    one is legal, looks like it works, and is how a block stops being atomic.
     """
 
     def execute(self, sql, parameters=(), /):
@@ -94,8 +82,6 @@ class AmbientConnection:
         return connection.execute(sql, parameters)
 
 
-# Typed as what it is rather than cast to a connection: the storage helpers ask
-# for `Queryable`, and so this stays checkable rather than asserted.
 conn: db.Queryable = AmbientConnection()
 
 # Not a captcha (see auth.RateLimiter). Several limits, keyed on different
@@ -216,20 +202,13 @@ def spend(limiter: auth.RateLimiter, key: str) -> None:
 class Transaction:
     """What `writing()` hands out: a connection with no way to end it.
 
-    Worth being concrete about what it is protecting against, because the danger
-    is not obvious. SQLite does not nest transactions — `COMMIT` is not counted,
-    it just commits — so a stray `commit()` is two very different things
-    depending on where it lands. With nothing open it does nothing at all. Inside
-    someone else's transaction it ends it: the write lock drops mid-request,
-    another writer can interleave, and the rollback that was supposed to undo the
-    whole block can no longer reach what was already committed. Same call, and
-    the callee cannot tell which case it is in — its own writes make
-    `in_transaction` true either way.
-
-    Hence a handle rather than a rule. It is the shape an ORM's interactive
-    transaction has for the same reason: with no commit to name, the block's
-    outcome is the only thing that can decide. Helpers take `db.Queryable`,
-    which this satisfies, so one that wanted to commit could not spell it.
+    SQLite does not count nesting, so a stray `commit()` is two different things
+    depending on where it lands — nothing at all outside a transaction, and
+    inside one the thing that ends it, dropping the write lock mid-request and
+    putting the committed half beyond the reach of the rollback meant to undo it.
+    A callee cannot tell which case it is in; its own writes make
+    `in_transaction` true either way. So the method is absent rather than
+    forbidden, and the block's outcome decides.
     """
 
     def __init__(self, connection):
@@ -243,20 +222,14 @@ class Transaction:
 def writing():
     """Everything inside commits together, or none of it does.
 
-    `IMMEDIATE` takes the write lock up front rather than on the first write,
-    which is what makes read-modify-write safe: an answer reads a rating,
-    computes the next one in Python, and writes it back, so two overlapping
-    answers that both read before either wrote would lose one of them. Taking
-    the lock at the start means the second one waits (`busy_timeout`) instead
-    of racing. Deferred — SQLite's default — would let both read and then fail
-    one at upgrade time, which is the same stall plus an error.
+    `IMMEDIATE` rather than deferred because an answer reads a rating, computes
+    the next in Python, and writes it back: taking the write lock up front makes
+    the second of two overlapping answers wait, where deferred lets both read
+    and then fails one at upgrade time.
 
-    Held for as little as possible, and never across argon2: this is the one
-    lock in the process that every writer contends for.
-
-    Nesting is refused rather than flattened. SQLite has no nested transaction,
-    so an inner block would either commit the outer one early or be a lie about
-    its own atomicity, and both are worse than being told to restructure.
+    Held briefly and never across argon2 — every writer contends for it. Nesting
+    raises, since SQLite has none: an inner block could only commit the outer one
+    early or lie about being atomic.
     """
     connection = thread_connection()  # not `conn`, which refuses these on purpose
     if connection.in_transaction:
@@ -266,11 +239,9 @@ def writing():
         yield Transaction(connection)
         connection.commit()
     except BaseException:
-        # Unconditional, and after the commit as well as the body: `commit()`
-        # can itself fail (a full disk), and a transaction left open here is
-        # inherited by the next request on this thread, which would then fail
-        # to begin one for the life of the process. Rolling back with nothing
-        # open is a no-op, so there is nothing to be gained by asking first.
+        # Covers the commit too: it can fail on a full disk, and a transaction
+        # left open is inherited by the next request on this thread, which then
+        # cannot begin one for the life of the process.
         connection.rollback()
         raise
 
@@ -350,16 +321,11 @@ def unhandled_error(request: Request, exc: Exception) -> Response:
     return finalize(request, JSONResponse({"detail": "internal error"}, status_code=500))
 
 
-# A write that waited out `busy_timeout` for the lock — someone else's
-# transaction, or a bank refresh merging on the live database. Nothing is wrong
-# with the request, so answering 500 tells the client the one thing that isn't
-# true: 500 is "don't bother trying that again", and this is the opposite. The
-# frontend already returns a failed answer to the choosing state, so a 503 with
-# a reason turns a silently lost answer into the same pick a moment later.
-#
-# Narrowed to SQLITE_BUSY on purpose. Every other OperationalError — a column
-# that isn't there, a malformed file — is a bug or a broken database, and
-# telling a caller to retry those would be an invitation to hammer.
+# A write that waited out `busy_timeout` — another request, or a bank refresh
+# merging into the live database. Nothing is wrong with the request, and 500
+# means "don't bother trying again", which is the opposite of true here.
+# Narrowed to SQLITE_BUSY: every other OperationalError is a bug, and inviting a
+# retry on those invites hammering.
 BUSY_MESSAGE = "The database is busy right now. Try again in a moment."
 
 
@@ -382,14 +348,10 @@ def optional_user_id(request: Request) -> int | None:
     at is carried by a signed token instead (`trials`).
 
     Returns an *id*, not a row. FastAPI resolves sync dependencies in a
-    separate threadpool call — possibly on another thread, and so another
-    connection — that finishes before the endpoint body starts. A row read here
-    would be a snapshot from outside the endpoint's transaction, and two
-    overlapping answers would both write ratings derived from it. Endpoints
-    that need the row re-read it inside `writing()`.
-
-    The session touch this performs is a single statement and commits itself,
-    which is why it needs no transaction of its own.
+    separate threadpool call — possibly another thread, so another connection —
+    that finishes before the endpoint body starts. A row read here is a snapshot
+    from outside the endpoint's transaction, so endpoints that need one re-read
+    it inside `writing()`.
     """
     token = request.cookies.get(auth.COOKIE_NAME)
     user = auth.session_user(conn, token)
@@ -501,11 +463,10 @@ def pick_item(user_rating: float, user_id: int | None) -> tuple[dict | None, boo
 def healthz():
     """Liveness for the platform's health check.
 
-    Deliberately outside `/api/`, and free of both the identity dependency and
-    any transaction: a slow query can't make a healthy machine look dead and
-    have the proxy route around it mid-answer. (It is still a sync endpoint
-    competing for the same threadpool, which is what a truly saturated box
-    would show up as.) (A failed check does that and only that —
+    Outside `/api/`, and free of the identity dependency and any transaction, so
+    a slow query can't make a healthy machine look dead and have the proxy route
+    around it mid-answer. It still shares the threadpool, which is what a
+    genuinely saturated box shows up as. (A failed check does that and only that —
     Fly doesn't restart a machine over one.)
     """
     return {"ok": True}
@@ -530,10 +491,8 @@ def next_item(user_id: int | None = OptionalUserId):
         "side_to_move": "white" if chess.Board(item["fen"]).turn else "black",
         "moves": [{"uci": m, "san": san(item["fen"], m)} for m in moves],
         "repeat": is_repeat,
-        # No fresh-item count here. It costs a pass over the bank to compute and
-        # the only thing that reads it is a counter in the settings drawer, which
-        # /api/stats already answers once per page load — so the hottest endpoint
-        # in the app was paying, per trial, for a number nobody was looking at.
+        # No fresh-item count: it costs a pass over the bank, and the drawer
+        # counter that reads it is seeded from /api/stats and counted down there.
         "trial_number": (u["attempts"] if u else 0) + 1,
         "user_rating": round(u["rating"] if u else rating.USER_START),
         "calibrating": is_calibrating(u) if u else True,
@@ -561,10 +520,8 @@ def answer(a: Answer, request: Request):
     # calibration updates below are read-modify-write, so a row read before
     # the write lock was taken would let two overlapping answers clobber
     # each other.
-    # The transaction covers the writes and stops there. What follows only
-    # reads the item to build the reveal, and a failure there must not undo
-    # the answer — or the identity it minted, whose cookie the middleware has
-    # already promised to hand out.
+    # Ends before the reveal is built: a failure there must not undo the answer,
+    # nor the identity whose cookie the middleware has already promised.
     with writing() as tx:
         u = auth.session_user(tx, request.cookies.get(auth.COOKIE_NAME))
         # The token comes first, before anything that reads the item — because

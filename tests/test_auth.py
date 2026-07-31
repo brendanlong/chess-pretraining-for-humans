@@ -444,19 +444,14 @@ def test_two_tabs_answering_at_once_do_not_lose_a_rating_update(
 ):
     """One identity, two trials in flight, answered simultaneously.
 
-    Nothing stops this: trial tokens are signed rather than stored, so two tabs
-    each hold a redeemable one. Both answers move the same row's rating, and a
-    rating is read-modify-write — the arithmetic is Python's, not SQL's — so
-    without a transaction that takes the write lock *before* the read, both
-    would read the same starting rating and the second commit would erase the
-    first. `attempts` would still say two, because `attempts = attempts + 1` is
-    resolved by SQLite; only the rating would quietly be wrong, which is what
-    makes this worth a test rather than a comment.
+    Trial tokens are signed rather than stored, so two tabs each hold a
+    redeemable one. A rating is read-modify-write in Python, so without the
+    write lock taken before the read both would start from the same value and
+    the second would erase the first. `attempts` would still be right —
+    SQLite resolves `attempts + 1` — so only the rating goes quietly wrong.
     """
-    # Widen the read-modify-write window. Left at its real width the two
-    # threads interleave inside it too rarely for a test to mean anything —
-    # this one passed against a deliberately broken transaction ten times out
-    # of ten before the sleep went in.
+    # Widen the read-modify-write window: at its real width the threads
+    # interleave too rarely to catch a broken transaction at all.
     real_calibrate = server.rating.calibrate
 
     def slow_calibrate(*args, **kwargs):

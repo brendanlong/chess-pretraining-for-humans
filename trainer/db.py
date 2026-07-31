@@ -13,11 +13,10 @@ log = logging.getLogger(__name__)
 
 
 class Queryable(Protocol):
-    """Anything that can run a statement: a connection, or a transaction handle.
+    """Anything that runs a statement: a connection, or a transaction handle.
 
-    What the storage helpers ask for, so that a caller inside a transaction can
-    hand them something that has no way to end it (`server.Transaction`) and a
-    script can hand them a plain connection.
+    What the storage helpers ask for, so a caller inside a transaction can hand
+    them something with no way to end it and a script can hand them a connection.
     """
 
     def execute(self, sql: str, parameters=(), /) -> sqlite3.Cursor: ...
@@ -127,12 +126,10 @@ CREATE TABLE IF NOT EXISTS meta (
 CREATE INDEX IF NOT EXISTS idx_items_rating ON items(rating);
 CREATE INDEX IF NOT EXISTS idx_responses_user ON responses(user_id, id);
 -- Both response indexes earn their keep. The one above serves "this user's
--- answers, in order"; this one serves every question of the form "has this
--- user answered this item" — the repeat probe, the unseen-item filters behind
--- a trial, and the first-exposure filter in /api/stats. That last one asks it
--- once per response, so without `item_id` in an index it walks every earlier
--- row the user has, per row: quadratic in one user's history, 700ms at 5k
--- answers, and it holds a database read open for all of it.
+-- answers, in order"; this one serves "has this user answered this item" — the
+-- repeat probe, the unseen-item filters, and /api/stats' first-exposure filter.
+-- That last asks it per response, so without `item_id` indexed it walks the
+-- user's whole history per row: 700ms at 5k answers.
 CREATE INDEX IF NOT EXISTS idx_responses_item ON responses(user_id, item_id, id);
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 """
@@ -143,18 +140,13 @@ def open_connection(
 ) -> sqlite3.Connection:
     """A connection to an already-migrated database: settings only, no schema.
 
-    Every setting SQLite scopes to the connection rather than the file has to
-    be applied to each one, which is the whole reason this is separate — a
-    server holding one connection per thread opens many, and only the first
-    has any business running migrations.
+    Separate because SQLite scopes these to the connection, not the file, and a
+    server opens one per thread — only the first has business migrating.
 
-    `explicit_transactions` turns off the implicit ones the driver would
-    otherwise open on the first write and leave for someone to commit. The
-    server wants that: a transaction there is a deliberate act with one owner
-    (`server.writing`), and an implicit one is a transaction whose owner is
-    whichever function calls `commit()` first. The offline tools want the
-    default, because they are single-threaded scripts where `commit()` at the
-    end of a batch is exactly the right idiom.
+    `explicit_transactions` turns off the driver's implicit ones, so a
+    transaction is a deliberate act with one owner (`server.writing`) rather
+    than whatever the first `commit()` happens to end. The offline scripts want
+    the default, where `commit()` per batch is the right idiom.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(

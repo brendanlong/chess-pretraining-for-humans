@@ -256,10 +256,9 @@ def delete_user(conn: db.Queryable, user_id: int) -> dict[str, int]:
     data a user believes is gone — cheaper to lose the rows than to redefine
     the word.
 
-    `responses` deliberately has no ON DELETE CASCADE — erasing the record
-    must be this explicit act, never a side effect — so it goes before the
-    `users` row it references. The caller's transaction is what makes the
-    three deletes one act. Sessions would cascade with the row on their own;
+    `responses` deliberately has no ON DELETE CASCADE — erasing the record must
+    be this explicit act, never a side effect — so it goes before the `users`
+    row it references, inside the caller's transaction. Sessions would cascade;
     deleting them explicitly is what gets their count into the report.
     """
     counts = {
@@ -314,17 +313,11 @@ def session_user(conn: db.Queryable, token: str | None) -> dict | None:
 def touch_session(conn: db.Queryable, token: str | None) -> None:
     """Refresh a session's sliding expiry, at most hourly.
 
-    Separate from reading the session because it is the only write on the read
-    path, and a read that quietly writes is a read that has to be told whose
-    transaction it is in. One statement, so on the server's connection it is
-    durable on its own and inside a `writing()` block it rides along.
-
-    Asked before it is done, rather than left to the UPDATE's own WHERE clause,
-    because SQLite takes the write lock for an UPDATE whether or not any row
-    matches — and this one matches at most once an hour. Left as one statement,
-    every request from a signed-in caller queued behind whatever was writing and
-    failed outright if that ran past the busy timeout, which is a strange way for
-    a page load to depend on a bank refresh. A SELECT takes no write lock at all.
+    Separate from reading the session so the read path has no write hidden in
+    it. Checked with a SELECT before writing, because SQLite takes the write
+    lock for an UPDATE whether or not a row matches — and this one matches at
+    most hourly, so a signed-in page load would otherwise queue behind every
+    writer and fail outright behind a slow one.
     """
     if not token:
         return

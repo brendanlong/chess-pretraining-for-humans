@@ -108,14 +108,12 @@ def test_first_exposure_accuracy_excludes_repeats(client):
 
 def test_first_exposure_filter_is_answered_from_an_index_covering_item_id(db):
     """The filter asks, per response, whether an earlier one hit the same item.
-    Answered from an index without `item_id`, that is a range walk over every
-    earlier row the user has — so /api/stats is quadratic in one history, and
-    it holds the database lock throughout, stalling every trial in flight. At
-    5k responses the difference measured 700ms against 3ms.
+    Without `item_id` indexed that walks every earlier row the user has, once
+    per row: 700ms against 3ms at 5k responses.
 
-    The plan rather than a duration, because a timing threshold on a shared CI
-    box is a flake. Note that the losing plan is a SEARCH too, over a range
-    instead of a row: which index gets used is the whole assertion.
+    Asserts the plan, not a duration, because a timing threshold flakes on CI.
+    The losing plan is a SEARCH too — over a range rather than a row — so which
+    index gets chosen is the whole assertion.
     """
     plan = db.execute("EXPLAIN QUERY PLAN " + server.RECENT_FIRST_EXPOSURES_SQL, (1,)).fetchall()
     inner = [row[-1] for row in plan if "p" in row[-1].split()]
@@ -480,14 +478,11 @@ def test_a_repeat_we_served_stays_answerable_even_if_the_bank_refills(client, db
 
 
 def test_only_writing_ends_a_transaction_in_the_request_path():
-    """One owner for every transaction, enforced rather than remembered.
+    """One owner for every transaction, checked statically.
 
-    Helpers used to commit inside themselves, which is invisible at the call
-    site: a `writing()` block whose second statement committed left everything
-    after it unprotected, and three of them did. `writing()` now notices at
-    runtime, but only on a path a test actually exercises — this is the check
-    that covers the ones no test reaches. A helper that needs its writes to
-    land takes a caller who owns a transaction.
+    A helper that commits ends its caller's transaction, which is invisible at
+    the call site. The handle makes that unspellable and the guards catch it at
+    runtime, but only on paths a test exercises; this covers the rest.
     """
     allowed = {"writing"}  # the one owner
     offenders = []
@@ -525,18 +520,15 @@ def test_only_writing_ends_a_transaction_in_the_request_path():
 
 
 def test_a_statement_outside_a_transaction_stands_on_its_own(db):
-    """The read paths write nothing they need to group — a session touch is one
-    statement — so the ambient connection has to stay usable on its own."""
+    """The read paths group nothing, so a lone statement has to work."""
     server.conn.execute("SELECT 1")  # no transaction, no complaint
 
 
 def test_the_ambient_connection_refuses_every_use_that_writing_should_own(db):
     """The rules that make a `writing()` block mean what it says.
 
-    Each of these was reachable before, and the first is what actually happened
-    three times: a helper handed the module-level connection while its caller
-    held a transaction, ending it early. SQLite has no nested transaction to
-    make that safe, so the connection refuses rather than obliging.
+    SQLite has no nested transaction, so a statement on the ambient connection
+    while one is open — or a second `writing()` — can only end the first early.
     """
     # Ending a transaction isn't refused here, it's absent — and so is every
     # other route back to the raw connection that could have ended one.
@@ -552,8 +544,8 @@ def test_the_ambient_connection_refuses_every_use_that_writing_should_own(db):
 
 
 def test_a_failed_block_leaves_the_connection_usable(db):
-    """A transaction left open would be inherited by the next request on this
-    thread, which would then be unable to begin one for the life of the process."""
+    """A transaction left open is inherited by the next request on this thread,
+    which could then never begin one."""
     with contextlib.suppress(ValueError), server.writing() as tx:
         tx.execute("SELECT 1")
         raise ValueError("boom")
@@ -562,11 +554,9 @@ def test_a_failed_block_leaves_the_connection_usable(db):
 
 
 def test_an_answer_that_waits_out_the_lock_is_told_to_retry(client, db, monkeypatch):
-    """A write can lose the lock race — to another answer, or to the bank
-    refresh the runbook merges into the live database. The request was fine, so
-    500 says the one thing that isn't true ("don't bother trying again"); the
-    client can and should. A short timeout here because the real one is ten
-    seconds and this test would rather not be.
+    """A write can lose the lock race, to another answer or to a bank refresh.
+    The request was fine, so 500 — "don't bother trying again" — is the one
+    thing that isn't true. Short timeout because the real one is ten seconds.
     """
     trial = next_trial(client)
     # The server opens its connections per thread, so the wait has to be short
@@ -602,10 +592,9 @@ def test_a_real_database_error_is_still_a_500(client, monkeypatch):
 
 def test_a_signed_in_read_does_not_wait_on_a_writer(client, db, monkeypatch):
     """The read path refreshes a session's sliding expiry, and SQLite takes the
-    write lock for an UPDATE whether or not a row matches — so left to the
-    statement's own WHERE, every request from a signed-in caller queued behind
-    whatever was writing, and failed if that outlasted the busy timeout. A page
-    load has no business depending on a bank refresh.
+    write lock for an UPDATE whether or not a row matches. Left to the
+    statement's own WHERE, a signed-in page load would fail behind a slow
+    writer — which is a strange thing for it to depend on.
     """
     answer(client, next_trial(client))  # earns a session
     monkeypatch.setattr(server.db, "BUSY_TIMEOUT_MS", 50)
