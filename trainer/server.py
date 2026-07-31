@@ -133,16 +133,10 @@ answer_limiter = auth.RateLimiter(
     window_s=900,
     message="Answers are coming in faster than we can count. Try again in a moment.",
 )
-# Not a rate limit — a spend-once ledger, which is the same data structure: a
-# bounded, in-memory, time-expiring set of keys. An anonymous trial token has no
-# session to bind to, and redeeming one *creates* the identity that records it, so
-# each replay is a brand-new row seeing the item for the first time: the
-# `responses` lookup that makes a spent trial unanswerable for everyone else
-# never sees it. This is what keeps that rule true for anonymous trials too, so
-# the pre-commit peek costs a burnt trial rather than nothing. Per-process and
-# lost on restart, which costs at most one extra replay per token; the short
-# anonymous token life is what keeps the set small enough that eviction stays
-# theoretical.
+# Not a rate limit — a spend-once ledger, which is the same data structure. It
+# is what keeps a spent anonymous trial spent, for the reasons in the `trials`
+# docstring. Per-process and lost on restart, costing at most one extra replay
+# per token; the short anonymous token life keeps the set small.
 anonymous_trial_use = auth.RateLimiter(
     limit=1,
     window_s=trials.ANON_TOKEN_TTL_S,
@@ -524,7 +518,6 @@ def answer(a: Answer, request: Request):
     the endpoint that *creates* it: a row should exist only once someone has
     actually answered something, and only once we know the trial was ours.
     """
-    # The one unauthenticated write left. Charged before the work, like the others.
     spend(answer_limiter, client_key(request))
     # Read inside the transaction that writes it back: the rating and
     # calibration updates below are read-modify-write, so a row read before

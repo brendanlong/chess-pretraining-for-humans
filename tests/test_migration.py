@@ -13,8 +13,8 @@ from trainer.rating import difficulty_rating, regraded_user_rating
 
 from .conftest import FEN_RANKS, FEN_TMPL, add_item
 
-# The `users` table as it stood before this branch, plus the one column the
-# earlier calib_step migration added.
+# The `users` table as it stood before accounts, plus the column the calib_step
+# migration added.
 PRE_ACCOUNTS_SCHEMA = """
 CREATE TABLE users (
     id INTEGER PRIMARY KEY,
@@ -64,9 +64,9 @@ def test_migration_preserves_users_and_responses(tmp_path):
 
 
 def test_migration_drops_the_columns_that_carried_answers_into_difficulty(tmp_path):
-    """Difficulty is a function of the item now, so the counters answers used to
-    feed and the post-answer item rating go — without disturbing the responses
-    sitting beside them, which are the experimental record."""
+    """Difficulty is a function of the item alone, so the columns that carried
+    answers back into it go — without disturbing the responses sitting beside
+    them, which are the experimental record."""
     path = old_db(tmp_path)
     conn = connect(path)  # brings the schema up to date, then we age it back
     add_item(conn, FEN_TMPL.format(FEN_RANKS[0]))
