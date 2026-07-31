@@ -7,6 +7,7 @@ import struct
 import threading
 from html.parser import HTMLParser
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import brotli
 import pytest
@@ -19,7 +20,8 @@ from .conftest import ITEM, answer, answer_body, next_trial
 
 
 class Head(HTMLParser):
-    """A served page's tags: metas by (attr, key), link hrefs, and the title."""
+    """A served page's tags: metas by (attr, key), link and anchor hrefs, the
+    scripts, and the title."""
 
     @classmethod
     def of(cls, html: str) -> "Head":
@@ -31,6 +33,7 @@ class Head(HTMLParser):
         super().__init__()
         self.meta: dict[tuple[str, str], str] = {}
         self.links: set[str] = set()
+        self.anchors: list[dict[str, str]] = []
         self.scripts: list[dict[str, str]] = []
         self.title = ""
         self._in_title = False
@@ -45,6 +48,8 @@ class Head(HTMLParser):
             # Without the digest: what these assertions are about is which files
             # a page pulls in, not the version it pulls them in at.
             self.links.add(attr["href"].split("?")[0])
+        elif tag == "a" and "href" in attr:
+            self.anchors.append(attr)
         elif tag == "script":
             self.scripts.append(attr)
         elif tag == "title":
@@ -211,6 +216,25 @@ def test_every_page_declares_the_real_og_image_size(client, name):
         page.meta[("property", "og:image:width")],
         page.meta[("property", "og:image:height")],
     ) == ("1200", "630")
+
+
+def is_ours(href: str) -> bool:
+    """A URL of our own: no scheme, and not the protocol-relative `//host/x`."""
+    return not urlsplit(href).scheme and not href.startswith("//")
+
+
+@pytest.mark.parametrize("name", WEB_PAGES)
+def test_our_own_pages_open_in_the_app(client, name):
+    """An installed app hands a new browsing context to an in-app browser, so a
+    target on one of our own links reads the terms in a sheet outside the app,
+    with no way back to it. Off-site links are where that's the point."""
+    path = "/" if name == "index.html" else f"/{name}"
+    escaping = [
+        a["href"]
+        for a in Head.of(client.get(path).text).anchors
+        if is_ours(a["href"]) and "target" in a
+    ]
+    assert not escaping, f"{name} opens {escaping} in a new browsing context"
 
 
 def test_every_referenced_icon_is_served_at_its_declared_size(client):
