@@ -1,3 +1,4 @@
+import itertools
 import sqlite3
 import threading
 import time
@@ -275,7 +276,9 @@ def test_delete_is_all_or_nothing(client, db):
     )
     db.commit()
 
-    with pytest.raises(sqlite3.IntegrityError):
+    # The caller owns the transaction — `delete_user` writes and nothing else,
+    # which is what lets the endpoint commit it together with the cookie clear.
+    with pytest.raises(sqlite3.IntegrityError), db:
         auth.delete_user(db, user["id"])
 
     db.execute("DROP TRIGGER wedge")
@@ -436,7 +439,9 @@ def test_concurrent_answers_all_land(db, item_count):
 
 
 @pytest.mark.parametrize("item_count", [3])  # one to mint the identity, two to race
-def test_two_tabs_answering_at_once_do_not_lose_a_rating_update(client, db, item_count, monkeypatch):
+def test_two_tabs_answering_at_once_do_not_lose_a_rating_update(
+    client, db, item_count, monkeypatch
+):
     """One identity, two trials in flight, answered simultaneously.
 
     Nothing stops this: trial tokens are signed rather than stored, so two tabs
@@ -485,7 +490,7 @@ def test_two_tabs_answering_at_once_do_not_lose_a_rating_update(client, db, item
         db.execute("SELECT user_rating_before, user_rating_after FROM responses ORDER BY id")
     )
     assert len(rows) == 3
-    for earlier, later in zip(rows, rows[1:], strict=False):
+    for earlier, later in itertools.pairwise(rows):
         assert earlier["user_rating_after"] == later["user_rating_before"]
     assert rows[-1]["user_rating_after"] == user["rating"]
 
@@ -876,7 +881,8 @@ def test_setting_a_password_signs_existing_sessions_out(client, db):
         (auth.hash_password("a-brand-new-password"), user["id"]),
     )
     db.commit()
-    assert auth.revoke_sessions(db, user["id"]) == 1
+    with db:  # helpers write; committing is the caller's job
+        assert auth.revoke_sessions(db, user["id"]) == 1
 
     assert auth.session_user(db, token) is None
     assert client.get("/api/account").json()["guest"] is True

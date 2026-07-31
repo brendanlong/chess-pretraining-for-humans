@@ -216,7 +216,6 @@ def create_account(
            VALUES (?, ?, ?, ?, ?, datetime('now'))""",
         (username, start_rating, calib_step, password_hash, email),
     )
-    conn.commit()
     return get_user(conn, cur.lastrowid)  # pyright: ignore[reportArgumentType]
 
 
@@ -244,7 +243,6 @@ def claim(
         "UPDATE users SET name = ?, password_hash = ?, email = ? WHERE id = ?",
         (username, password_hash, email, user_id),
     )
-    conn.commit()
     return get_user(conn, user_id)
 
 
@@ -259,18 +257,15 @@ def delete_user(conn: sqlite3.Connection, user_id: int) -> dict[str, int]:
 
     `responses` deliberately has no ON DELETE CASCADE — erasing the record
     must be this explicit act, never a side effect — so it goes before the
-    `users` row it references, and all of it goes in one transaction.
-    Sessions would cascade with the row on their own; deleting them
-    explicitly is what gets their count into the report.
+    `users` row it references. The caller's transaction is what makes the
+    three deletes one act. Sessions would cascade with the row on their own;
+    deleting them explicitly is what gets their count into the report.
     """
-    with conn:  # commits on success, rolls the whole thing back on failure
-        counts = {
-            "responses": conn.execute(
-                "DELETE FROM responses WHERE user_id = ?", (user_id,)
-            ).rowcount,
-            "sessions": conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,)).rowcount,
-        }
-        counts["users"] = conn.execute("DELETE FROM users WHERE id = ?", (user_id,)).rowcount
+    counts = {
+        "responses": conn.execute("DELETE FROM responses WHERE user_id = ?", (user_id,)).rowcount,
+        "sessions": conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,)).rowcount,
+    }
+    counts["users"] = conn.execute("DELETE FROM users WHERE id = ?", (user_id,)).rowcount
     return counts
 
 
@@ -300,18 +295,8 @@ def start_session(conn: sqlite3.Connection, user_id: int) -> str:
     return token
 
 
-def session_user(
-    conn: sqlite3.Connection, token: str | None, *, own_transaction: bool = True
-) -> dict | None:
-    """The user a session token names, refreshing its sliding expiry.
-
-    `own_transaction=False` for callers that are already inside one — the touch
-    then rides along with their commit instead of ending their transaction
-    early, which for /api/answer would silently un-atomic the read-modify-write
-    of the rating it is about to move. It cannot be detected instead of
-    declared: the touch is itself a write, so `in_transaction` is true either
-    way by the time we could ask.
-    """
+def session_user(conn: sqlite3.Connection, token: str | None) -> dict | None:
+    """The user a session token names, refreshing its sliding expiry."""
     if not token:
         return None
     th = _token_hash(token)
@@ -322,23 +307,28 @@ def session_user(
               AND sessions.created_at > datetime('now', '-{SESSION_MAX_DAYS} days')""",
         (th,),
     ).fetchone()
-    if row is None:
-        return None
-    # Keep the sliding expiry fresh without writing on every single request.
-    conn.execute(
-        "UPDATE sessions SET last_seen = datetime('now') WHERE token_hash = ?"
-        " AND last_seen < datetime('now', '-1 hour')",
-        (th,),
-    )
-    if own_transaction:
-        conn.commit()
-    return dict(row)
+    return dict(row) if row else None
+
+
+def touch_session(conn: sqlite3.Connection, token: str | None) -> None:
+    """Refresh a session's sliding expiry, at most hourly.
+
+    Separate from reading the session because it is the only write on the read
+    path, and a read that quietly writes is a read that has to be told whose
+    transaction it is in. One statement, so on the server's connection it is
+    durable on its own and inside a `writing()` block it rides along.
+    """
+    if token:
+        conn.execute(
+            "UPDATE sessions SET last_seen = datetime('now') WHERE token_hash = ?"
+            " AND last_seen < datetime('now', '-1 hour')",
+            (_token_hash(token),),
+        )
 
 
 def end_session(conn: sqlite3.Connection, token: str | None) -> None:
     if token:
         conn.execute("DELETE FROM sessions WHERE token_hash = ?", (_token_hash(token),))
-        conn.commit()
 
 
 def revoke_sessions(conn: sqlite3.Connection, user_id: int) -> int:
@@ -351,7 +341,6 @@ def revoke_sessions(conn: sqlite3.Connection, user_id: int) -> int:
     reset email exists yet) unable to actually recover anything.
     """
     cur = conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
-    conn.commit()
     return cur.rowcount
 
 
@@ -369,7 +358,6 @@ def sweep(conn: sqlite3.Connection) -> None:
            WHERE last_seen < datetime('now', ?) OR created_at < datetime('now', ?)""",
         (f"-{SESSION_DAYS} days", f"-{SESSION_MAX_DAYS} days"),
     )
-    conn.commit()
 
 
 # --- rate limiting --------------------------------------------------------

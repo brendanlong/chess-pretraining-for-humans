@@ -1,5 +1,7 @@
+import ast
 import struct
 from html.parser import HTMLParser
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -471,3 +473,32 @@ def test_a_repeat_we_served_stays_answerable_even_if_the_bank_refills(client, db
     db.commit()
 
     assert client.post("/api/answer", json=answer_body(repeat)).status_code == 200
+
+
+def test_only_writing_ends_a_transaction_in_the_request_path():
+    """One owner for every transaction, enforced rather than remembered.
+
+    Helpers used to commit inside themselves, which is invisible at the call
+    site: a `writing()` block whose second statement committed left everything
+    after it unprotected, and three of them did. `writing()` now notices at
+    runtime, but only on a path a test actually exercises — this is the check
+    that covers the ones no test reaches. A helper that needs its writes to
+    land takes a caller who owns a transaction.
+    """
+    allowed = {"writing"}  # the one owner
+    offenders = []
+    for path in (Path(server.__file__), Path(auth.__file__)):
+        tree = ast.parse(path.read_text())
+        for func in [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]:
+            if func.name in allowed:
+                continue
+            for node in ast.walk(func):
+                if (
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr in ("commit", "rollback")
+                    and isinstance(node.func.value, ast.Name)
+                    and node.func.value.id == "conn"
+                ):
+                    offenders.append(f"{path.name}::{func.name} calls conn.{node.func.attr}()")
+    assert not offenders, "only writing() may end a transaction; found " + "; ".join(offenders)

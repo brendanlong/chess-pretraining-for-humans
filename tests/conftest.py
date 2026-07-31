@@ -91,6 +91,11 @@ def db(tmp_path, monkeypatch, item_count):
     for i in range(item_count):
         add_item(conn, FEN_TMPL.format(FEN_RANKS[i]))
     conn.commit()
+    # Writing through the returned handle means committing through it too —
+    # the `auth` helpers only write, so an uncommitted statement here holds the
+    # SQLite write lock and the next API call in the test blocks until the busy
+    # timeout. `with db:` around a helper call is the idiom.
+    #
     # Point the server at this file rather than handing it this connection: the
     # server opens one per thread and each owns its own transaction, so a test
     # that shared a single connection with it would be exercising a concurrency

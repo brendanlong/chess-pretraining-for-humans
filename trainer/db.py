@@ -116,22 +116,36 @@ CREATE INDEX IF NOT EXISTS idx_responses_user ON responses(user_id, id);
 -- a trial, and the first-exposure filter in /api/stats. That last one asks it
 -- once per response, so without `item_id` in an index it walks every earlier
 -- row the user has, per row: quadratic in one user's history, 700ms at 5k
--- answers, and it holds the database lock for all of it.
+-- answers, and it holds a database read open for all of it.
 CREATE INDEX IF NOT EXISTS idx_responses_item ON responses(user_id, item_id, id);
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 """
 
 
-def open_connection(path: Path = DEFAULT_DB, check_same_thread: bool = True) -> sqlite3.Connection:
+def open_connection(
+    path: Path = DEFAULT_DB, check_same_thread: bool = True, explicit_transactions: bool = False
+) -> sqlite3.Connection:
     """A connection to an already-migrated database: settings only, no schema.
 
     Every setting SQLite scopes to the connection rather than the file has to
     be applied to each one, which is the whole reason this is separate — a
     server holding one connection per thread opens many, and only the first
     has any business running migrations.
+
+    `explicit_transactions` turns off the implicit ones the driver would
+    otherwise open on the first write and leave for someone to commit. The
+    server wants that: a transaction there is a deliberate act with one owner
+    (`server.writing`), and an implicit one is a transaction whose owner is
+    whichever function calls `commit()` first. The offline tools want the
+    default, because they are single-threaded scripts where `commit()` at the
+    end of a batch is exactly the right idiom.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, check_same_thread=check_same_thread)
+    conn = sqlite3.connect(
+        path,
+        check_same_thread=check_same_thread,
+        isolation_level=None if explicit_transactions else "",  # pyright: ignore[reportArgumentType]
+    )
     conn.row_factory = sqlite3.Row
     # Enforced, not just declared: SQLite ships with foreign keys off, and the
     # setting is per-connection. On, a session or response can never point at a

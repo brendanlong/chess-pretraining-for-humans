@@ -37,6 +37,12 @@ back — two overlapping answers that both read first would lose one. How much
 of that is scaling headroom is a question of how many cores the machine has,
 which is the point: it is now a setting rather than a rewrite.
 
+`writing()` is the only thing anywhere that commits. A helper that commits
+inside itself ends its caller's transaction, which is invisible at the call
+site and leaves everything after it unprotected; the helpers here write and
+nothing else, `writing()` refuses to commit a block that isn't still open, and
+a test walks the AST to keep it that way.
+
 Trial endpoints: next trial, answer, stats. Selection picks an
 unseen learnable item near the rating where the user's expected score is
 80%. An answer moves the user's Elo rating and nothing else — item
