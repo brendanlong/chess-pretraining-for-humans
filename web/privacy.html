@@ -22,6 +22,13 @@
 <link rel="manifest" href="site.webmanifest">
 <meta name="theme-color" content="#211f1c">
 <link rel="stylesheet" href="style.css">
+<!-- Page counter; privacy.html says what it collects. Pinned to a version
+     and a hash because it runs on the origin holding the session cookie —
+     moving to a newer one means changing both. -->
+<script data-goatcounter="https://chess-pretraining.goatcounter.com/count"
+        async src="https://gc.zgo.at/count.v5.js"
+        crossorigin="anonymous"
+        integrity="sha384-atnOLvQb9t+jTSipvd75X2yginT4PjVbqDdlJAmxMm+wYElFmeR6EmLP5bYeoRVQ"></script>
 </head>
 <body class="legal">
 <header id="topbar">
@@ -34,20 +41,21 @@
 <main>
   <article>
     <h1>Privacy policy</h1>
-    <p class="updated">Last updated 30 July 2026</p>
+    <p class="updated">Last updated 31 July 2026</p>
 
     <p>Chess Pretraining is a small research project run by
     <a href="https://www.brendanlong.com/pages/about-me.html">Brendan Long</a>. This page
     says exactly what it stores and what happens to it. It is short because
-    the data footprint is small: there are no ads, no analytics, and no
-    third-party trackers.</p>
+    the data footprint is small: no ads, nothing that follows you across
+    sites, and for analytics a page counter that sets no cookie.</p>
 
     <h2>What we collect</h2>
     <ul>
-      <li><b>An anonymous user record</b>, created the moment you first load
-      the page: an internal id, when it was made, how many trials you've
-      answered, your rating, and the state of the calibration
-      staircase. You aren't asked for a name and none is guessable.</li>
+      <li><b>An anonymous user record</b>, created by the first question you
+      answer — arriving and reading write nothing: an internal id, when it was
+      made, how many trials you've answered, your rating, and the state of the
+      calibration staircase. You aren't asked for a name and none is
+      guessable.</li>
       <li><b>One row per trial you answer</b>: which position you saw, which
       move you picked, whether it was correct, how long you took, when you
       answered, and your rating before and after. This is the research
@@ -102,13 +110,34 @@
     are hosted in the United States; which region is an operational choice we
     may change. Fly.io and Amazon Web Services are the only companies that hold
     the database, and they hold it as infrastructure providers — they do not get
-    it for their own use.</p>
+    it for their own use. The one thing outside that picture is the page counter
+    below: a separate service, on its own servers in Finland and Germany, which
+    never touches this database.</p>
+
+    <h2>Page counts</h2>
+    <p>Every page loads <a href="https://www.goatcounter.com/">GoatCounter</a>, a
+    hosted counter, so we can tell how many people arrive and which links sent
+    them. It sets no cookie and stores nothing in your browser, and it gives you
+    no identifier that follows you to another site or back here tomorrow.</p>
+    <p>What it is sent: the page you opened, the referring link, your browser
+    and operating system, your screen size and language, and — from your IP
+    address — a country. What it keeps is counts. Pages and referrers are
+    totalled by the hour, everything else by the day, each kind in its own
+    table, so a browser can't be matched back to a country or a screen size to
+    a page. It stores neither the IP address nor the full browser string.
+    GoatCounter's own
+    <a href="https://www.goatcounter.com/help/privacy">privacy policy</a> is the
+    authority on all of that.</p>
+    <p>It never sees your answers, your rating, your account, or your session
+    cookie; it only knows a page was loaded. Any tracker blocker stops it, and
+    nothing about the app depends on it working.</p>
 
     <h2>Cookies</h2>
     <p>One cookie, the session token described above. No advertising or
-    analytics cookies, because there is no advertising or analytics. If you
-    clear it while playing as a guest, that guest record becomes unreachable
-    for good — there is no other way to find it, which is the same property
+    analytics cookies: there is no advertising, and the page counter sets
+    nothing. If you clear it while playing as a guest, that guest record
+    becomes unreachable for good — there is no other way to find it, which
+    is the same property
     that keeps anyone else from finding it either. It also means we can't
     delete it on request: nobody, including you, can point at which record it
     was. Make an account if you want that option.</p>

@@ -201,5 +201,13 @@ change first, if it should change.
   schema diff against a local copy will show them.
 - **Replication is asynchronous** (1s). Losing the host loses about a second of
   answers. A clean stop syncs, which is what `kill_timeout = 30` protects.
+- **The page counter's settings live in its dashboard, not here.** Leave
+  "collect individual pageviews" off: the privacy policy says what's stored is
+  counts, and that switch makes it a row per visit. Its script is pinned to a
+  version and an `integrity` hash, so a newer one means changing both in all
+  three `web/*.html` heads — a mismatched hash fails silently.
+- **Anything on a public hostname counts into the live dashboard.** The
+  counter skips only localhost and private ranges, so a staging deploy or a
+  laptop reached over a VPN name reports real hits.
 - **Local testing** doesn't need Fly. `podman build -t chess . && podman run
   -p 8000:8080 -v ./data:/data:Z chess` runs the same image without a replica.

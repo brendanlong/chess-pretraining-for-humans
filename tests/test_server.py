@@ -22,17 +22,20 @@ class Head(HTMLParser):
         super().__init__()
         self.meta: dict[tuple[str, str], str] = {}
         self.links: set[str] = set()
+        self.scripts: list[dict[str, str]] = []
         self.title = ""
         self._in_title = False
 
     def handle_starttag(self, tag, attrs):
-        attr = {k: v for k, v in attrs if v is not None}
+        attr = {k: ("" if v is None else v) for k, v in attrs}
         if tag == "meta":
             for key in ("name", "property"):
                 if key in attr:
                     self.meta[(key, attr[key])] = attr.get("content", "")
         elif tag == "link" and attr.get("href"):
             self.links.add(attr["href"])
+        elif tag == "script":
+            self.scripts.append(attr)
         elif tag == "title":
             self._in_title = True
 
@@ -362,6 +365,59 @@ def test_responses_carry_security_headers(client):
         assert "frame-ancestors 'none'" in h["content-security-policy"]
         assert h["x-content-type-options"] == "nosniff"
         assert h["referrer-policy"] == "same-origin"
+
+
+def csp_directives(response) -> dict[str, list[str]]:
+    parts = response.headers["content-security-policy"].split(";")
+    return {d.split()[0]: d.split()[1:] for d in (p.strip() for p in parts) if d}
+
+
+@pytest.mark.parametrize("name", WEB_PAGES)
+def test_the_page_counter_is_on_every_page_and_allowed_by_the_csp(client, name):
+    """A CSP refusal is silent in the browser — the counter just stops
+    counting — so the header and the tag are checked against each other."""
+    served = client.get("/" if name == "index.html" else f"/{name}")
+    tags = [s for s in Head.of(served.text).scripts if "data-goatcounter" in s]
+    assert len(tags) == 1, f"{name} should load the counter exactly once"
+    tag = tags[0]
+
+    csp = csp_directives(served)
+    assert tag["src"].rsplit("/", 1)[0] in csp["script-src"]
+    # Both allowed by path, so the attribute has to appear verbatim.
+    assert tag["data-goatcounter"] in csp["connect-src"]
+    assert tag["data-goatcounter"] in csp["img-src"]
+    # A protocol-relative src would inherit http: on a plaintext first hop.
+    assert tag["src"].startswith("https://") and "async" in tag
+    # Pinned and hashed; without `crossorigin` the response is opaque and the
+    # hash can't be checked at all.
+    assert "/count.v" in tag["src"], "the rolling count.js can change under us"
+    assert tag["integrity"].startswith("sha384-")
+    assert tag["crossorigin"] == "anonymous"
+
+
+def test_the_csp_allowlists_nothing_beyond_the_page_counter(client):
+    """Enumerated, not grepped: a substring assertion still passes with
+    `'unsafe-inline'` bolted on, which is how an allowlist rots."""
+    allowed = {"'self'", "'none'", "data:", server.ANALYTICS_SCRIPT, server.ANALYTICS_BEACON}
+    for directive, sources in csp_directives(client.get("/")).items():
+        assert set(sources) <= allowed, f"{directive} allows more than the counter"
+
+
+def test_the_privacy_policy_names_the_counter_it_loads(client):
+    """Loading a third party's script is only honest if the page that says
+    what the site collects names it and links their terms."""
+    policy = client.get("/privacy.html").text
+    assert "GoatCounter" in policy
+    assert "https://www.goatcounter.com/help/privacy" in policy
+
+
+def test_no_trial_state_can_reach_the_page_counter(client):
+    """The counter is sent the path, the query string and the title, none of
+    which can carry trial state today only because the app writes none of
+    them. An `?item=` would ship the research record off-site."""
+    app_js = (server.WEB_DIR / "app.js").read_text()
+    for leak in ("document.title", "pushState", "replaceState", "location.search"):
+        assert leak not in app_js, f"{leak} puts trial state where the counter reads"
 
 
 def test_answering_is_rate_limited_but_arriving_is_free(client, db, monkeypatch):

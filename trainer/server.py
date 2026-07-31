@@ -192,15 +192,25 @@ def queue_cookie(request: Request, token: str | None) -> None:
     request.state.session_cookie = "" if token is None else token
 
 
-# Everything the app loads is its own: one module script, local stylesheets, a
-# vendored chessground, and favicons as inline data: URIs (which is what
-# `img-src data:` is for, along with the piece sprites in the chessground CSS).
-# So the policy needs no allowlist, and the reason to bother is that the reveal
-# builds one string from mined game data — a CSP is what keeps a bad `Site`
-# header in some future PGN from being script instead of a broken link.
+# Almost everything the app loads is its own: one module script, local
+# stylesheets, a vendored chessground, and favicons as inline data: URIs (which
+# is what `img-src data:` is for, along with the piece sprites in the
+# chessground CSS). The reason to bother is that the reveal builds one string
+# from mined game data — a CSP is what keeps a bad `Site` header in some future
+# PGN from being script instead of a broken link.
+#
+# The page counter is the exception, and costs three entries: the script, plus
+# the beacon under both `connect-src` (it uses `sendBeacon`) and `img-src` (it
+# falls back to an image when that's refused). Scoped to the one path it posts
+# to, because `connect-src` is otherwise a door out for the same hostile string
+# the rest of this policy exists to contain.
+ANALYTICS_SCRIPT = "https://gc.zgo.at"
+ANALYTICS_BEACON = "https://chess-pretraining.goatcounter.com/count"
 CSP = (
-    "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
-    "connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+    f"default-src 'self'; script-src 'self' {ANALYTICS_SCRIPT}; style-src 'self'; "
+    f"img-src 'self' data: {ANALYTICS_BEACON}; "
+    f"connect-src 'self' {ANALYTICS_BEACON}; "
+    "base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
 )
 
 
