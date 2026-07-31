@@ -224,17 +224,32 @@ def is_ours(href: str) -> bool:
 
 
 @pytest.mark.parametrize("name", WEB_PAGES)
-def test_our_own_pages_open_in_the_app(client, name):
-    """An installed app hands a new browsing context to an in-app browser, so a
-    target on one of our own links reads the terms in a sheet outside the app,
-    with no way back to it. Off-site links are where that's the point."""
+def test_links_open_in_the_app_and_leaving_opens_a_new_context(client, name):
+    """Which browsing context a link opens in decides whether an installed app
+    keeps the user, and the two directions want opposite answers.
+
+    Ours have to stay: a new context is a chrome-less in-app browser, so the
+    terms would be read outside the app with no way back to it. Off-site links
+    have to leave: navigating the app window itself to fly.io strands the user
+    there, since a standalone window has no back button to return with.
+
+    Both are one attribute in hand-written HTML across three pages, which is
+    how they drifted apart in the first place.
+    """
     path = "/" if name == "index.html" else f"/{name}"
-    escaping = [
-        a["href"]
-        for a in Head.of(client.get(path).text).anchors
-        if is_ours(a["href"]) and "target" in a
-    ]
+    anchors = Head.of(client.get(path).text).anchors
+    ours, offsite = ([a for a in anchors if is_ours(a["href"]) == mine] for mine in (True, False))
+
+    escaping = [a["href"] for a in ours if "target" in a]
     assert not escaping, f"{name} opens {escaping} in a new browsing context"
+
+    # mailto: hands off to a mail client without touching the window.
+    stranding = [
+        a["href"]
+        for a in offsite
+        if a.get("target") != "_blank" and urlsplit(a["href"]).scheme != "mailto"
+    ]
+    assert not stranding, f"{name} navigates the app window itself to {stranding}"
 
 
 def test_every_referenced_icon_is_served_at_its_declared_size(client):
