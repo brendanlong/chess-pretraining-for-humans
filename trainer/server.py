@@ -197,10 +197,20 @@ def spend(limiter: auth.RateLimiter, key: str) -> None:
 class Transaction:
     """What `writing()` hands out: a connection with no way to end it.
 
-    The same shape as Prisma's interactive-transaction client, and for the same
-    reason — its proxy simply has no commit on it, so the block's outcome is the
-    only thing that can decide. Helpers take `db.Queryable`, which this
-    satisfies, so a helper that wanted to commit could not name the method.
+    Worth being concrete about what it is protecting against, because the danger
+    is not obvious. SQLite does not nest transactions — `COMMIT` is not counted,
+    it just commits — so a stray `commit()` is two very different things
+    depending on where it lands. With nothing open it does nothing at all. Inside
+    someone else's transaction it ends it: the write lock drops mid-request,
+    another writer can interleave, and the rollback that was supposed to undo the
+    whole block can no longer reach what was already committed. Same call, and
+    the callee cannot tell which case it is in — its own writes make
+    `in_transaction` true either way.
+
+    Hence a handle rather than a rule. It is the shape an ORM's interactive
+    transaction has for the same reason: with no commit to name, the block's
+    outcome is the only thing that can decide. Helpers take `db.Queryable`,
+    which this satisfies, so one that wanted to commit could not spell it.
     """
 
     def __init__(self, connection):
