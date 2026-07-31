@@ -139,6 +139,15 @@ the same reason in reverse: a throttled request should mint nothing at all.
 
 ## Frontend (`web/`)
 
+`trainer/assets.py` reads `web/` once at startup and rewrites every reference
+to carry a digest of what it points at, so an asset URL names its own contents
+and can be cached forever; the pages that carry those URLs are the only thing
+revalidated on a repeat visit. Done at startup rather than by a build step
+because there is no build step to add it to, and one you have to remember to
+run is one that will be forgotten — this reads the disk, so it cannot disagree
+with it. Reaching an asset without its digest is still served, briefly cached:
+a bookmark has no way to learn the file moved on.
+
 Vanilla JS on vendored chessground; no build step, no client-side chess
 logic — the server precomputes SAN and per-ply FENs so the client only
 renders. Candidate moves are drawn as arrows; answers by tap or keyboard;
@@ -200,9 +209,8 @@ says what the answers are for, the signup form's agreement line, and the
 drawer's About row.
 
 The icons and the social-card image are committed files in `web/`, generated
-by `scripts/generate_assets.py` screenshotting Chromium — so the art has a
-source that can be edited and re-run, and serving it stays a static file
-read. The card mock declares no colours of its own: the generator injects
+by `scripts/generate_assets.py` screenshotting Chromium, so the art has a
+source that can be edited and re-run. The card mock declares no colours of its own: the generator injects
 the app's `:root`, because a card advertising the app shouldn't be showing
 a palette the app has since moved off. Every page carries its own copy of
 the card metadata, since there is no template to share one; a test globs
