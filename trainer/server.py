@@ -748,8 +748,7 @@ def login(body: Login, request: Request):
     spend(login_ip_limiter, client_key(request))
     spend(login_limiter, login_key(name))
     try:
-        with writing():
-            u = auth.find_by_username(conn, name)
+        u = auth.find_by_username(conn, name)
         # Verify outside the transaction: argon2 is deliberately slow, and
         # holding the write lock through it would stall every other writer.
         # An unknown name still pays for a verify against a dummy hash, so the

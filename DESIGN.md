@@ -28,10 +28,12 @@ frontend. Data flows one way:
 ## Server (`trainer/server.py`)
 
 FastAPI over a single SQLite file (WAL; shared safely with a running
-labeler), one connection per threadpool thread. A transaction belongs to a
-connection, so sharing one would serialize every request whether or not it
-wrote; separate connections let WAL do what it is for, and leave SQLite to
-serialize the writers. Endpoints that write take one explicitly and up front
+labeler), one connection per threadpool thread — bound to the thread rather
+than checked out and returned, so no two requests can ever hold the same one,
+and a connection lives and dies with the worker that opened it. A transaction
+belongs to a connection, so sharing one would serialize every request whether
+or not it wrote; separate connections let WAL do what it is for, and leave
+SQLite to serialize the writers. Endpoints that write take one explicitly and up front
 (`writing()`), because a rating is read, computed in Python, and written
 back — two overlapping answers that both read first would lose one. How much
 of that is scaling headroom is a question of how many cores the machine has,
