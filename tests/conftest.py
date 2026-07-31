@@ -74,8 +74,7 @@ def no_real_database(monkeypatch):
     `server.conn` is opened at import against the real database, so a test that
     hits the API without `db` quietly uses whatever the developer has in `data/` —
     passing on a laptop with a full item bank, failing in CI with an empty one,
-    and writing rows into the experimental record on the way past. That is exactly
-    how `test_a_rate_limit_can_say_what_it_is_actually_rationing` got committed.
+    and writing rows into the experimental record on the way past.
 
     Autouse, so it applies first; `db` overrides it for the tests that want a
     database, and the one test that supplies its own connection still may.

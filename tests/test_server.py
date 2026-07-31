@@ -110,9 +110,8 @@ def test_first_exposure_accuracy_excludes_repeats(client):
 
 
 def test_first_exposure_filter_is_answered_from_an_index_covering_item_id(db):
-    """The filter asks, per response, whether an earlier one hit the same item.
-    Without `item_id` indexed that walks every earlier row the user has, once
-    per row: 700ms against 3ms at 5k responses.
+    """The filter asks, per response, whether an earlier one hit the same item —
+    see `idx_responses_item` in `db.py` for what indexing it saves.
 
     Asserts the plan, not a duration, because a timing threshold flakes on CI.
     The losing plan is a SEARCH too — over a range rather than a row — so which
@@ -353,8 +352,8 @@ def test_an_answer_is_spent_once(client, db):
 
 def test_answering_never_writes_to_the_item_bank(client, db):
     """Difficulty is a property of the position, so no answer — first exposure
-    or repeat, right or wrong — may change what any other user is served. That
-    guarantee is now the whole of it: the `items` rows come out identical."""
+    or repeat, right or wrong — may change what any other user is served: the
+    `items` rows come out identical."""
 
     def items():
         return [tuple(row) for row in db.execute("SELECT * FROM items ORDER BY id")]
@@ -477,11 +476,7 @@ def test_nothing_about_an_item_is_reflected_without_a_valid_token(client, db):
 
 
 def test_one_anonymous_token_cannot_be_replayed_into_many_first_exposures(client, db):
-    """The case the ledger exists for. Redeeming an anonymous token *creates*
-    the identity that records it, so every replay would be a brand new row
-    seeing the item for the first time — and the `responses` row that makes a
-    spent trial unanswerable for an authenticated caller is never there to find.
-    The ledger is what stands in for it."""
+    """The case the ledger exists for — see the `trials` module docstring."""
     trial = next_trial(client)
 
     codes = []
@@ -496,10 +491,9 @@ def test_one_anonymous_token_cannot_be_replayed_into_many_first_exposures(client
 
 
 def test_answering_your_last_unseen_item_does_not_make_its_token_replayable(client, db):
-    """The boundary a live `unseen_count` check got wrong: answering the last
-    unseen item takes the count to zero as a *result* of that answer, which made
-    "is a repeat allowed right now?" true and the token replayable. The token
-    itself now says whether we served it as a repeat.
+    """Answering the last unseen item takes the count to zero as a *result* of
+    that answer, so a live count would call the token a legitimate repeat. The
+    token says whether we served it as one instead.
 
     The first answer is spent getting an identity, so that the token under test is
     bound to a session — otherwise the binding refuses the replay first and this
@@ -518,9 +512,9 @@ def test_answering_your_last_unseen_item_does_not_make_its_token_replayable(clie
 
 @pytest.mark.parametrize("item_count", [1])
 def test_a_repeat_we_served_stays_answerable_even_if_the_bank_refills(client, db, item_count):
-    """The mirror of the same bug: a live count would turn a repeat the server
-    had just offered into "you already answered this" the moment new items
-    arrived mid-trial."""
+    """The other side of the same boundary: a live count would turn a repeat the
+    server had just offered into "you already answered this" the moment new
+    items arrived mid-trial."""
     answer(client, next_trial(client))
     repeat = next_trial(client)
     assert repeat["repeat"] is True

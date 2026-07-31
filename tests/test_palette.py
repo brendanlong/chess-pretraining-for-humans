@@ -118,7 +118,7 @@ def test_reveal_pair_survives_dichromacy(palette):
     assert worst(palette, "--good", "--bad", ("#211f1c",), 1.0, warmths=["day"]) > 35
 
 
-# What went wrong before: blue/purple and green/red both collapse to one hue.
+# The pairs this rules out: blue/purple and green/red both collapse to one hue.
 def test_the_pairs_this_replaced_would_fail(palette):
     old = {"a": "#1a56c4", "b": "#8a2be2", "good": "#15781b", "bad": "#b02323"}
     assert worst(old, "a", "b", BOARD, ARROW_ALPHA, warmths=["day"]) < 10

@@ -49,7 +49,7 @@ CALIBRATED_GAP_HI = 0.33
 # Past that the line would cross zero and take a third of the bank with it, so
 # difficulty decays toward zero instead, holding the line's value and slope at
 # the join. Gaps we know nothing about stay ordered and distinct rather than
-# collapsing onto one clamped value, which is what SPEC now requires.
+# collapsing onto one clamped value, which is what SPEC requires.
 #
 # This is the one number here that was chosen rather than measured, and it is
 # not cosmetic: it fixes where the scale sits *and* how fast the uncalibrated
@@ -90,8 +90,8 @@ def difficulty_rating(gap_wp: float) -> float:
     else:
         d = KNEE_DIFFICULTY * math.exp(-_DECAY * (gap_wp - CALIBRATED_GAP_HI))
     # Bounds are a guard, not a design feature: the curve is already inside
-    # them for every gap the labeler admits, and it is the clamping that used
-    # to happen here that flattened the easy end of the bank.
+    # them for every gap the labeler admits, and clamping here would flatten
+    # the easy end of the bank.
     return max(RATING_MIN, min(RATING_MAX, d))
 
 

@@ -62,7 +62,7 @@ def test_elo_cannot_walk_a_rating_off_the_scale():
 def test_difficulty_is_strictly_decreasing_over_every_gap_a_bank_can_hold():
     """The property selection actually needs. Banks mined with a wider
     `--max-gap-wp` exist and reach a 0.65 gap, and any two of those items must
-    still be orderable — a clamp flattening the easy end is what made 13.8% of
+    still be orderable — a clamp at the easy end would make 13.8% of
     the bank indistinguishable and every beginner see the same block."""
     gaps = [g / 1000 for g in range(1, 900)]
     ratings = [difficulty_rating(g) for g in gaps]
@@ -120,8 +120,8 @@ def test_regrade_stays_on_the_scale_for_any_stored_rating():
 
 
 def test_every_user_on_the_scale_is_aimed_at_an_item_the_bank_can_hold():
-    """A target below the easiest item is what used to hand every beginner the
-    same clamped block, so the whole user range has to map to a real gap."""
+    """A target below the easiest item hands every beginner the same clamped
+    block, so the whole user range has to map to a real gap."""
     for r in range(USER_MIN, USER_MAX, 50):
         gap = target_gap(r)
         assert 0 <= gap <= MAX_GAP_WP, f"rating {r} aims at gap {gap}"

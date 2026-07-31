@@ -17,11 +17,10 @@ CREDS = {"username": "tester", "password": "hunter2hunter2"}
 def test_arriving_writes_nothing_and_answering_is_what_earns_an_identity(client, db):
     """Identity is issued by answering, not by arriving.
 
-    An earlier version minted a guest row in the identity dependency, which made
-    the cheapest write in the app the unauthenticated one — and metering that
-    write is a limit in front of the first trial, which SPEC forbids. So a
-    visitor who has answered nothing has no row, and the trial they are looking
-    at rides in a signed token instead.
+    Minting a row on arrival would make arriving the cheapest write in the app,
+    and metering that write is a limit in front of the first trial, which SPEC
+    forbids. So a visitor who has answered nothing has no row, and the trial
+    they are looking at rides in a signed token instead.
     """
     assert client.get("/api/account").json() == {"username": None, "guest": True}
     trial = next_trial(client)  # answerable immediately, nothing typed
@@ -387,9 +386,8 @@ def test_account_payloads_carry_no_credentials(client):
 
 
 def test_a_503_from_an_empty_bank_writes_nothing_at_all(tmp_path, monkeypatch):
-    """This used to mint a guest per retry, which is why the cookie had to be
-    re-applied from the error path — an orphaned row per retry otherwise. Now
-    /api/next writes nothing, so there is nothing to orphan."""
+    """/api/next writes nothing, so a 503 from an empty bank has no identity to
+    orphan and no cookie to strand."""
     empty = connect(tmp_path / "empty.db", check_same_thread=False)
     monkeypatch.setattr(server, "conn", empty)
     with TestClient(server.app) as c:
@@ -404,7 +402,7 @@ def test_a_503_from_an_empty_bank_writes_nothing_at_all(tmp_path, monkeypatch):
 def test_concurrent_answers_all_land(db, item_count):
     """Overlapping answers to one item from six sessions at once.
 
-    Nothing about the *item* is contended any more — difficulty is fixed — but
+    Nothing about the *item* is contended — difficulty is fixed — but
     the six requests still share one `sqlite3.Connection` and so one implicit
     transaction: an unlocked `commit()` from one thread lands another's
     half-finished work, or its `rollback()` discards it. Hence the assertion
@@ -670,11 +668,10 @@ def test_rate_limiter_consume_is_atomic_under_threads():
 
 
 def test_a_crash_while_answering_still_hands_out_the_identity_it_created(db, monkeypatch):
-    """The identity is now created while serving the *answer*, so that's where
-    this invariant lives. A 500 is handled outside our middleware, and the
-    answer's row is already committed by the time the reveal is built — if the
-    error response drops the Set-Cookie, the row is orphaned and the next answer
-    mints another one."""
+    """The identity is created while serving the *answer*, and a 500 is handled
+    outside our middleware. The row is committed by the time the reveal is
+    built, so an error response that drops the Set-Cookie orphans it and the
+    next answer mints another."""
 
     def boom(*_args):
         raise RuntimeError("boom")
@@ -718,8 +715,8 @@ def test_rate_limiter_key_space_is_bounded():
 
 def test_a_shed_signup_still_costs_a_slot(db, monkeypatch):
     """Refunding a shed attempt would leave a saturated box with an unmetered
-    signup endpoint — worse than the throttling it avoids. (It no longer leaves
-    a row behind either: the hash is refused before anything is written.)"""
+    signup endpoint — worse than the throttling it avoids. Nothing is written
+    either way: the hash is refused before any row is created."""
     monkeypatch.setattr(server, "signup_limiter", auth.RateLimiter(3, 3600))
     monkeypatch.setattr(auth, "HASH_WAIT_S", 0.05)
     monkeypatch.setattr(auth, "_hash_slots", threading.Semaphore(0))
@@ -953,13 +950,9 @@ def test_a_pre_identity_trial_is_spent_once_however_many_contexts_use_it(db):
     """A token issued before its holder has an identity can't be bound to a
     session that doesn't exist yet, so it is spent once and remembered instead.
 
-    The two clients below are one person's two contexts — a browser and a script —
-    not two people: a token goes to the one client that asked for it and nowhere
-    else, so nobody else has it to try. What that buys isn't privacy of the answer
-    key (the reveal gives that up the moment you commit) but a spent trial staying
-    spent: an authenticated replay is caught by the `responses` row it already
-    wrote, and each anonymous replay mints a fresh identity, so that row is never
-    there to find and the ledger has to stand in for it.
+    The two clients below are one person's two contexts — a browser and a script
+    — not two people: a token goes to the one client that asked for it and
+    nowhere else. What that buys is in the `trials` module docstring.
     """
     with TestClient(server.app) as browser, TestClient(server.app) as script:
         trial = next_trial(browser)

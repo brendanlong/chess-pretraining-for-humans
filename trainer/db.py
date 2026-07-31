@@ -200,12 +200,10 @@ def connect(path: Path = DEFAULT_DB, check_same_thread: bool = True) -> sqlite3.
     # can't take it — legacy names already collide, or someone else holds the
     # write lock — carries on without it rather than failing to open.
     #
-    # But it carries on *loudly*. Without this index two rows can share a name
-    # case-insensitively, and then `find_by_username` is answering a question
-    # with two answers: the second owner can never sign in, and an operator
-    # running `set-password kim` would be setting it on `Kim`'s row — handing
-    # one user another's account. Failing silently here is what turns a
-    # legacy-data wrinkle into that, so say so where someone will see it.
+    # But it carries on *loudly*: without the index two rows can share a name
+    # case-insensitively, which is the collision `find_by_username` then refuses
+    # to guess at. Failing silently here is what turns a legacy-data wrinkle
+    # into an operator handing one user another's account.
     if not any(row[1] == USERS_NAME_INDEX for row in conn.execute("PRAGMA index_list(users)")):
         try:
             conn.execute(f"CREATE UNIQUE INDEX {USERS_NAME_INDEX} ON users(name COLLATE NOCASE)")
@@ -224,21 +222,17 @@ def connect(path: Path = DEFAULT_DB, check_same_thread: bool = True) -> sqlite3.
     # Difficulty is a function of the item alone, so the columns that existed to
     # carry answers back into it go. `items.attempts`/`correct` were a global
     # tally no query reads now. `responses.item_rating_after` recorded a move
-    # that no longer happens; recovering one from an old row needs the K-factor
-    # and the branch that froze it during calibration, neither of which is in
-    # the tree any more, so `deploy/README.md` says to copy it out first.
+    # that doesn't happen; recovering one from an old row needs the K-factor and
+    # the branch that froze it during calibration, neither of which exists here,
+    # so `deploy/README.md` says to copy it out first.
     for col in ("attempts", "correct"):
         if col in item_cols:
             conn.execute(f"ALTER TABLE items DROP COLUMN {col}")
     response_cols = {row[1] for row in conn.execute("PRAGMA table_info(responses)")}
     if "item_rating_after" in response_cols:
         conn.execute("ALTER TABLE responses DROP COLUMN item_rating_after")
-    # And difficulty is re-derived, because "a pure function of `gap_wp`" has to
-    # be true of the rows, not just of the code that writes new ones. Two kinds
-    # of row disagree: ones an older server's Elo moved, and ones labeled when
-    # the rating was computed from the full-precision gap before the gap itself
-    # was rounded for storage. Registering the function rather than repeating
-    # the formula in SQL keeps one definition of difficulty.
+    # Registering the function rather than repeating the formula in SQL keeps
+    # one definition of difficulty.
     conn.create_function("difficulty_rating", 1, difficulty_rating, deterministic=True)
     conn.create_function("regraded_user_rating", 1, rating.regraded_user_rating, deterministic=True)
     # Item difficulty is re-derived, because "a pure function of `gap_wp`" has to
