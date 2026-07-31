@@ -33,16 +33,17 @@ def set_password(conn: sqlite3.Connection, user: dict, rename_to: str | None) ->
     except auth.AuthError as e:
         print(e, file=sys.stderr)
         return 1
-    conn.execute(
-        "UPDATE users SET name = ?, password_hash = ? WHERE id = ?",
-        (name, auth.hash_password(password), user["id"]),
-    )
-    conn.commit()
     # This command is the only recovery path the app has — there is no in-app
     # password change and no reset email yet — so it has to assume the reason
     # it's being run is that someone else knows the old password. Rotating the
-    # hash while leaving their session live would recover nothing.
-    revoked = auth.revoke_sessions(conn, user["id"])
+    # hash while leaving their session live would recover nothing, so the two
+    # go together or not at all.
+    with conn:
+        conn.execute(
+            "UPDATE users SET name = ?, password_hash = ? WHERE id = ?",
+            (name, auth.hash_password(password), user["id"]),
+        )
+        revoked = auth.revoke_sessions(conn, user["id"])
     print(
         f"{name} can now sign in ({user['attempts']} trials preserved"
         + (f", {revoked} existing session(s) signed out)" if revoked else ")")
@@ -71,7 +72,8 @@ def delete(conn: sqlite3.Connection, user: dict, assume_yes: bool) -> int:
         if typed.lower() != user["name"].lower():
             print("not confirmed; nothing deleted", file=sys.stderr)
             return 1
-    counts = auth.delete_user(conn, user["id"])
+    with conn:  # all three deletes land together, or none of them do
+        counts = auth.delete_user(conn, user["id"])
     print(
         f"deleted {user['name']}: {counts['responses']} responses, "
         f"{counts['sessions']} sessions, {counts['users']} user row"

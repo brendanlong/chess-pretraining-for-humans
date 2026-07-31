@@ -14,12 +14,13 @@ import contextlib
 import hashlib
 import re
 import secrets
-import sqlite3
 import threading
 import time
 
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
+
+from . import db
 
 COOKIE_NAME = "sid"
 SESSION_DAYS = 365
@@ -135,7 +136,7 @@ def check_email(email: str | None) -> str | None:
 # --- users ----------------------------------------------------------------
 
 
-def create_guest(conn: sqlite3.Connection, start_rating: float, calib_step: float) -> dict:
+def create_guest(conn: db.Queryable, start_rating: float, calib_step: float) -> dict:
     """Writes without committing: the caller owns the transaction, so the row
     can commit atomically with the answer that earns it."""
     name = GUEST_PREFIX + secrets.token_hex(8)
@@ -147,7 +148,7 @@ def create_guest(conn: sqlite3.Connection, start_rating: float, calib_step: floa
     return get_user(conn, cur.lastrowid)  # pyright: ignore[reportArgumentType]
 
 
-def get_user(conn: sqlite3.Connection, user_id: int) -> dict:
+def get_user(conn: db.Queryable, user_id: int) -> dict:
     row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
     if row is None:
         raise AuthError("no such user")
@@ -163,7 +164,7 @@ def display_name(user: dict) -> str | None:
     return None if is_guest(user) else user["name"]
 
 
-def find_by_username(conn: sqlite3.Connection, name: str) -> dict | None:
+def find_by_username(conn: db.Queryable, name: str) -> dict | None:
     """The row a typed username refers to, or None.
 
     Raises rather than picking one when two rows answer to the same name. That
@@ -191,13 +192,13 @@ def validate_signup(username: str, password: str, email: str | None) -> tuple[st
     return username, check_email(email)
 
 
-def check_name_free(conn: sqlite3.Connection, username: str) -> None:
+def check_name_free(conn: db.Queryable, username: str) -> None:
     if find_by_username(conn, username):
         raise AuthError("That username is taken.")
 
 
 def create_account(
-    conn: sqlite3.Connection,
+    conn: db.Queryable,
     username: str,
     password_hash: str,
     email: str | None,
@@ -216,11 +217,10 @@ def create_account(
            VALUES (?, ?, ?, ?, ?, datetime('now'))""",
         (username, start_rating, calib_step, password_hash, email),
     )
-    conn.commit()
     return get_user(conn, cur.lastrowid)  # pyright: ignore[reportArgumentType]
 
 
-def check_claimable(conn: sqlite3.Connection, user_id: int, username: str) -> None:
+def check_claimable(conn: db.Queryable, user_id: int, username: str) -> None:
     """The database half of signup validation, cheap enough to run before the
     password hash — otherwise a taken name costs an argon2 each time it's
     probed, which is both an enumeration oracle and free work for an attacker.
@@ -231,7 +231,7 @@ def check_claimable(conn: sqlite3.Connection, user_id: int, username: str) -> No
 
 
 def claim(
-    conn: sqlite3.Connection, user_id: int, username: str, password_hash: str, email: str | None
+    conn: db.Queryable, user_id: int, username: str, password_hash: str, email: str | None
 ) -> dict:
     """Attach credentials to an existing (guest) row. Nothing else changes:
     rating, calibration state and responses carry over untouched.
@@ -244,11 +244,10 @@ def claim(
         "UPDATE users SET name = ?, password_hash = ?, email = ? WHERE id = ?",
         (username, password_hash, email, user_id),
     )
-    conn.commit()
     return get_user(conn, user_id)
 
 
-def delete_user(conn: sqlite3.Connection, user_id: int) -> dict[str, int]:
+def delete_user(conn: db.Queryable, user_id: int) -> dict[str, int]:
     """Erase a user row and everything that points at it. Returns row counts.
 
     The one place in the app that destroys research data on purpose. The
@@ -257,20 +256,16 @@ def delete_user(conn: sqlite3.Connection, user_id: int) -> dict[str, int]:
     data a user believes is gone — cheaper to lose the rows than to redefine
     the word.
 
-    `responses` deliberately has no ON DELETE CASCADE — erasing the record
-    must be this explicit act, never a side effect — so it goes before the
-    `users` row it references, and all of it goes in one transaction.
-    Sessions would cascade with the row on their own; deleting them
-    explicitly is what gets their count into the report.
+    `responses` deliberately has no ON DELETE CASCADE — erasing the record must
+    be this explicit act, never a side effect — so it goes before the `users`
+    row it references, inside the caller's transaction. Sessions would cascade;
+    deleting them explicitly is what gets their count into the report.
     """
-    with conn:  # commits on success, rolls the whole thing back on failure
-        counts = {
-            "responses": conn.execute(
-                "DELETE FROM responses WHERE user_id = ?", (user_id,)
-            ).rowcount,
-            "sessions": conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,)).rowcount,
-        }
-        counts["users"] = conn.execute("DELETE FROM users WHERE id = ?", (user_id,)).rowcount
+    counts = {
+        "responses": conn.execute("DELETE FROM responses WHERE user_id = ?", (user_id,)).rowcount,
+        "sessions": conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,)).rowcount,
+    }
+    counts["users"] = conn.execute("DELETE FROM users WHERE id = ?", (user_id,)).rowcount
     return counts
 
 
@@ -287,7 +282,7 @@ def _token_hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
-def start_session(conn: sqlite3.Connection, user_id: int) -> str:
+def start_session(conn: db.Queryable, user_id: int) -> str:
     """Returns the raw token; only its hash is stored.
 
     Writes without committing, like `create_guest` and for the same reason:
@@ -300,7 +295,8 @@ def start_session(conn: sqlite3.Connection, user_id: int) -> str:
     return token
 
 
-def session_user(conn: sqlite3.Connection, token: str | None) -> dict | None:
+def session_user(conn: db.Queryable, token: str | None) -> dict | None:
+    """The user a session token names, refreshing its sliding expiry."""
     if not token:
         return None
     th = _token_hash(token)
@@ -311,25 +307,35 @@ def session_user(conn: sqlite3.Connection, token: str | None) -> dict | None:
               AND sessions.created_at > datetime('now', '-{SESSION_MAX_DAYS} days')""",
         (th,),
     ).fetchone()
-    if row is None:
-        return None
-    # Keep the sliding expiry fresh without writing on every single request.
-    conn.execute(
-        "UPDATE sessions SET last_seen = datetime('now') WHERE token_hash = ?"
-        " AND last_seen < datetime('now', '-1 hour')",
+    return dict(row) if row else None
+
+
+def touch_session(conn: db.Queryable, token: str | None) -> None:
+    """Refresh a session's sliding expiry, at most hourly.
+
+    Separate from reading the session so the read path has no write hidden in
+    it. Checked with a SELECT before writing, because SQLite takes the write
+    lock for an UPDATE whether or not a row matches — and this one matches at
+    most hourly, so a signed-in page load would otherwise queue behind every
+    writer and fail outright behind a slow one.
+    """
+    if not token:
+        return
+    th = _token_hash(token)
+    due = conn.execute(
+        "SELECT 1 FROM sessions WHERE token_hash = ? AND last_seen < datetime('now', '-1 hour')",
         (th,),
-    )
-    conn.commit()
-    return dict(row)
+    ).fetchone()
+    if due:
+        conn.execute("UPDATE sessions SET last_seen = datetime('now') WHERE token_hash = ?", (th,))
 
 
-def end_session(conn: sqlite3.Connection, token: str | None) -> None:
+def end_session(conn: db.Queryable, token: str | None) -> None:
     if token:
         conn.execute("DELETE FROM sessions WHERE token_hash = ?", (_token_hash(token),))
-        conn.commit()
 
 
-def revoke_sessions(conn: sqlite3.Connection, user_id: int) -> int:
+def revoke_sessions(conn: db.Queryable, user_id: int) -> int:
     """Sign a user out everywhere. Returns the number of sessions dropped.
 
     What a password change is *for*, when the reason for it is that someone
@@ -339,11 +345,10 @@ def revoke_sessions(conn: sqlite3.Connection, user_id: int) -> int:
     reset email exists yet) unable to actually recover anything.
     """
     cur = conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
-    conn.commit()
     return cur.rowcount
 
 
-def sweep(conn: sqlite3.Connection) -> None:
+def sweep(conn: db.Queryable) -> None:
     """Reclaim session rows that have expired out of every way of being valid.
 
     The conditions mirror `session_user`'s exactly, so a session the sweep
@@ -357,7 +362,6 @@ def sweep(conn: sqlite3.Connection) -> None:
            WHERE last_seen < datetime('now', ?) OR created_at < datetime('now', ?)""",
         (f"-{SESSION_DAYS} days", f"-{SESSION_MAX_DAYS} days"),
     )
-    conn.commit()
 
 
 # --- rate limiting --------------------------------------------------------

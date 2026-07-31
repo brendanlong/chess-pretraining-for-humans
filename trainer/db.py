@@ -4,11 +4,22 @@ import logging
 import os
 import sqlite3
 from pathlib import Path
+from typing import Protocol
 
 from . import rating
 from .rating import difficulty_rating
 
 log = logging.getLogger(__name__)
+
+
+class Queryable(Protocol):
+    """Anything that runs a statement: a connection, or a transaction handle.
+
+    What the storage helpers ask for, so a caller inside a transaction can hand
+    them something with no way to end it and a script can hand them a connection.
+    """
+
+    def execute(self, sql: str, parameters=(), /) -> sqlite3.Cursor: ...
 
 
 def _schema_version(conn: sqlite3.Connection) -> int:
@@ -31,6 +42,10 @@ def _schema_version(conn: sqlite3.Connection) -> int:
 # In a container the database lives on a mounted volume, not in the checkout,
 # and the server has no argv to take a path from.
 DEFAULT_DB = Path(os.environ.get("TRAINER_DB", "data/items.db"))
+# How long a statement waits for a lock someone else holds. Generous because the
+# writer it waits on may be a bank refresh merging into the live database, and
+# failing an answer because an operator was mid-runbook is worse than a pause.
+BUSY_TIMEOUT_MS = 10_000
 USERS_NAME_INDEX = "idx_users_name_nocase"
 # Bumped only for migrations that can't tell from the data whether they ran.
 SCHEMA_VERSION = 1
@@ -111,20 +126,34 @@ CREATE TABLE IF NOT EXISTS meta (
 CREATE INDEX IF NOT EXISTS idx_items_rating ON items(rating);
 CREATE INDEX IF NOT EXISTS idx_responses_user ON responses(user_id, id);
 -- Both response indexes earn their keep. The one above serves "this user's
--- answers, in order"; this one serves every question of the form "has this
--- user answered this item" — the repeat probe, the unseen-item filters behind
--- a trial, and the first-exposure filter in /api/stats. That last one asks it
--- once per response, so without `item_id` in an index it walks every earlier
--- row the user has, per row: quadratic in one user's history, 700ms at 5k
--- answers, and it holds the database lock for all of it.
+-- answers, in order"; this one serves "has this user answered this item" — the
+-- repeat probe, the unseen-item filters, and /api/stats' first-exposure filter.
+-- That last asks it per response, so without `item_id` indexed it walks the
+-- user's whole history per row: 700ms at 5k answers.
 CREATE INDEX IF NOT EXISTS idx_responses_item ON responses(user_id, item_id, id);
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 """
 
 
-def connect(path: Path = DEFAULT_DB, check_same_thread: bool = True) -> sqlite3.Connection:
+def open_connection(
+    path: Path = DEFAULT_DB, check_same_thread: bool = True, explicit_transactions: bool = False
+) -> sqlite3.Connection:
+    """A connection to an already-migrated database: settings only, no schema.
+
+    Separate because SQLite scopes these to the connection, not the file, and a
+    server opens one per thread — only the first has business migrating.
+
+    `explicit_transactions` turns off the driver's implicit ones, so a
+    transaction is a deliberate act with one owner (`server.writing`) rather
+    than whatever the first `commit()` happens to end. The offline scripts want
+    the default, where `commit()` per batch is the right idiom.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, check_same_thread=check_same_thread)
+    conn = sqlite3.connect(
+        path,
+        check_same_thread=check_same_thread,
+        isolation_level=None if explicit_transactions else "",  # pyright: ignore[reportArgumentType]
+    )
     conn.row_factory = sqlite3.Row
     # Enforced, not just declared: SQLite ships with foreign keys off, and the
     # setting is per-connection. On, a session or response can never point at a
@@ -133,12 +162,17 @@ def connect(path: Path = DEFAULT_DB, check_same_thread: bool = True) -> sqlite3.
     # violated the constraint before it was enforced are tolerated (SQLite only
     # checks writes) and age out through the session sweep.
     conn.execute("PRAGMA foreign_keys=ON")
-    # Before the schema, not after it: adding a table or an index to SCHEMA
-    # makes that first connect a write, and this is the timeout that write has
-    # to wait out if the labeler holds the lock. Set afterwards it would apply
-    # to everything except the one statement that most needs it, which would
-    # get Python's shorter default instead.
-    conn.execute("PRAGMA busy_timeout=10000")
+    # Set before anything that might write, because this is the timeout a write
+    # has to wait out when someone else holds the lock — the labeler, or another
+    # request's transaction. Set afterwards it would apply to everything except
+    # the statements that most need it, which would get Python's shorter default.
+    conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
+    return conn
+
+
+def connect(path: Path = DEFAULT_DB, check_same_thread: bool = True) -> sqlite3.Connection:
+    """Open a database and bring its schema up to date."""
+    conn = open_connection(path, check_same_thread)
     conn.executescript(SCHEMA)
     conn.execute("PRAGMA journal_mode=WAL")
     user_cols = {row[1] for row in conn.execute("PRAGMA table_info(users)")}

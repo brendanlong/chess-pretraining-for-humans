@@ -1,3 +1,4 @@
+import itertools
 import sqlite3
 import threading
 import time
@@ -275,7 +276,9 @@ def test_delete_is_all_or_nothing(client, db):
     )
     db.commit()
 
-    with pytest.raises(sqlite3.IntegrityError):
+    # The caller owns the transaction — `delete_user` writes and nothing else,
+    # which is what lets the endpoint commit it together with the cookie clear.
+    with pytest.raises(sqlite3.IntegrityError), db:
         auth.delete_user(db, user["id"])
 
     db.execute("DROP TRIGGER wedge")
@@ -433,6 +436,58 @@ def test_concurrent_answers_all_land(db, item_count):
     for row in db.execute("SELECT user_rating_before, user_rating_after FROM responses"):
         assert row["user_rating_before"] == server.rating.USER_START
         assert row["user_rating_after"] != row["user_rating_before"]
+
+
+@pytest.mark.parametrize("item_count", [3])  # one to mint the identity, two to race
+def test_two_tabs_answering_at_once_do_not_lose_a_rating_update(
+    client, db, item_count, monkeypatch
+):
+    """One identity, two trials in flight, answered simultaneously.
+
+    Trial tokens are signed rather than stored, so two tabs each hold a
+    redeemable one. A rating is read-modify-write in Python, so without the
+    write lock taken before the read both would start from the same value and
+    the second would erase the first. `attempts` would still be right —
+    SQLite resolves `attempts + 1` — so only the rating goes quietly wrong.
+    """
+    # Widen the read-modify-write window: at its real width the threads
+    # interleave too rarely to catch a broken transaction at all.
+    real_calibrate = server.rating.calibrate
+
+    def slow_calibrate(*args, **kwargs):
+        time.sleep(0.05)
+        return real_calibrate(*args, **kwargs)
+
+    monkeypatch.setattr(server.rating, "calibrate", slow_calibrate)
+
+    # Establish the identity first. Two trials fetched before one exists are
+    # both issued to nobody, and answering either mints the row that makes the
+    # other's token belong to someone else — a 409, and not the race under test.
+    answer(client, next_trial(client))
+    # Two *distinct* items: selection is a random pick among the nearest unseen
+    # and nothing reserves one, so asking twice can name the same item.
+    tabs = {}
+    while len(tabs) < 2:
+        t = next_trial(client)
+        assert t["repeat"] is False
+        tabs[t["item_id"]] = t
+    threads = [threading.Thread(target=lambda t=t: answer(client, t)) for t in tabs.values()]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    user = db.execute("SELECT rating, attempts FROM users").fetchone()
+    assert user["attempts"] == 3  # the one that minted the row, plus the two raced
+    # Both are in the record, and the second picked up where the first left off:
+    # chain the snapshots and they have to meet in the middle.
+    rows = list(
+        db.execute("SELECT user_rating_before, user_rating_after FROM responses ORDER BY id")
+    )
+    assert len(rows) == 3
+    for earlier, later in itertools.pairwise(rows):
+        assert earlier["user_rating_after"] == later["user_rating_before"]
+    assert rows[-1]["user_rating_after"] == user["rating"]
 
 
 def test_garbage_cookie_falls_back_to_a_fresh_guest(client):
@@ -821,7 +876,8 @@ def test_setting_a_password_signs_existing_sessions_out(client, db):
         (auth.hash_password("a-brand-new-password"), user["id"]),
     )
     db.commit()
-    assert auth.revoke_sessions(db, user["id"]) == 1
+    with db:  # helpers write; committing is the caller's job
+        assert auth.revoke_sessions(db, user["id"]) == 1
 
     assert auth.session_user(db, token) is None
     assert client.get("/api/account").json()["guest"] is True

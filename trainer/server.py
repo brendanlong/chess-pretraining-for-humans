@@ -4,9 +4,11 @@ Run:
     uv run uvicorn trainer.server:app --host 0.0.0.0 --port <port>
 """
 
-import functools
+import contextlib
+import logging
 import os
 import random
+import sqlite3
 import threading
 from pathlib import Path
 
@@ -16,8 +18,10 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import auth, rating, trials
+from . import auth, db, rating, trials
 from .db import DEFAULT_DB, connect
+
+log = logging.getLogger(__name__)
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
@@ -29,10 +33,56 @@ WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 rng = random.SystemRandom()
 
 app = FastAPI(title="Chess Pretraining")
-# FastAPI runs sync endpoints in a threadpool; share one connection behind a
-# lock (small tool, contention is irrelevant).
-conn = connect(DEFAULT_DB, check_same_thread=False)
-db_lock = threading.Lock()
+
+# Which database the per-thread connections below open. A module-level name
+# rather than a constant so the tests can point a whole server at a scratch file.
+DB_PATH = DEFAULT_DB
+
+# Migrations run once, here, on a connection nobody serves requests from.
+connect(DB_PATH).close()
+
+# One connection per thread, because a transaction belongs to a connection:
+# sharing one would serialize every request, writing or not, and put two threads
+# inside one transaction where SQLite cannot see them to object. Separate
+# connections let WAL run readers alongside the single writer.
+_threads = threading.local()
+
+
+def thread_connection() -> sqlite3.Connection:
+    existing = getattr(_threads, "conn", None)
+    if existing is None:
+        existing = db.open_connection(DB_PATH, explicit_transactions=True)
+        _threads.conn = existing
+    return existing
+
+
+class OutsideTransaction(RuntimeError):
+    """Raised for a use of the connection that `writing()` should have owned."""
+
+
+class AmbientConnection:
+    """The database outside any transaction: one statement, standing alone.
+
+    `execute` and nothing else, because nothing else means anything here — a
+    statement commits itself, and an open transaction belongs to the `writing()`
+    block that opened it. Omitting them also omits `cursor()`, which would reach
+    the connection underneath.
+
+    Running a statement while a transaction is open raises instead, because that
+    one is legal, looks like it works, and is how a block stops being atomic.
+    """
+
+    def execute(self, sql, parameters=(), /):
+        connection = thread_connection()
+        if connection.in_transaction:
+            raise OutsideTransaction(
+                "a transaction is open on this thread — use the handle "
+                "`writing()` yielded instead of the module-level connection"
+            )
+        return connection.execute(sql, parameters)
+
+
+conn: db.Queryable = AmbientConnection()
 
 # Not a captcha (see auth.RateLimiter). Several limits, keyed on different
 # things on purpose, because they defend different things.
@@ -149,21 +199,51 @@ def spend(limiter: auth.RateLimiter, key: str) -> None:
         raise auth_error(e) from e
 
 
-def locked(fn):
-    @functools.wraps(fn)
-    def wrapper(*args, **kwargs):
-        with db_lock:
-            try:
-                return fn(*args, **kwargs)
-            except BaseException:
-                # The connection is shared, so a transaction left open here
-                # would be adopted — and committed — by whoever takes the lock
-                # next. Rolling back is also what makes /api/answer's identity
-                # mint atomic: a failure after the mint erases it.
-                conn.rollback()
-                raise
+class Transaction:
+    """What `writing()` hands out: a connection with no way to end it.
 
-    return wrapper
+    SQLite does not count nesting, so a stray `commit()` is two different things
+    depending on where it lands — nothing at all outside a transaction, and
+    inside one the thing that ends it, dropping the write lock mid-request and
+    putting the committed half beyond the reach of the rollback meant to undo it.
+    A callee cannot tell which case it is in; its own writes make
+    `in_transaction` true either way. So the method is absent rather than
+    forbidden, and the block's outcome decides.
+    """
+
+    def __init__(self, connection):
+        self._connection = connection
+
+    def execute(self, sql, parameters=(), /):
+        return self._connection.execute(sql, parameters)
+
+
+@contextlib.contextmanager
+def writing():
+    """Everything inside commits together, or none of it does.
+
+    `IMMEDIATE` rather than deferred because an answer reads a rating, computes
+    the next in Python, and writes it back: taking the write lock up front makes
+    the second of two overlapping answers wait, where deferred lets both read
+    and then fails one at upgrade time.
+
+    Held briefly and never across argon2 — every writer contends for it. Nesting
+    raises, since SQLite has none: an inner block could only commit the outer one
+    early or lie about being atomic.
+    """
+    connection = thread_connection()  # not `conn`, which refuses these on purpose
+    if connection.in_transaction:
+        raise OutsideTransaction("a transaction is already open on this thread")
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        yield Transaction(connection)
+        connection.commit()
+    except BaseException:
+        # Covers the commit too: it can fail on a full disk, and a transaction
+        # left open is inherited by the next request on this thread, which then
+        # cannot begin one for the life of the process.
+        connection.rollback()
+        raise
 
 
 # --- identity -------------------------------------------------------------
@@ -251,6 +331,23 @@ def unhandled_error(request: Request, exc: Exception) -> Response:
     return finalize(request, JSONResponse({"detail": "internal error"}, status_code=500))
 
 
+# A write that waited out `busy_timeout` — another request, or a bank refresh
+# merging into the live database. Nothing is wrong with the request, and 500
+# means "don't bother trying again", which is the opposite of true here.
+# Narrowed to SQLITE_BUSY: every other OperationalError is a bug, and inviting a
+# retry on those invites hammering.
+BUSY_MESSAGE = "The database is busy right now. Try again in a moment."
+
+
+@app.exception_handler(sqlite3.OperationalError)
+def database_busy(request: Request, exc: sqlite3.OperationalError) -> Response:
+    if not (getattr(exc, "sqlite_errorname", "") or "").startswith("SQLITE_BUSY"):
+        log.exception("database error serving %s", request.url.path, exc_info=exc)
+        return unhandled_error(request, exc)
+    log.warning("busy timeout serving %s", request.url.path)
+    return finalize(request, JSONResponse({"detail": BUSY_MESSAGE}, status_code=503))
+
+
 def optional_user_id(request: Request) -> int | None:
     """Resolve the session cookie to a user id, or None. Writes nothing.
 
@@ -261,35 +358,38 @@ def optional_user_id(request: Request) -> int | None:
     at is carried by a signed token instead (`trials`).
 
     Returns an *id*, not a row. FastAPI resolves sync dependencies in a
-    separate threadpool call that finishes before the endpoint body starts, so
-    a row read here would be a snapshot from an already-released critical
-    section — two overlapping answers would both write ratings derived from
-    the same stale row. Endpoints re-read under their own lock.
+    separate threadpool call — possibly another thread, so another connection —
+    that finishes before the endpoint body starts. A row read here is a snapshot
+    from outside the endpoint's transaction, so endpoints that need one re-read
+    it inside `writing()`.
     """
-    with db_lock:
-        user = auth.session_user(conn, request.cookies.get(auth.COOKIE_NAME))
-    return user["id"] if user is not None else None
+    token = request.cookies.get(auth.COOKIE_NAME)
+    user = auth.session_user(conn, token)
+    if user is None:
+        return None
+    auth.touch_session(conn, token)
+    return user["id"]
 
 
 OptionalUserId = Depends(optional_user_id)
 
 
-def start_identity(request: Request) -> dict:
+def start_identity(tx: Transaction, request: Request) -> dict:
     """Create the row that answering earns, and hand its session out.
 
-    The only place a `users` row is born from ordinary traffic. Caller holds
-    `db_lock` and owns the transaction: the row and its session commit together
-    with the response that earns them, so a failure anywhere in between rolls
-    the identity back (see `locked`) instead of leaving a row that answered
-    nothing. The sweep rides along here — before the mint, so its commit can't
-    publish half an identity — because arrival rate is the signal one is due.
+    The only place a `users` row is born from ordinary traffic. The caller owns
+    the transaction: the row and its session commit together with the response
+    that earns them, so a failure anywhere in between rolls the identity back
+    (see `writing`) instead of leaving a row that answered nothing. The sweep
+    rides along here, because arrival rate is the signal one is due; it is part
+    of the same transaction, so it lands with the identity or not at all.
     """
     global guests_minted
     guests_minted += 1
     if guests_minted % SWEEP_EVERY_GUESTS == 1:
-        auth.sweep(conn)
-    user = auth.create_guest(conn, rating.USER_START, rating.CALIB_START_STEP)
-    queue_cookie(request, auth.start_session(conn, user["id"]))
+        auth.sweep(tx)
+    user = auth.create_guest(tx, rating.USER_START, rating.CALIB_START_STEP)
+    queue_cookie(request, auth.start_session(tx, user["id"]))
     return user
 
 
@@ -373,16 +473,16 @@ def pick_item(user_rating: float, user_id: int | None) -> tuple[dict | None, boo
 def healthz():
     """Liveness for the platform's health check.
 
-    Deliberately outside `/api/`, and free of the database lock and the identity
-    dependency: a slow query can't make a healthy machine look dead and have the
-    proxy route around it mid-answer. (A failed check does that and only that —
+    Outside `/api/`, and free of the identity dependency and any transaction, so
+    a slow query can't make a healthy machine look dead and have the proxy route
+    around it mid-answer. It still shares the threadpool, which is what a
+    genuinely saturated box shows up as. (A failed check does that and only that —
     Fly doesn't restart a machine over one.)
     """
     return {"ok": True}
 
 
 @app.get("/api/next")
-@locked
 def next_item(user_id: int | None = OptionalUserId):
     """Serve a trial. Writes nothing — a first-time visitor has no row yet, and
     getting one is what answering earns."""
@@ -401,10 +501,8 @@ def next_item(user_id: int | None = OptionalUserId):
         "side_to_move": "white" if chess.Board(item["fen"]).turn else "black",
         "moves": [{"uci": m, "san": san(item["fen"], m)} for m in moves],
         "repeat": is_repeat,
-        # No fresh-item count here. It costs a pass over the bank to compute and
-        # the only thing that reads it is a counter in the settings drawer, which
-        # /api/stats already answers once per page load — so the hottest endpoint
-        # in the app was paying, per trial, for a number nobody was looking at.
+        # No fresh-item count: it costs a pass over the bank, and the drawer
+        # counter that reads it is seeded from /api/stats and counted down there.
         "trial_number": (u["attempts"] if u else 0) + 1,
         "user_rating": round(u["rating"] if u else rating.USER_START),
         "calibrating": is_calibrating(u) if u else True,
@@ -419,7 +517,6 @@ class Answer(BaseModel):
 
 
 @app.post("/api/answer")
-@locked
 def answer(a: Answer, request: Request):
     """Record an answer and reveal the engine's verdict.
 
@@ -429,88 +526,91 @@ def answer(a: Answer, request: Request):
     """
     # The one unauthenticated write left. Charged before the work, like the others.
     spend(answer_limiter, client_key(request))
-    # Read the row inside the lock that also writes it back: rating and
-    # calibration updates below are read-modify-write, so a snapshot taken
-    # before the lock would let two overlapping answers clobber each other.
-    u = auth.session_user(conn, request.cookies.get(auth.COOKIE_NAME))
-    # The token comes first, before anything that reads the item — because
-    # *every* answer about an item is a fact about it. The response below is the
-    # answer key outright, and even "that isn't one of the offered moves" tells
-    # an id-counting caller which two moves an item pairs. Item ids are small
-    # sequential integers, so nothing here may reflect one back without proof
-    # that we served it.
-    try:
-        served_as_repeat = trials.redeem(a.trial_token, a.item_id, u["id"] if u else None)
-    except trials.InvalidTrial as e:
-        raise HTTPException(409, f"{e} — fetch a new trial") from e
-    if u is None:
-        # An anonymous token is the one kind a replay can profit from, because
-        # the row that would notice the repeat doesn't exist yet. Answered as a
-        # 409 rather than the limiter's 429: "this trial is spent" is the same
-        # thing the client already knows how to recover from by fetching another.
+    # Read inside the transaction that writes it back: the rating and
+    # calibration updates below are read-modify-write, so a row read before
+    # the write lock was taken would let two overlapping answers clobber
+    # each other.
+    # Ends before the reveal is built: a failure there must not undo the answer,
+    # nor the identity whose cookie the middleware has already promised.
+    with writing() as tx:
+        u = auth.session_user(tx, request.cookies.get(auth.COOKIE_NAME))
+        # The token comes first, before anything that reads the item — because
+        # *every* answer about an item is a fact about it. The response below is the
+        # answer key outright, and even "that isn't one of the offered moves" tells
+        # an id-counting caller which two moves an item pairs. Item ids are small
+        # sequential integers, so nothing here may reflect one back without proof
+        # that we served it.
         try:
-            anonymous_trial_use.consume(a.trial_token or "")
-        except auth.RateLimited as e:
-            raise HTTPException(409, str(e)) from e
+            served_as_repeat = trials.redeem(a.trial_token, a.item_id, u["id"] if u else None)
+        except trials.InvalidTrial as e:
+            raise HTTPException(409, f"{e} — fetch a new trial") from e
+        if u is None:
+            # An anonymous token is the one kind a replay can profit from, because
+            # the row that would notice the repeat doesn't exist yet. Answered as a
+            # 409 rather than the limiter's 429: "this trial is spent" is the same
+            # thing the client already knows how to recover from by fetching another.
+            try:
+                anonymous_trial_use.consume(a.trial_token or "")
+            except auth.RateLimited as e:
+                raise HTTPException(409, str(e)) from e
 
-    item = conn.execute("SELECT * FROM items WHERE id = ?", (a.item_id,)).fetchone()
-    if item is None:  # only reachable if the bank dropped it mid-trial
-        raise HTTPException(404, "unknown item")
-    item = dict(item)
-    if a.choice_uci not in (item["best_uci"], item["distractor_uci"]):
-        raise HTTPException(400, "choice is not one of the offered moves")
+        item = tx.execute("SELECT * FROM items WHERE id = ?", (a.item_id,)).fetchone()
+        if item is None:  # only reachable if the bank dropped it mid-trial
+            raise HTTPException(404, "unknown item")
+        item = dict(item)
+        if a.choice_uci not in (item["best_uci"], item["distractor_uci"]):
+            raise HTTPException(400, "choice is not one of the offered moves")
 
-    if u is None:
-        # Answering is what earns an identity. Nothing before this point wrote a
-        # row, which is what keeps arriving free and the first trial ungated.
-        u = start_identity(request)
+        if u is None:
+            # Answering is what earns an identity. Nothing before this point wrote a
+            # row, which is what keeps arriving free and the first trial ungated.
+            u = start_identity(tx, request)
 
-    correct = a.choice_uci == item["best_uci"]
-    is_repeat = (
-        conn.execute(
-            "SELECT 1 FROM responses WHERE user_id = ? AND item_id = ? LIMIT 1",
-            (u["id"], item["id"]),
-        ).fetchone()
-        is not None
-    )
-    # A repeat is legitimate only if we *offered* it as one, which the token
-    # says. Deciding it from the bank here instead gets both boundaries wrong —
-    # see the `trials` module docstring.
-    if is_repeat and not served_as_repeat:
-        raise HTTPException(409, "that trial has already been answered — fetch a new one")
-    # Repeats only happen when the bank is exhausted; they get feedback like
-    # any trial but don't move the rating — a remembered answer isn't skill.
-    new_step = u["calib_step"]
-    if is_repeat:
-        new_user_r = u["rating"]
-    elif is_calibrating(u):
-        new_user_r, new_step = rating.calibrate(u["rating"], u["calib_step"], correct)
-    else:
-        new_user_r = rating.update(u["rating"], item["rating"], correct)
+        correct = a.choice_uci == item["best_uci"]
+        is_repeat = (
+            tx.execute(
+                "SELECT 1 FROM responses WHERE user_id = ? AND item_id = ? LIMIT 1",
+                (u["id"], item["id"]),
+            ).fetchone()
+            is not None
+        )
+        # A repeat is legitimate only if we *offered* it as one, which the token
+        # says. Deciding it from the bank here instead gets both boundaries wrong —
+        # see the `trials` module docstring.
+        if is_repeat and not served_as_repeat:
+            raise HTTPException(409, "that trial has already been answered — fetch a new one")
+        # Repeats only happen when the bank is exhausted; they get feedback like
+        # any trial but don't move the rating — a remembered answer isn't skill.
+        new_step = u["calib_step"]
+        if is_repeat:
+            new_user_r = u["rating"]
+        elif is_calibrating(u):
+            new_user_r, new_step = rating.calibrate(u["rating"], u["calib_step"], correct)
+        else:
+            new_user_r = rating.update(u["rating"], item["rating"], correct)
 
-    conn.execute(
-        """INSERT INTO responses
-           (user_id, item_id, choice_uci, correct, response_ms,
-            user_rating_before, user_rating_after, item_rating_before)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-        (
-            u["id"],
-            item["id"],
-            a.choice_uci,
-            int(correct),
-            a.response_ms,
-            u["rating"],
-            new_user_r,
-            item["rating"],
-        ),
-    )
-    conn.execute(
-        "UPDATE users SET rating = ?, calib_step = ?, attempts = attempts + 1 WHERE id = ?",
-        (new_user_r, new_step, u["id"]),
-    )
+        tx.execute(
+            """INSERT INTO responses
+               (user_id, item_id, choice_uci, correct, response_ms,
+                user_rating_before, user_rating_after, item_rating_before)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                u["id"],
+                item["id"],
+                a.choice_uci,
+                int(correct),
+                a.response_ms,
+                u["rating"],
+                new_user_r,
+                item["rating"],
+            ),
+        )
+        tx.execute(
+            "UPDATE users SET rating = ?, calib_step = ?, attempts = attempts + 1 WHERE id = ?",
+            (new_user_r, new_step, u["id"]),
+        )
     # Nothing else to write: the `items` row an answer is about is never touched,
     # so one user's answers can't move what another user is served.
-    conn.commit()
 
     return {
         "repeat": is_repeat,
@@ -561,7 +661,6 @@ RECENT_FIRST_EXPOSURES_SQL = f"""
 
 
 @app.get("/api/stats")
-@locked
 def stats(user_id: int | None = OptionalUserId):
     u = auth.get_user(conn, user_id) if user_id is not None else None
     recent = [r["correct"] for r in conn.execute(RECENT_FIRST_EXPOSURES_SQL, (user_id or 0,))]
@@ -606,7 +705,7 @@ class Deletion(BaseModel):
     password: str
 
 
-def reissue_session(request: Request, user_id: int) -> None:
+def reissue_session(tx: Transaction, request: Request, user_id: int) -> None:
     """Point this browser at `user_id` on a brand-new token.
 
     Rotating on every privilege change means a token planted before signup
@@ -614,14 +713,12 @@ def reissue_session(request: Request, user_id: int) -> None:
     """
     # Both the token we arrived with and one minted for us moments ago by
     # start_identity (whose cookie we are about to overwrite).
-    auth.end_session(conn, request.cookies.get(auth.COOKIE_NAME))
-    auth.end_session(conn, getattr(request.state, "session_cookie", None))
-    queue_cookie(request, auth.start_session(conn, user_id))
-    conn.commit()  # start_session leaves the commit to its caller
+    auth.end_session(tx, request.cookies.get(auth.COOKIE_NAME))
+    auth.end_session(tx, getattr(request.state, "session_cookie", None))
+    queue_cookie(request, auth.start_session(tx, user_id))
 
 
 @app.get("/api/account")
-@locked
 def account(user_id: int | None = OptionalUserId):
     return account_payload(auth.get_user(conn, user_id) if user_id is not None else None)
 
@@ -638,16 +735,16 @@ def signup(body: Signup, request: Request):
         # session must not cost an argon2 hash (~50ms and 64 MiB).
         username, email = auth.validate_signup(body.username, body.password, body.email)
         user_id = optional_user_id(request)
-        with db_lock:
+        with writing() as tx:
             if user_id is None:
-                auth.check_name_free(conn, username)
+                auth.check_name_free(tx, username)
             else:
-                auth.check_claimable(conn, user_id, username)
-        password_hash = auth.hash_password(body.password)  # slow; not under the lock
-        with db_lock:
+                auth.check_claimable(tx, user_id, username)
+        password_hash = auth.hash_password(body.password)  # slow; not in a transaction
+        with writing() as tx:
             if user_id is None:
                 u = auth.create_account(
-                    conn,
+                    tx,
                     username,
                     password_hash,
                     email,
@@ -655,8 +752,8 @@ def signup(body: Signup, request: Request):
                     rating.CALIB_START_STEP,
                 )
             else:
-                u = auth.claim(conn, user_id, username, password_hash, email)
-            reissue_session(request, u["id"])
+                u = auth.claim(tx, user_id, username, password_hash, email)
+            reissue_session(tx, request, u["id"])
     except auth.AuthError as e:
         raise auth_error(e) from e
     return account_payload(u)
@@ -673,19 +770,18 @@ def login(body: Login, request: Request):
     spend(login_ip_limiter, client_key(request))
     spend(login_limiter, login_key(name))
     try:
-        with db_lock:
-            u = auth.find_by_username(conn, name)
-        # Verify outside the lock: argon2 is deliberately slow, and holding the
-        # single database lock through it would stall every trial in flight.
+        u = auth.find_by_username(conn, name)
+        # Verify outside the transaction: argon2 is deliberately slow, and
+        # holding the write lock through it would stall every other writer.
         # An unknown name still pays for a verify against a dummy hash, so the
         # timing says nothing either.
         if not auth.verify_password(auth.credential_for(u), body.password) or u is None:
             raise HTTPException(400, "Wrong username or password.")
-        with db_lock:
+        with writing() as tx:
             # The row was read before the verify; re-check that the credential
             # we matched is still the current one, so a password rotated away
             # mid-login (trainer.account set-password) can't open a session.
-            current = conn.execute(
+            current = tx.execute(
                 "SELECT 1 FROM users WHERE id = ? AND password_hash = ?",
                 (u["id"], u["password_hash"]),
             ).fetchone()
@@ -693,7 +789,7 @@ def login(body: Login, request: Request):
                 raise HTTPException(400, "Wrong username or password.")
             # Drop the session we arrived with (typically a fresh guest's)
             # rather than leaving a live token pointing at an abandoned row.
-            reissue_session(request, u["id"])
+            reissue_session(tx, request, u["id"])
         # Only reachable by knowing the password, so an attacker can't use it
         # to reset the count — and forgetting it would only over-throttle.
         login_limiter.clear(login_key(name))
@@ -703,9 +799,9 @@ def login(body: Login, request: Request):
 
 
 @app.post("/api/account/logout")
-@locked
 def logout(request: Request):
-    auth.end_session(conn, request.cookies.get(auth.COOKIE_NAME))
+    with writing() as tx:
+        auth.end_session(tx, request.cookies.get(auth.COOKIE_NAME))
     queue_cookie(request, None)
     return {"ok": True}
 
@@ -731,8 +827,7 @@ def delete_account(body: Deletion, request: Request):
     session has nothing to delete. Signup avoids the same trap the same way.
     """
     try:
-        with db_lock:
-            u = auth.session_user(conn, request.cookies.get(auth.COOKIE_NAME))
+        u = auth.session_user(conn, request.cookies.get(auth.COOKIE_NAME))
         if u is None or auth.is_guest(u):
             raise HTTPException(
                 400,
@@ -751,21 +846,21 @@ def delete_account(body: Deletion, request: Request):
         # promise the privacy policy makes that a user might need urgently.
         spend(login_ip_limiter, client_key(request))
         spend(delete_limiter, f"delete:{u['id']}")
-        # Outside the lock: argon2 is deliberately slow and every trial in
-        # flight shares that lock.
+        # Outside the transaction: argon2 is deliberately slow, and the write
+        # lock is the one thing every writer contends for.
         if not auth.verify_password(auth.credential_for(u), body.password):
             raise HTTPException(400, "Wrong password.")
-        with db_lock:
+        with writing() as tx:
             # The row was read before the verify, so re-check that the hash we
             # matched is still the current one — a password rotated away
             # mid-request must not authorize destroying the account.
-            current = conn.execute(
+            current = tx.execute(
                 "SELECT 1 FROM users WHERE id = ? AND password_hash = ?",
                 (u["id"], u["password_hash"]),
             ).fetchone()
             if current is None:
                 raise HTTPException(400, "Wrong password.")
-            counts = auth.delete_user(conn, u["id"])
+            counts = auth.delete_user(tx, u["id"])
             # Deleting the sessions already revoked this cookie server-side;
             # clear it too so the browser lands on a fresh guest rather than
             # presenting a token for a row that no longer exists.

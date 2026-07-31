@@ -1,10 +1,16 @@
+import ast
+import contextlib
+import sqlite3
 import struct
+import threading
 from html.parser import HTMLParser
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 from trainer import auth, server, trials
+from trainer.db import connect
 
 from .conftest import ITEM, answer, answer_body, next_trial
 
@@ -105,14 +111,12 @@ def test_first_exposure_accuracy_excludes_repeats(client):
 
 def test_first_exposure_filter_is_answered_from_an_index_covering_item_id(db):
     """The filter asks, per response, whether an earlier one hit the same item.
-    Answered from an index without `item_id`, that is a range walk over every
-    earlier row the user has — so /api/stats is quadratic in one history, and
-    it holds the database lock throughout, stalling every trial in flight. At
-    5k responses the difference measured 700ms against 3ms.
+    Without `item_id` indexed that walks every earlier row the user has, once
+    per row: 700ms against 3ms at 5k responses.
 
-    The plan rather than a duration, because a timing threshold on a shared CI
-    box is a flake. Note that the losing plan is a SEARCH too, over a range
-    instead of a row: which index gets used is the whole assertion.
+    Asserts the plan, not a duration, because a timing threshold flakes on CI.
+    The losing plan is a SEARCH too — over a range rather than a row — so which
+    index gets chosen is the whole assertion.
     """
     plan = db.execute("EXPLAIN QUERY PLAN " + server.RECENT_FIRST_EXPOSURES_SQL, (1,)).fetchall()
     inner = [row[-1] for row in plan if "p" in row[-1].split()]
@@ -527,3 +531,138 @@ def test_a_repeat_we_served_stays_answerable_even_if_the_bank_refills(client, db
     db.commit()
 
     assert client.post("/api/answer", json=answer_body(repeat)).status_code == 200
+
+
+def test_only_writing_ends_a_transaction_in_the_request_path():
+    """One owner for every transaction, checked statically.
+
+    A helper that commits ends its caller's transaction, which is invisible at
+    the call site. The handle makes that unspellable and the guards catch it at
+    runtime, but only on paths a test exercises; this covers the rest.
+    """
+    allowed = {"writing"}  # the one owner
+    offenders = []
+    # Inside a transaction, the ambient connection must not be named: `writing()`
+    # hands out a handle with no commit on it, and reaching past that handle for
+    # the module-level `conn` is how a block stops being one transaction.
+    tree = ast.parse(Path(server.__file__).read_text())
+    for fn in [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]:
+        for node in ast.walk(fn):
+            is_writing = isinstance(node, ast.With) and any(
+                isinstance(i.context_expr, ast.Call)
+                and getattr(i.context_expr.func, "id", "") == "writing"
+                for i in node.items
+            )
+            if not is_writing:
+                continue
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.Name) and sub.id == "conn":
+                    offenders.append(f"server.py::{fn.name} names `conn` inside writing()")
+    for path in (Path(server.__file__), Path(auth.__file__)):
+        tree = ast.parse(path.read_text())
+        for func in [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]:
+            if func.name in allowed:
+                continue
+            for node in ast.walk(func):
+                if (
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr in ("commit", "rollback")
+                    and isinstance(node.func.value, ast.Name)
+                    and node.func.value.id == "conn"
+                ):
+                    offenders.append(f"{path.name}::{func.name} calls conn.{node.func.attr}()")
+    assert not offenders, "only writing() may end a transaction; found " + "; ".join(offenders)
+
+
+def test_a_statement_outside_a_transaction_stands_on_its_own(db):
+    """The read paths group nothing, so a lone statement has to work."""
+    server.conn.execute("SELECT 1")  # no transaction, no complaint
+
+
+def test_the_ambient_connection_refuses_every_use_that_writing_should_own(db):
+    """The rules that make a `writing()` block mean what it says.
+
+    SQLite has no nested transaction, so a statement on the ambient connection
+    while one is open — or a second `writing()` — can only end the first early.
+    """
+    # Ending a transaction isn't refused here, it's absent — and so is every
+    # other route back to the raw connection that could have ended one.
+    assert [name for name in dir(server.conn) if not name.startswith("_")] == ["execute"]
+
+    # Reaching past the handle for the connection underneath.
+    with pytest.raises(server.OutsideTransaction), server.writing():
+        server.conn.execute("SELECT 1")
+
+    # Opening a second transaction on top of one already open.
+    with pytest.raises(server.OutsideTransaction), server.writing(), server.writing():
+        pass
+
+
+def test_a_failed_block_leaves_the_connection_usable(db):
+    """A transaction left open is inherited by the next request on this thread,
+    which could then never begin one."""
+    with contextlib.suppress(ValueError), server.writing() as tx:
+        tx.execute("SELECT 1")
+        raise ValueError("boom")
+    with server.writing() as tx:  # the next block still works
+        tx.execute("SELECT 1")
+
+
+def test_an_answer_that_waits_out_the_lock_is_told_to_retry(client, db, monkeypatch):
+    """A write can lose the lock race, to another answer or to a bank refresh.
+    The request was fine, so 500 — "don't bother trying again" — is the one
+    thing that isn't true. Short timeout because the real one is ten seconds.
+    """
+    trial = next_trial(client)
+    # The server opens its connections per thread, so the wait has to be short
+    # before the one serving this request exists.
+    monkeypatch.setattr(server.db, "BUSY_TIMEOUT_MS", 50)
+    monkeypatch.setattr(server, "_threads", threading.local())
+
+    holder = connect(server.DB_PATH, check_same_thread=False)
+    holder.execute("BEGIN IMMEDIATE")
+    holder.execute("UPDATE users SET rating = rating")  # holds the write lock
+    try:
+        r = client.post("/api/answer", json=answer_body(trial))
+    finally:
+        holder.rollback()
+        holder.close()
+
+    assert r.status_code == 503, r.text
+    assert "busy" in r.json()["detail"].lower()
+    # Nothing was recorded, so the retry is a clean first exposure.
+    assert db.execute("SELECT COUNT(*) FROM responses").fetchone()[0] == 0
+
+
+def test_a_real_database_error_is_still_a_500(client, monkeypatch):
+    """Only SQLITE_BUSY is transient. A broken query is a bug, and telling the
+    caller to retry it would just invite them to hammer."""
+
+    def broken(*_args, **_kwargs):
+        raise sqlite3.OperationalError("no such column: nope")
+
+    monkeypatch.setattr(server, "pick_item", broken)
+    assert client.get("/api/next").status_code == 500
+
+
+def test_a_signed_in_read_does_not_wait_on_a_writer(client, db, monkeypatch):
+    """The read path refreshes a session's sliding expiry, and SQLite takes the
+    write lock for an UPDATE whether or not a row matches. Left to the
+    statement's own WHERE, a signed-in page load would fail behind a slow
+    writer — which is a strange thing for it to depend on.
+    """
+    answer(client, next_trial(client))  # earns a session
+    monkeypatch.setattr(server.db, "BUSY_TIMEOUT_MS", 50)
+    monkeypatch.setattr(server, "_threads", threading.local())
+
+    holder = connect(server.DB_PATH, check_same_thread=False)
+    holder.execute("BEGIN IMMEDIATE")
+    holder.execute("UPDATE users SET rating = rating")
+    try:
+        assert client.get("/api/next").status_code == 200
+        assert client.get("/api/stats").status_code == 200
+        assert client.get("/api/account").status_code == 200
+    finally:
+        holder.rollback()
+        holder.close()
