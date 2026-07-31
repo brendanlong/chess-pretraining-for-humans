@@ -1,4 +1,5 @@
 import ast
+import contextlib
 import struct
 from html.parser import HTMLParser
 from pathlib import Path
@@ -518,3 +519,42 @@ def test_only_writing_ends_a_transaction_in_the_request_path():
                 ):
                     offenders.append(f"{path.name}::{func.name} calls conn.{node.func.attr}()")
     assert not offenders, "only writing() may end a transaction; found " + "; ".join(offenders)
+
+
+def test_a_statement_outside_a_transaction_stands_on_its_own(db):
+    """The read paths write nothing they need to group — a session touch is one
+    statement — so the ambient connection has to stay usable on its own."""
+    server.conn.execute("SELECT 1")  # no transaction, no complaint
+
+
+def test_the_ambient_connection_refuses_every_use_that_writing_should_own(db):
+    """The rules that make a `writing()` block mean what it says.
+
+    Each of these was reachable before, and the first is what actually happened
+    three times: a helper handed the module-level connection while its caller
+    held a transaction, ending it early. SQLite has no nested transaction to
+    make that safe, so the connection refuses rather than obliging.
+    """
+    # Reaching past the handle for the connection underneath.
+    with pytest.raises(server.OutsideTransaction), server.writing():
+        server.conn.execute("SELECT 1")
+
+    # Opening a second transaction on top of one already open.
+    with pytest.raises(server.OutsideTransaction), server.writing(), server.writing():
+        pass
+
+    with pytest.raises(server.OutsideTransaction):  # ending one it doesn't own
+        server.conn.commit()
+
+    with pytest.raises(server.OutsideTransaction):
+        server.conn.rollback()
+
+
+def test_a_failed_block_leaves_the_connection_usable(db):
+    """A transaction left open would be inherited by the next request on this
+    thread, which would then be unable to begin one for the life of the process."""
+    with contextlib.suppress(ValueError), server.writing() as tx:
+        tx.execute("SELECT 1")
+        raise ValueError("boom")
+    with server.writing() as tx:  # the next block still works
+        tx.execute("SELECT 1")

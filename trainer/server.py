@@ -62,17 +62,39 @@ def thread_connection() -> sqlite3.Connection:
     return existing
 
 
+class OutsideTransaction(RuntimeError):
+    """Raised for a use of the connection that `writing()` should have owned."""
+
+
 class _PerThreadConnection:
+    """The ambient connection, with the unsafe uses removed.
+
+    A statement here is a statement in its own right: with no transaction open
+    it commits itself, which is what the read paths want. What it must never be
+    is a way *into* a transaction someone else opened — reaching past the handle
+    is how a block silently stops being one, so it refuses rather than obliges.
+    Ending a transaction it doesn't own is refused for the same reason, and a
+    stray `commit()` no longer gets to be a no-op that happens to be harmless
+    today.
+    """
+
+    def execute(self, sql, parameters=(), /):
+        connection = thread_connection()
+        if connection.in_transaction:
+            raise OutsideTransaction(
+                "a transaction is open on this thread — use the handle "
+                "`writing()` yielded instead of the module-level connection"
+            )
+        return connection.execute(sql, parameters)
+
+    def commit(self):
+        raise OutsideTransaction("only writing() may commit")
+
+    def rollback(self):
+        raise OutsideTransaction("only writing() may roll back")
+
     def __getattr__(self, name):
         return getattr(thread_connection(), name)
-
-    # Spelled out because Python looks dunders up on the type, never through
-    # __getattr__, and the offline tools use `with conn:` for a transaction.
-    def __enter__(self):
-        return thread_connection().__enter__()
-
-    def __exit__(self, *exc):
-        return thread_connection().__exit__(*exc)
 
 
 # Typed as what it stands in for: every `auth.*(conn, ...)` call site takes a
@@ -234,18 +256,25 @@ def writing():
 
     Held for as little as possible, and never across argon2: this is the one
     lock in the process that every writer contends for.
+
+    Nesting is refused rather than flattened. SQLite has no nested transaction,
+    so an inner block would either commit the outer one early or be a lie about
+    its own atomicity, and both are worse than being told to restructure.
     """
-    conn.execute("BEGIN IMMEDIATE")
+    connection = thread_connection()  # not `conn`, which refuses these on purpose
+    if connection.in_transaction:
+        raise OutsideTransaction("a transaction is already open on this thread")
+    connection.execute("BEGIN IMMEDIATE")
     try:
-        yield Transaction(conn)
-        conn.commit()
+        yield Transaction(connection)
+        connection.commit()
     except BaseException:
         # Unconditional, and after the commit as well as the body: `commit()`
         # can itself fail (a full disk), and a transaction left open here is
         # inherited by the next request on this thread, which would then fail
         # to begin one for the life of the process. Rolling back with nothing
         # open is a no-op, so there is nothing to be gained by asking first.
-        conn.rollback()
+        connection.rollback()
         raise
 
 

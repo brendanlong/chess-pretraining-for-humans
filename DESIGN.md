@@ -42,10 +42,15 @@ which is the point: it is now a setting rather than a rewrite.
 `writing()` hands out a handle with no commit on it — the same shape as an
 ORM's interactive transaction, and for the same reason: the block's outcome is
 then the only thing that can end it. Storage helpers take that handle
-(`db.Queryable`), so one that wanted to commit could not name the method, and
-a test fails on any code that reaches past the handle for the connection
-underneath. That indirection is the whole point: a helper committing inside
-itself is invisible at the call site, and three of them used to.
+(`db.Queryable`), so one that wanted to commit could not name the method.
+
+The connection underneath enforces the rest, because SQLite has no nested
+transaction to make any of it safe: a statement on its own commits itself,
+which is what the read paths want, but while a transaction is open the ambient
+connection refuses to run one, refuses to start a second transaction, and
+refuses to commit or roll back at all. What used to be a stray `commit()` that
+was harmless in one caller and silently un-atomicked another is now an error in
+the second case and impossible to spell in the first.
 
 Trial endpoints: next trial, answer, stats. Selection picks an
 unseen learnable item near the rating where the user's expected score is
