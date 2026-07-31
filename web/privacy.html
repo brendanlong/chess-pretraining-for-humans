@@ -117,17 +117,19 @@
     <h2>Page counts</h2>
     <p>Every page loads <a href="https://www.goatcounter.com/">GoatCounter</a>, a
     hosted counter, so we can tell how many people arrive and which links sent
-    them. It sets no cookie and stores nothing in your browser, and it gives you
-    no identifier that follows you to another site or back here tomorrow.</p>
-    <p>What it is sent: the page you opened, the referring link, your browser
-    and operating system, your screen size and language, and — from your IP
-    address — a country, plus a state or province if that country is the United
-    States, Russia, or China. What it keeps is counts, one table per kind of
-    detail: pages and referrers by the hour, everything else by the day. Each
-    table records the page, so it can count Firefox visits to this one; no two
-    details share a table, so it can't tell whether that Firefox visit came from
-    Texas. It stores neither the IP address nor the full browser string.
-    GoatCounter's own
+    them. It sets no cookie and stores nothing in your browser. So that a reload
+    isn't counted as a second person, it holds your IP address and browser string
+    in memory for eight hours, paired with a random id; none of the three reaches
+    its database, and nothing it keeps follows you to another site or back here
+    tomorrow.</p>
+    <p>What it is sent: the page you opened and its title, the referring link
+    and any campaign tags on it, your browser and operating system, your screen
+    size and language, and — from your IP address — a country, plus a state or
+    province if that country is the United States, Russia, or China. What it
+    keeps is counts, one table per kind of detail: pages and referrers by the
+    hour, everything else by the day. Each table records the page, so it can
+    count Firefox visits to this one; no two details share a table, so it can't
+    tell whether that Firefox visit came from Texas. GoatCounter's own
     <a href="https://www.goatcounter.com/help/privacy">privacy policy</a> is the
     authority on all of that.</p>
     <p>It never sees your answers, your rating, your account, or your session
