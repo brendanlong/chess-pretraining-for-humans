@@ -89,6 +89,23 @@ def test_first_exposure_accuracy_excludes_repeats(client):
     assert len(stats["rating_history"]) == 2
 
 
+def test_first_exposure_filter_is_answered_from_an_index_covering_item_id(db):
+    """The filter asks, per response, whether an earlier one hit the same item.
+    Answered from an index without `item_id`, that is a range walk over every
+    earlier row the user has — so /api/stats is quadratic in one history, and
+    it holds the database lock throughout, stalling every trial in flight. At
+    5k responses the difference measured 700ms against 3ms.
+
+    The plan rather than a duration, because a timing threshold on a shared CI
+    box is a flake. Note that the losing plan is a SEARCH too, over a range
+    instead of a row: which index gets used is the whole assertion.
+    """
+    plan = db.execute("EXPLAIN QUERY PLAN " + server.FIRST_EXPOSURES_SQL, (1,)).fetchall()
+    inner = [row[-1] for row in plan if "p" in row[-1].split()]
+    assert inner, f"no plan step for the inner query: {[r[-1] for r in plan]}"
+    assert "idx_responses_item" in inner[0], inner[0]
+
+
 def test_legal_pages_are_served_and_reachable_before_signing_up(client):
     """A guest records responses without ever opening the signup form, so the
     first page it lands on has to link the terms and the policy itself."""

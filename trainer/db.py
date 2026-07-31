@@ -110,6 +110,14 @@ CREATE TABLE IF NOT EXISTS meta (
 
 CREATE INDEX IF NOT EXISTS idx_items_rating ON items(rating);
 CREATE INDEX IF NOT EXISTS idx_responses_user ON responses(user_id, id);
+-- Both response indexes earn their keep. The one above serves "this user's
+-- answers, in order"; this one serves every question of the form "has this
+-- user answered this item" — the repeat probe, the unseen-item filters behind
+-- a trial, and the first-exposure filter in /api/stats. That last one asks it
+-- once per response, so without `item_id` in an index it walks every earlier
+-- row the user has, per row: quadratic in one user's history, 700ms at 5k
+-- answers, and it holds the database lock for all of it.
+CREATE INDEX IF NOT EXISTS idx_responses_item ON responses(user_id, item_id, id);
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 """
 
@@ -125,9 +133,14 @@ def connect(path: Path = DEFAULT_DB, check_same_thread: bool = True) -> sqlite3.
     # violated the constraint before it was enforced are tolerated (SQLite only
     # checks writes) and age out through the session sweep.
     conn.execute("PRAGMA foreign_keys=ON")
+    # Before the schema, not after it: adding a table or an index to SCHEMA
+    # makes that first connect a write, and this is the timeout that write has
+    # to wait out if the labeler holds the lock. Set afterwards it would apply
+    # to everything except the one statement that most needs it, which would
+    # get Python's shorter default instead.
+    conn.execute("PRAGMA busy_timeout=10000")
     conn.executescript(SCHEMA)
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=10000")
     user_cols = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
     if "calib_step" not in user_cols:
         conn.execute("ALTER TABLE users ADD COLUMN calib_step REAL NOT NULL DEFAULT 250")
