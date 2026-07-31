@@ -202,14 +202,17 @@ def queue_cookie(request: Request, token: str | None) -> None:
 # The single exception is the GoatCounter page counter, and it costs three
 # entries: the script itself comes from gc.zgo.at, and it reports a hit with
 # `sendBeacon` (connect-src) falling back to an image (img-src) when that is
-# refused. Both hosts are named exactly, so the allowlist stays a pair of
-# origins rather than a hole.
+# refused. The beacon is scoped to the one path it posts to, not the whole
+# host, and worth being honest about: `connect-src` was `'self'`, so the same
+# hostile string this policy exists to contain now has a door it could leave
+# by as query parameters. One endpoint that stores page counts is how narrow
+# that door gets.
 ANALYTICS_SCRIPT = "https://gc.zgo.at"
-ANALYTICS_ENDPOINT = "https://chess-pretraining.goatcounter.com"
+ANALYTICS_BEACON = "https://chess-pretraining.goatcounter.com/count"
 CSP = (
     f"default-src 'self'; script-src 'self' {ANALYTICS_SCRIPT}; style-src 'self'; "
-    f"img-src 'self' data: {ANALYTICS_ENDPOINT}; "
-    f"connect-src 'self' {ANALYTICS_ENDPOINT}; "
+    f"img-src 'self' data: {ANALYTICS_BEACON}; "
+    f"connect-src 'self' {ANALYTICS_BEACON}; "
     "base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
 )
 

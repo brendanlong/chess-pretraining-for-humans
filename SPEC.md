@@ -100,6 +100,15 @@ automatically.
   rather than a number — never usernames or emails. What the privacy
   policy promises is a constraint on what the analysis may export, not
   just prose.
+- **The page counter learns that a page was opened, and nothing else.**
+  It is sent the URL, the query string and the document title, so what
+  keeps the research record out of it is that the app never writes any of
+  the three — an item id in the URL or a rating in the title would start
+  shipping answers off-site without touching a line of code that looks
+  like it is about privacy. It is the only third-party script on an origin
+  that holds a session cookie, so it is pinned to a hash and its CSP
+  allowlist is itself and nothing else: what the policy says about it is
+  enforced rather than trusted.
 - **A deletion request erases the responses too**, and is reachable from
   inside the app. Being signed in is the proof of ownership the optional,
   unverified email can't supply, so deletion can't depend on an email

@@ -374,30 +374,56 @@ def csp_directives(response) -> dict[str, list[str]]:
 
 @pytest.mark.parametrize("name", WEB_PAGES)
 def test_the_page_counter_is_on_every_page_and_allowed_by_the_csp(client, name):
-    """The counter is the one thing the pages load from off-site, so its two
-    origins are the whole CSP allowlist — and a CSP refusal is silent in a way
-    a missing count isn't obviously traceable to. Both halves are checked
-    against the served HTML so neither can move without the other."""
+    """A CSP refusal is silent in the browser: the counter would simply stop
+    counting, with nothing pointing at the header that stopped it. So the two
+    are checked against each other, both read off the served page."""
     served = client.get("/" if name == "index.html" else f"/{name}")
     tags = [s for s in Head.of(served.text).scripts if "data-goatcounter" in s]
     assert len(tags) == 1, f"{name} should load the counter exactly once"
     tag = tags[0]
 
     csp = csp_directives(served)
-    script_origin = tag["src"].rsplit("/", 1)[0]
-    # The beacon is sendBeacon (connect-src), falling back to an image.
-    endpoint_origin = "/".join(tag["data-goatcounter"].split("/")[:3])
-    assert script_origin in csp["script-src"]
-    assert endpoint_origin in csp["connect-src"]
-    assert endpoint_origin in csp["img-src"]
+    assert tag["src"].rsplit("/", 1)[0] in csp["script-src"]
+    # The beacon is sendBeacon (connect-src), falling back to an image, and
+    # both are allowed by path — so the attribute has to appear verbatim.
+    assert tag["data-goatcounter"] in csp["connect-src"]
+    assert tag["data-goatcounter"] in csp["img-src"]
     # A protocol-relative src would inherit http: on a plaintext first hop.
     assert tag["src"].startswith("https://") and "async" in tag
+    # Third-party script on the origin that holds the session cookie: pinned to
+    # a version, and to a hash of it. `crossorigin` is what makes the hash
+    # checkable at all — without it the response is opaque and SRI can't run.
+    assert "/count.v" in tag["src"], "the rolling count.js can change under us"
+    assert tag["integrity"].startswith("sha384-")
+    assert tag["crossorigin"] == "anonymous"
 
-    # The policy is what makes loading it honest, so it has to say who it is
-    # and point at their terms.
+
+def test_the_csp_allowlists_nothing_beyond_the_page_counter(client):
+    """The counter's two sources are the whole allowlist. Substring assertions
+    would still pass with `'unsafe-inline'` or a third origin bolted on, which
+    is the way an allowlist actually rots, so enumerate instead."""
+    allowed = {"'self'", "'none'", "data:", server.ANALYTICS_SCRIPT, server.ANALYTICS_BEACON}
+    for directive, sources in csp_directives(client.get("/")).items():
+        assert set(sources) <= allowed, f"{directive} allows more than the counter"
+
+
+def test_the_privacy_policy_names_the_counter_it_loads(client):
+    """Loading a third party's script is only honest if the page that promises
+    what it does says who it is and points at their terms."""
     policy = client.get("/privacy.html").text
     assert "GoatCounter" in policy
     assert "https://www.goatcounter.com/help/privacy" in policy
+
+
+def test_no_trial_state_can_reach_the_page_counter(client):
+    """The counter is sent the path, the query string and the document title.
+    None of them can carry trial state today only because the app writes none
+    of them — an `?item=` in the URL or a rating in the title would start
+    shipping the research record off-site without touching any of the code
+    that looks like it's about privacy."""
+    app_js = (server.WEB_DIR / "app.js").read_text()
+    for leak in ("document.title", "pushState", "replaceState", "location.search"):
+        assert leak not in app_js, f"{leak} puts trial state where the counter reads"
 
 
 def test_answering_is_rate_limited_but_arriving_is_free(client, db, monkeypatch):
