@@ -199,14 +199,11 @@ def queue_cookie(request: Request, token: str | None) -> None:
 # from mined game data — a CSP is what keeps a bad `Site` header in some future
 # PGN from being script instead of a broken link.
 #
-# The single exception is the GoatCounter page counter, and it costs three
-# entries: the script itself comes from gc.zgo.at, and it reports a hit with
-# `sendBeacon` (connect-src) falling back to an image (img-src) when that is
-# refused. The beacon is scoped to the one path it posts to, not the whole
-# host, and worth being honest about: `connect-src` was `'self'`, so the same
-# hostile string this policy exists to contain now has a door it could leave
-# by as query parameters. One endpoint that stores page counts is how narrow
-# that door gets.
+# The page counter is the exception, and costs three entries: the script, plus
+# the beacon under both `connect-src` (it uses `sendBeacon`) and `img-src` (it
+# falls back to an image when that's refused). Scoped to the one path it posts
+# to, because `connect-src` is otherwise a door out for the same hostile string
+# the rest of this policy exists to contain.
 ANALYTICS_SCRIPT = "https://gc.zgo.at"
 ANALYTICS_BEACON = "https://chess-pretraining.goatcounter.com/count"
 CSP = (

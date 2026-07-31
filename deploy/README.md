@@ -201,22 +201,13 @@ change first, if it should change.
   schema diff against a local copy will show them.
 - **Replication is asynchronous** (1s). Losing the host loses about a second of
   answers. A clean stop syncs, which is what `kill_timeout = 30` protects.
-- **The page counter is a GoatCounter account, not a setting.** The site code
-  `chess-pretraining` is hardcoded in every `web/*.html` head, so the account
-  has to exist and keep that code. Two of its dashboard toggles are load-
-  bearing: **leave "collect individual pageviews" off**, because the privacy
-  policy says what gets stored is counts and that switch makes it a row per
-  visit, and leave location at country. Neither is visible from the
-  repository, and either one flipped makes a published promise false.
+- **The page counter's settings live in its dashboard, not here.** Leave
+  "collect individual pageviews" off: the privacy policy says what's stored is
+  counts, and that switch makes it a row per visit. Its script is pinned to a
+  version and an `integrity` hash, so a newer one means changing both in all
+  three `web/*.html` heads — a mismatched hash fails silently.
 - **Anything on a public hostname counts into the live dashboard.** The
-  counter skips localhost and private ranges only, so a staging deploy, a
-  fork, or a laptop reached over a VPN name reports real hits. There is no
-  second site code to point them at.
-- **The counter script is pinned to a version and a hash**, so it never
-  updates itself. Moving to a new one means changing the URL *and* the
-  `integrity` hash in all three heads — a version bump alone leaves a hash
-  that no longer matches, and the browser then refuses to run it, silently.
-  The hash for a version is `curl -s <url> | openssl dgst -sha384 -binary |
-  openssl base64 -A`, and GoatCounter publishes it too.
+  counter skips only localhost and private ranges, so a staging deploy or a
+  laptop reached over a VPN name reports real hits.
 - **Local testing** doesn't need Fly. `podman build -t chess . && podman run
   -p 8000:8080 -v ./data:/data:Z chess` runs the same image without a replica.
