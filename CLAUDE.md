@@ -28,7 +28,7 @@ still handles.
 
 ## Working on the code
 
-- Python 3.12 via `uv`; tests with `uv run pytest`. Frontend is vanilla
+- Python 3.14 via `uv`; tests with `uv run pytest`. Frontend is vanilla
   JS in `web/`; `npm ci` vendors chessground into it and `npm run build`
   bundles it into `web-dist/`, which the server prefers when present.
   The build may only make files smaller — digests, caching and

@@ -16,7 +16,7 @@ COPY web/ web/
 # something this should quietly depend on.
 RUN npm run vendor && npm run build
 
-FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS build
+FROM ghcr.io/astral-sh/uv:python3.14-bookworm-slim AS build
 # only-system: a uv-managed interpreter would be downloaded into this stage and
 # the venv would point at a path the runtime stage doesn't have.
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_PYTHON_PREFERENCE=only-system
@@ -26,6 +26,12 @@ COPY pyproject.toml uv.lock ./
 # `exclude-newer` from the authoring machine that a build host doesn't have.
 RUN uv sync --frozen --no-dev
 
+# Must be the same Python minor version as the uv build stage above: the venv
+# is COPY'd across, and its site-packages live under a lib/python3.N/ path
+# fixed at build time that a different interpreter silently ignores — every
+# import then fails at startup. Upgrading Python means moving both stages (and
+# .python-version, pyright's pythonVersion) together; dependabot is told not
+# to propose it (.github/dependabot.yml).
 FROM python:3.14-slim-bookworm
 COPY --from=litestream /usr/local/bin/litestream /usr/local/bin/litestream
 # The server reads the code and writes one directory. Running it as root means a
