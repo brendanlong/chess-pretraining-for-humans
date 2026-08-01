@@ -36,16 +36,15 @@ const COUNTED = {
 // can't see from there. 153 is its documented code for a driven browser.
 const BOT_WEBDRIVER = 153;
 
-// GoatCounter's own local-traffic filter is server-side and by IP, so a machine
-// reached over a tailnet — a public-looking name pointing at a private address
-// — counts as real traffic. That is how a laptop or a staging box pollutes the
-// live dashboard, so the check is repeated here on the hostname.
+// GoatCounter's own local-traffic filter is server-side and by IP, and this one
+// is client-side and by hostname, which is what catches the case theirs can't
+// see: a tailnet, whose names are public-looking and whose addresses are in
+// carrier-grade NAT space. Without it a dev box reached over the VPN reports
+// into the live dashboard, which is where this app is driven from.
 function isLocal(hostname) {
-  return (
-    /^(localhost|\[?::1\]?|0\.0\.0\.0)$|\.localhost$|^127\.|^10\.|^192\.168\.|^172\.(1[6-9]|2\d|3[01])\./.test(
-      hostname,
-    ) || hostname.endsWith(".ts.net")
-  );
+  const PRIVATE =
+    /^(localhost|\[?::1\]?|0\.0\.0\.0)$|\.localhost$|^127\.|^10\.|^192\.168\.|^172\.(1[6-9]|2\d|3[01])\.|^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./;
+  return PRIVATE.test(hostname) || hostname.endsWith(".ts.net");
 }
 
 // Where people arrive from is the one thing worth knowing that the page itself
