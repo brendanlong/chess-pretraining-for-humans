@@ -1,0 +1,132 @@
+{
+  "machine": {
+    "host": "brendan-desktop",
+    "cpu": "AMD Ryzen 9 5900X 12-Core Processor",
+    "cores": 24,
+    "python": "3.12.13",
+    "platform": "Linux-7.0.0-27-generic-x86_64-with-glibc2.43"
+  },
+  "settings": {
+    "concurrency": 8,
+    "repeat": 3,
+    "items": 34307,
+    "warm_history": 300,
+    "driver_processes": 8,
+    "server_cpus": [
+      0,
+      1,
+      2,
+      3,
+      12,
+      13,
+      14,
+      15
+    ],
+    "web": "web",
+    "requests": {
+      "healthz": 4000,
+      "static-html": 4000,
+      "static-js": 4000,
+      "static-304": 4000,
+      "static-png": 2000,
+      "next-cold": 2000,
+      "next-warm": 2000,
+      "stats": 2000,
+      "trial-loop": 1500,
+      "login": 200
+    }
+  },
+  "driver_ceiling": 10996.3,
+  "scenarios": {
+    "healthz": {
+      "steps": 4000,
+      "rps": 3383.1,
+      "p50_ms": 2.245,
+      "p95_ms": 3.118,
+      "p99_ms": 3.953,
+      "mean_ms": 2.338,
+      "cpu_ms": 0.3182
+    },
+    "static-html": {
+      "steps": 4000,
+      "rps": 2910.2,
+      "p50_ms": 2.61,
+      "p95_ms": 3.668,
+      "p99_ms": 4.6,
+      "mean_ms": 2.72,
+      "cpu_ms": 0.3773
+    },
+    "static-js": {
+      "steps": 4000,
+      "rps": 2903.4,
+      "p50_ms": 2.634,
+      "p95_ms": 3.63,
+      "p99_ms": 4.619,
+      "mean_ms": 2.717,
+      "cpu_ms": 0.3659
+    },
+    "static-304": {
+      "steps": 4000,
+      "rps": 3253.5,
+      "p50_ms": 2.322,
+      "p95_ms": 3.241,
+      "p99_ms": 4.04,
+      "mean_ms": 2.423,
+      "cpu_ms": 0.3273
+    },
+    "static-png": {
+      "steps": 2000,
+      "rps": 2944.2,
+      "p50_ms": 2.572,
+      "p95_ms": 3.699,
+      "p99_ms": 4.573,
+      "mean_ms": 2.674,
+      "cpu_ms": 0.3625
+    },
+    "next-cold": {
+      "steps": 2000,
+      "rps": 552.6,
+      "p50_ms": 13.99,
+      "p95_ms": 17.28,
+      "p99_ms": 20.289,
+      "mean_ms": 14.338,
+      "cpu_ms": 12.1667
+    },
+    "next-warm": {
+      "steps": 2000,
+      "rps": 436.8,
+      "p50_ms": 17.645,
+      "p95_ms": 21.854,
+      "p99_ms": 27.186,
+      "mean_ms": 18.096,
+      "cpu_ms": 15.3875
+    },
+    "stats": {
+      "steps": 2000,
+      "rps": 442.7,
+      "p50_ms": 18.451,
+      "p95_ms": 20.91,
+      "p99_ms": 25.163,
+      "mean_ms": 17.951,
+      "cpu_ms": 13.5125
+    },
+    "trial-loop": {
+      "steps": 1500,
+      "rps": 242.7,
+      "p50_ms": 27.23,
+      "p95_ms": 50.868,
+      "p99_ms": 112.943,
+      "mean_ms": 30.606,
+      "cpu_ms": 15.7105
+    },
+    "login": {
+      "steps": 200,
+      "rps": 28.8,
+      "p50_ms": 138.159,
+      "p95_ms": 159.321,
+      "p99_ms": 176.76,
+      "mean_ms": 136.435,
+      "cpu_ms": 224.5417
+    }
+  }
+}

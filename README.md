@@ -183,3 +183,27 @@ directly — so run it once before serving, and the server needs nothing else.
 serves; the server prefers it when it exists, so build it to check what ships
 and delete it to go back to editing the sources. CI runs the tests against
 both, because the two are meant to differ only in size.
+
+## Benchmarks
+
+Nothing above notices a change that only makes the app slower, so there's a
+load benchmark over the API and the static tree:
+
+```bash
+uv run python -m trainer.bench          # ~2 min, compares to bench-baseline.json
+uv run python -m trainer.bench --save   # re-record the baseline
+uv run python -m trainer.bench --only static-js,trial-loop
+```
+
+Two columns decide the verdict. Throughput is what a user would feel and what
+somebody else on the machine ruins; cpu spent per step is what the code's own
+cost moves, and it mostly survives company. So a jump in cpu fails the run
+wherever it was measured, a drop in throughput fails one only on cores the run
+had to itself, and rows it won't stand behind are marked rather than counted.
+Prefer a quiet machine anyway: it gives the sharper answer.
+
+`bench-baseline.json` is committed and only means anything against the machine
+that recorded it. The run warns when that has changed, and refuses to record a
+new one from a machine that was busy — a baseline set too low is silent, and
+every run after it inherits the mistake. Re-record when a deliberate trade-off
+moves the numbers for good, or when the bank size it pins does.
