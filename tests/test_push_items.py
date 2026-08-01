@@ -25,10 +25,18 @@ def bank(path, ranks):
 
 
 def loose_bank(path):
-    """A bank whose items table predates the constraints the live one has."""
+    """A bank whose items table predates the constraints the live one has.
+
+    It carries the measurement columns so it gets past the labeled-bank check
+    and fails where this is about: the insert, on a column the live schema
+    requires and this one never had.
+    """
     conn = sqlite3.connect(path)
-    conn.execute("CREATE TABLE items (fen TEXT, best_uci TEXT, learnable INTEGER)")
-    conn.execute("INSERT INTO items VALUES ('8/8/8/8/8/8/8/K6k w - - 0 1', 'a1a2', NULL)")
+    conn.execute(
+        "CREATE TABLE items (fen TEXT, best_uci TEXT, learnable INTEGER,"
+        " gap_ladder TEXT, shallow_gap REAL)"
+    )
+    conn.execute("INSERT INTO items VALUES ('8/8/8/8/8/8/8/K6k w - - 0 1', 'a1a2', NULL, '', 0.1)")
     conn.commit()
     conn.close()
     return path
@@ -91,7 +99,7 @@ def test_merge_dry_run_writes_nothing(tmp_path):
     assert connect(live).execute("SELECT COUNT(*) FROM items").fetchone()[0] == 2
 
 
-@pytest.mark.parametrize("missing", ["mover_elo", "solution_depth", "mined_untargeted"])
+@pytest.mark.parametrize("missing", ["mover_elo", "mined_untargeted", "ply"])
 def test_merge_survives_a_source_missing_a_column(tmp_path, missing):
     """The two databases are upgraded at different times, by construction — so a
     bank exported from an older checkout still has to deliver its positions,
@@ -148,3 +156,19 @@ def test_roundtrip(tmp_path):
     out = tmp_path / "export.db"
     export(bank(tmp_path / "fresh.db", ["8", "7P", "6P1"]), out)
     assert merge(live_db(tmp_path), out) == (1, 2)
+
+
+def test_merge_refuses_a_bank_with_no_measurements(tmp_path):
+    """Rows with no ladder have no difficulty, and `db.connect` will not open a
+    bank holding one — so merging them would take the deployment down at its
+    next boot rather than at the moment somebody asked for it."""
+    live = live_db(tmp_path)
+    incoming = bank(tmp_path / "unlabeled.db", ["6P1"])
+    conn = connect(incoming)
+    conn.execute("ALTER TABLE items DROP COLUMN gap_ladder")
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(SystemExit, match="unlabeled"):
+        merge(live, incoming)
+    assert connect(live).execute("SELECT COUNT(*) FROM items").fetchone()[0] == 2

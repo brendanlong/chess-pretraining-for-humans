@@ -105,7 +105,7 @@ def test_no_repeats_until_exhausted_then_flagged(client, db):
 # is which move a shallow search prefers, so anyone with an engine reads the
 # answer key straight off it. Listed rather than checked one at a time so that
 # a column added to the reveal later has to be added here too.
-NEVER_BEFORE_ANSWERING = ("shallow_gap", "solution_depth", "gap_ladder", "gap_wp", "item_rating")
+NEVER_BEFORE_ANSWERING = ("shallow_gap", "gap_ladder", "gap_wp", "item_rating")
 # The subset the reveal does say. Asserted too, so that deleting a field from
 # the reveal can't quietly turn the guard above into a test of nothing.
 SAID_BY_THE_REVEAL = ("shallow_gap", "gap_wp", "item_rating")
@@ -122,9 +122,6 @@ def test_what_the_reveal_says_about_difficulty_never_reaches_the_trial(client):
     for field in SAID_BY_THE_REVEAL:
         assert field in revealed, f"{field} is not in the reveal, so this guards nothing"
     assert revealed["shallow_gap"] == round(ITEM["shallow_gap"] * 100, 1)
-    # Measured and stored, and it decides whether the item is served at all —
-    # but nothing on the page reads it, so it is not sent.
-    assert "solution_depth" not in revealed
 
 
 def test_first_exposure_accuracy_excludes_repeats(client):

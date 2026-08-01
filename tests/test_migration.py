@@ -10,8 +10,8 @@ import sqlite3
 import pytest
 
 from trainer import account, auth
-from trainer.db import SCHEMA_VERSION, connect
-from trainer.rating import difficulty_rating, regraded_user_rating
+from trainer.db import connect
+from trainer.rating import difficulty_rating
 
 from .conftest import FEN_RANKS, FEN_TMPL, add_item
 
@@ -58,7 +58,7 @@ def test_migration_preserves_users_and_responses(tmp_path):
     conn = connect(path)
 
     user = conn.execute("SELECT * FROM users WHERE name = 'brendan'").fetchone()
-    assert user["rating"] == regraded_user_rating(1420.0, 0)
+    assert user["rating"] == 1420.0  # nothing rewrites a rating on the way in
     assert user["attempts"] == 3
     assert user["password_hash"] is None  # a legacy row is just a guest
     assert user["created_at"] is not None  # backfilled, not left NULL
@@ -105,58 +105,6 @@ def test_migration_re_derives_difficulty_that_drifted_off_the_formula(tmp_path):
     assert item["rating"] == difficulty_rating(item["shallow_gap"]) != 1234.5
 
 
-# `items` as it stood before lookahead was an axis: no `solution_depth`, and a
-# `learnable` decided by the old single-depth check. This is the table every
-# real deployment is upgraded from, so the ALTER has to be exercised against it
-# rather than against a schema `connect` just finished creating.
-PRE_LOOKAHEAD_ITEMS = """
-CREATE TABLE items (
-    id INTEGER PRIMARY KEY,
-    fen TEXT NOT NULL UNIQUE,
-    best_uci TEXT NOT NULL,
-    distractor_uci TEXT NOT NULL,
-    distractor_source TEXT NOT NULL,
-    cp_best INTEGER, mate_best INTEGER,
-    cp_distractor INTEGER, mate_distractor INTEGER,
-    wp_best REAL NOT NULL, wp_distractor REAL NOT NULL,
-    gap_wp REAL NOT NULL,
-    pv_best TEXT, pv_distractor TEXT,
-    learnable INTEGER NOT NULL,
-    depth_deep INTEGER NOT NULL, depth_shallow INTEGER NOT NULL,
-    rating REAL NOT NULL,
-    ply INTEGER, game_url TEXT, mover_elo INTEGER, time_control TEXT
-);
-"""
-PRE_LOOKAHEAD_ROW = """
-INSERT INTO items (fen, best_uci, distractor_uci, distractor_source, wp_best,
-                   wp_distractor, gap_wp, learnable, depth_deep, depth_shallow, rating)
-VALUES ('legacy', 'e2e4', 'a2a3', 'game', 0.55, 0.45, 0.2, 1, 18, 8, ?)
-"""
-
-
-def test_regrade_runs_exactly_once(tmp_path):
-    """A rating carries no mark of which scale produced it, so a second pass
-    would move someone already correct. Items move in the same transaction —
-    they can, because a bank arrives measured and `connect` re-derives every
-    difficulty on the way in."""
-    path = old_db(tmp_path)
-    first = connect(path)
-    once = first.execute("SELECT rating FROM users").fetchone()["rating"]
-    first.close()
-    assert once == regraded_user_rating(1420.0, 0)
-
-    for _ in range(3):
-        again = connect(path)
-        assert again.execute("SELECT rating FROM users").fetchone()["rating"] == once
-        again.close()
-    conn = connect(path)
-    assert conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0] == str(
-        SCHEMA_VERSION
-    )
-    assert conn.execute("SELECT value FROM meta WHERE key='regraded_at'").fetchone() is not None
-    conn.close()
-
-
 def test_a_bank_with_no_shallow_gap_refuses_to_open_and_says_why(tmp_path):
     """Every labeler writes a shallow gap, so a NULL means the database predates
     the measurement — a restore from far enough back. One loud failure naming
@@ -171,15 +119,6 @@ def test_a_bank_with_no_shallow_gap_refuses_to_open_and_says_why(tmp_path):
 
     with pytest.raises(RuntimeError, match="predates the measurement"):
         connect(path)
-
-
-def test_a_fresh_database_is_not_regraded(tmp_path):
-    """A new database has nothing on the old scale, so it must be stamped as
-    current rather than left for the regrade to walk on the next open."""
-    conn = connect(tmp_path / "fresh.db")
-    assert conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0] == str(
-        SCHEMA_VERSION
-    )
 
 
 def test_migration_is_idempotent_and_takes_no_write_lock_when_current(tmp_path):

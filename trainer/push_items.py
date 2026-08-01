@@ -87,6 +87,11 @@ def export(db: Path, out: Path) -> int:
     return n
 
 
+# What an item needs before it can be served: the ladder, and the gap read off
+# it that difficulty is a function of. A bank without them isn't a bank yet.
+REQUIRED_COLUMNS = ("gap_ladder", "shallow_gap")
+
+
 def merge(db: Path, incoming: Path, dry_run: bool = False) -> tuple[int, int]:
     """Insert every position the live bank doesn't have yet.
 
@@ -99,6 +104,12 @@ def merge(db: Path, incoming: Path, dry_run: bool = False) -> tuple[int, int]:
     conn = connect(db)
     conn.execute("ATTACH DATABASE ? AS inc", (str(incoming),))
     try:
+        missing = set(REQUIRED_COLUMNS) - set(item_columns(conn, "inc"))
+        if missing:
+            # Refused rather than merged: rows with no measurement have no
+            # difficulty, and `db.connect` will not open a bank holding one — so
+            # letting these in would take the deployment down at its next boot.
+            sys.exit(f"{incoming} has no {', '.join(sorted(missing))}; it is unlabeled")
         cols = ", ".join(shared_columns(conn, "inc", "main"))
         offered = conn.execute("SELECT COUNT(*) FROM inc.items").fetchone()[0]
         # `WHERE true` is what lets SQLite tell the upsert clause apart from a

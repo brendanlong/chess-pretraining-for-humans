@@ -19,7 +19,6 @@ that feedback stays mostly confirmatory.
 
 import math
 import random
-from itertools import pairwise
 
 TARGET_ACCURACY = 0.80
 K_USER = 32
@@ -82,13 +81,11 @@ def shallow_gap_of(gap_ladder: str) -> float | None:
 # ever sees errors, never the moves that weren't errors, so there is no
 # denominator. A quantile in from the tail is where the discrimination lives.
 #
-# Fitted on the untargeted half of the bank only. The other half was mined with
-# `--min-gap-wp`/`--max-gap-wp` aimed at particular bands, which is deliberate
-# selection on the very quantity being regressed: including it moves the same
-# fit on the deep gap from 6096 to 17076. Run against the deep gap on the
-# untargeted half this method returns 6101 against the 6096 that was published
-# for it, which is the check that the method here is the method that produced
-# that number.
+# Fitted only on positions mined through the pipeline's full gap window
+# (`items.mined_untargeted`). Narrowing that window is deliberate selection on
+# the very quantity being regressed, and including the positions it produced
+# moves the same fit by a factor of three — `trainer.fit_difficulty --everything`
+# prints both.
 GAP_SLOPE = 8899.0
 # Player strength constrains the line only between these gaps — outside them
 # there is no band of errors to fit against, because no strength of player has
@@ -156,9 +153,9 @@ def difficulty_rating(shallow_gap: float) -> float:
     gap is what the answer is worth, while this is what there was to see, and
     measured against the strength of the humans who got it wrong the second
     predicts about one and a half times as much as the first. Everything the
-    old lookahead-depth axis carried is in here too, continuously: a gap that
-    is wide early is easy, one that is narrow is hard, and one that is
-    *negative* is an item whose surface actively recommends the wrong move.
+    How far ahead you have to read is in here too, continuously: a gap that is
+    wide early is easy, one that is narrow is hard, and one that is *negative*
+    is an item whose surface actively recommends the wrong move.
 
     Lives here rather than in the labeler that first applies it because it is
     the definition of `items.rating`, which `db.connect` re-derives and the
@@ -190,88 +187,6 @@ USER_MAX = 3200
 def target_gap(user_rating: float) -> float:
     """The shallow win-probability gap a user of this rating is aimed at."""
     return _gap_for_difficulty(user_rating + _TARGET_OFFSET)
-
-
-# The deep-gap curve, kept only because ratings written under it still exist.
-# `regraded_user_rating` is the one thing that still needs to know it.
-_OLD_SLOPE, _OLD_KNEE, _OLD_HI = 6096.0, 600.0, 0.33
-_OLD_INTERCEPT = _OLD_KNEE + _OLD_SLOPE * _OLD_HI
-
-
-def _deep_gap_difficulty(gap_wp: float) -> float:
-    if gap_wp <= _OLD_HI:
-        return _OLD_INTERCEPT - _OLD_SLOPE * gap_wp
-    return _OLD_KNEE * math.exp(-(_OLD_SLOPE / _OLD_KNEE) * (gap_wp - _OLD_HI))
-
-
-def _precurve_to_deep(old_rating: float) -> float:
-    """The first regrade: off the flat pre-curve scale onto the deep-gap one.
-
-    Reads the gap the old scale aimed at and returns the rating aimed at the
-    same gap on the deep-gap curve, which is what it preserved.
-    """
-    gap = (2400 - (old_rating + _TARGET_OFFSET)) / 5000
-    return _deep_gap_difficulty(gap) - _TARGET_OFFSET
-
-
-# How a rating on the deep-gap scale reads on the shallow-gap one. Anchors at
-# every 200 points, interpolated between; outside them the ends are held.
-#
-# What a regrade has to preserve is what a user is *served*, and these two
-# scales have no gap in common to preserve — they are readings of different
-# searches. What they do share is the bank, so each anchor is the rating whose
-# target sits at the same percentile of item difficulty as the old one did.
-# Nobody's trials change on the day it runs; every displayed number does, by
-# about 700 in the middle, because the new axis is intrinsically taller. Its
-# calibrated band alone spans 1780 rating points against the old one's 1341, so
-# no choice of constant would have lowered it to meet the old scale — doing that
-# would have pushed the easy tail below zero.
-#
-# Anchors rather than a formula because the map is the shape of the bank's
-# difficulty distribution and is not linear: a straight line through these is
-# out by up to 361 points, which is five selection jitters.
-_DEEP_TO_SHALLOW = (
-    (300, 359),
-    (500, 683),
-    (700, 1122),
-    (900, 1489),
-    (1100, 1802),
-    (1300, 2012),
-    (1500, 2200),
-    (1700, 2371),
-    (1900, 2546),
-    (2100, 2686),
-    (2300, 2795),
-    (2500, 2907),
-    (2700, 3074),
-)
-
-
-def _interpolate(anchors: tuple[tuple[float, float], ...], x: float) -> float:
-    """Piecewise-linear through `anchors`, held flat outside them."""
-    if x <= anchors[0][0]:
-        return anchors[0][1]
-    if x >= anchors[-1][0]:
-        return anchors[-1][1]
-    for (x0, y0), (x1, y1) in pairwise(anchors):
-        if x0 <= x <= x1:
-            return y0 + (y1 - y0) * (x - x0) / (x1 - x0)
-    raise AssertionError("anchors must be sorted")
-
-
-def regraded_user_rating(old_rating: float, from_version: int) -> float:
-    """Move a rating from the scale `from_version` wrote onto the current one.
-
-    Chained rather than switched, because a database restored from far enough
-    back is two scales behind and has to cross both. A rating carries no mark of
-    which scale produced it, so `meta.schema_version` is the only thing that
-    knows, which is why the migration that applies this is gated on it.
-    """
-    if from_version < 1:
-        old_rating = _precurve_to_deep(old_rating)
-    if from_version < 2:
-        old_rating = _interpolate(_DEEP_TO_SHALLOW, old_rating)
-    return max(USER_MIN, min(USER_MAX, old_rating))
 
 
 def calibrate(user_rating: float, step: float, correct: bool) -> tuple[float, float]:

@@ -650,10 +650,9 @@ def answer(a: Answer, request: Request):
         # was to see. Safe here and nowhere earlier — both are hints about where
         # to look, so they belong to the reveal and not to the trial.
         #
-        # `solution_depth` is deliberately not here. It is measured and stored,
-        # and it is what decides whether an item is served at all, but nothing
-        # reads it on the page — so shipping it would be answer-adjacent data
-        # sent for no reason.
+        # Nothing else off the ladder goes out. `gap_ladder` itself would be
+        # answer-adjacent data sent for no reason: nothing on the page reads it,
+        # and its signs are the answer key spelled out depth by depth.
         "shallow_gap": (
             None if item["shallow_gap"] is None else round(item["shallow_gap"] * 100, 1)
         ),
