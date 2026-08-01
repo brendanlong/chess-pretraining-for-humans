@@ -160,18 +160,20 @@ def test_first_exposure_filter_is_answered_from_an_index_covering_item_id(db):
 
 def test_selection_walks_the_rating_index_instead_of_scanning_the_bank(db):
     """Serving a trial must not cost a pass over every item row — see
-    `NEAREST_SQL` in server.py for what the two walks replace.
+    `PICK_SQL` in server.py for what the walks replace.
 
     Asserts the plan, not a duration, because a timing threshold flakes on CI.
-    The losing plan is `SCAN items` plus a sort, and it is what any edit that
-    stops the partial index applying — dropping the `learnable = 1` term, or
-    ordering by an expression again — quietly reverts to.
+    The losing plan is `SCAN items`, and it is what any edit that stops the
+    partial index applying — dropping the `learnable = 1` term, or ordering
+    the walks by an expression — quietly reverts to. (A temp b-tree does
+    appear: it sorts the merged walks, never more than two pools of rows.)
     """
-    for sql in (server.NEAREST_BELOW_SQL, server.NEAREST_ABOVE_SQL):
-        steps = [row[-1] for row in db.execute("EXPLAIN QUERY PLAN " + sql, (1200, 1))]
-        assert any("idx_items_learnable_rating" in s for s in steps), steps
-        assert not any("SCAN items" in s for s in steps), steps
-        assert not any("TEMP B-TREE" in s for s in steps), steps
+    params = {"target": 1200, "user_id": 1, "k": 3}
+    steps = [row[-1] for row in db.execute("EXPLAIN QUERY PLAN " + server.PICK_SQL, params)]
+    walks = [s for s in steps if "idx_items_learnable_rating" in s]
+    assert len(walks) == 2, steps  # one per direction
+    assert all(s.startswith("SEARCH") for s in walks), steps
+    assert not any("SCAN items" in s for s in steps), steps
 
 
 def test_the_unseen_count_is_answered_without_reading_item_rows(db):
@@ -184,9 +186,9 @@ def test_the_unseen_count_is_answered_without_reading_item_rows(db):
 
 
 def test_the_index_walks_merge_to_the_pool_the_distance_ordering_chose(db):
-    """The two LIMITed walks are only an optimization if their union still
-    contains the `SELECTION_POOL` nearest unseen items — the set the old
-    `ORDER BY ABS(rating - target)` selected by construction."""
+    """The LIMITed walks are only an optimization if every OFFSET of `PICK_SQL`
+    still lands inside the `SELECTION_POOL` nearest unseen items — the set a
+    full `ORDER BY ABS(rating - target)` selects by construction."""
     from trainer.rating import difficulty_rating
 
     from .conftest import add_item
@@ -210,14 +212,35 @@ def test_the_index_walks_merge_to_the_pool_the_distance_ordering_chose(db):
            ORDER BY d LIMIT ?""",
         (target, uid, server.SELECTION_POOL),
     ).fetchall()
-    walked = (
-        db.execute(server.NEAREST_BELOW_SQL, (target, uid)).fetchall()
-        + db.execute(server.NEAREST_ABOVE_SQL, (target, uid)).fetchall()
-    )
-    merged = sorted(abs(r["rating"] - target) for r in walked)[: server.SELECTION_POOL]
+    who = {"target": target, "user_id": uid}
+    picked = [
+        db.execute(server.PICK_SQL, {**who, "k": k}).fetchone()
+        for k in range(server.SELECTION_POOL)
+    ]
     # Distances rather than ids: equal-rated items tie, and any nearest-30 set
     # is as good as any other — what must match is how near the pool sits.
-    assert merged == [r["d"] for r in old]
+    assert sorted(abs(r["rating"] - target) for r in picked) == [r["d"] for r in old]
+
+
+def test_a_pool_smaller_than_the_draw_is_redrawn_not_dropped(db, monkeypatch):
+    """The first OFFSET is drawn as if the pool were full; a bank holding less
+    must redraw over what exists rather than reporting exhaustion early."""
+    monkeypatch.setattr(server, "conn", db)
+
+    draws = []
+
+    class MissFirst:
+        """Always the highest draw, so the first OFFSET overshoots a bank of 2."""
+
+        def randrange(self, n: int) -> int:
+            draws.append(n)
+            return n - 1
+
+    monkeypatch.setattr(server, "rng", MissFirst())
+    item, repeat = server.pick_item(850.0, None)
+    assert item is not None and repeat is False
+    # Missed at pool size, then redrawn over exactly the items that exist.
+    assert draws == [server.SELECTION_POOL, 2]
 
 
 def test_legal_pages_are_served_and_reachable_before_signing_up(client):

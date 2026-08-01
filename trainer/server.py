@@ -461,32 +461,50 @@ def unseen_count(user_id: int | None) -> int:
 # The pool one trial is drawn from (`trainer.supply` reports against it too).
 SELECTION_POOL = 30
 
-# The nearest unseen items on one side of the target. Two of these instead of
-# one ORDER BY ABS(rating - ?) over the bank: the ABS ordering is one no index
-# can provide, so it cost a scan of every item row plus a sort per trial —
-# linear in the bank, and the dominant cost of serving. Each of these walks
-# `idx_items_learnable_rating` away from the target until it has a pool's
-# worth, so together they read about two pools of index entries (plus any the
-# seen-item filter skips, checked on the index's rowid alone) however big the bank
-# grows, and their union necessarily contains the pool nearest overall.
-NEAREST_SQL = """SELECT * FROM items
-    WHERE learnable = 1 AND rating {} ?
-      AND id NOT IN (SELECT item_id FROM responses WHERE user_id = ?)
-    ORDER BY rating {} LIMIT {}"""
-NEAREST_BELOW_SQL = NEAREST_SQL.format("<=", "DESC", SELECTION_POOL)
-NEAREST_ABOVE_SQL = NEAREST_SQL.format(">", "ASC", SELECTION_POOL)
+# The nearest unseen items on one side of the target: a walk along
+# `idx_items_learnable_rating` away from it, stopping at a pool's worth. Two of
+# these, merged, replace one ORDER BY ABS(rating - ?) over the bank — the ABS
+# ordering is one no index can provide, so it cost a scan of every item row
+# plus a sort per trial, linear in the bank; the union of the walks contains
+# the pool nearest overall however big the bank grows. NOT EXISTS rather than
+# NOT IN for the seen-item filter, because it probes `idx_responses_item` once
+# per candidate — bounded by the walk — where NOT IN materializes the user's
+# whole answer history every execution.
+_NEAREST = """SELECT * FROM (
+    SELECT * FROM items
+     WHERE learnable = 1 AND rating {} :target
+       AND NOT EXISTS (SELECT 1 FROM responses
+                       WHERE user_id = :user_id AND item_id = items.id)
+     ORDER BY rating {} LIMIT {})"""
+_POOL = (
+    _NEAREST.format("<=", "DESC", SELECTION_POOL)
+    + " UNION ALL "
+    + _NEAREST.format(">", "ASC", SELECTION_POOL)
+)
+# One row comes back: the random draw is the OFFSET, not a Python choice over a
+# fetched pool. Each row a statement returns is its own sqlite3_step, releasing
+# and retaking the GIL around a few microseconds of C — and under the
+# threadpool's concurrency those round-trips convoy badly enough that fetching
+# the pool cost more wall-clock than the bank scan it replaced. Everything up
+# to the one row stays inside a single C call, which threads don't disturb.
+PICK_SQL = f"SELECT * FROM ({_POOL}) ORDER BY ABS(rating - :target) LIMIT 1 OFFSET :k"
+POOL_COUNT_SQL = f"SELECT COUNT(*) FROM ({_POOL})"
 
 
 def pick_item(user_rating: float, user_id: int | None) -> tuple[dict | None, bool]:
     """An unseen item near the target difficulty; (item, is_repeat)."""
     target = rating.target_item_rating(user_rating)
-    rows = sorted(
-        conn.execute(NEAREST_BELOW_SQL, (target, user_id or 0)).fetchall()
-        + conn.execute(NEAREST_ABOVE_SQL, (target, user_id or 0)).fetchall(),
-        key=lambda row: abs(row["rating"] - target),
-    )[:SELECTION_POOL]
-    if rows:
-        return dict(rng.choice(rows)), False
+    who = {"target": target, "user_id": user_id or 0}
+    row = conn.execute(PICK_SQL, {**who, "k": rng.randrange(SELECTION_POOL)}).fetchone()
+    if row is None:
+        # Fewer unseen items left than a whole pool. Redraw over what remains,
+        # which keeps the choice uniform — and the count is bounded by the same
+        # two walks, so sizing it costs what the pick does.
+        remaining = conn.execute(POOL_COUNT_SQL, who).fetchone()[0]
+        if remaining:
+            row = conn.execute(PICK_SQL, {**who, "k": rng.randrange(remaining)}).fetchone()
+    if row is not None:
+        return dict(row), False
     # Bank exhausted. Serve the least-recently-answered item so the app stays
     # usable, but flag it: repeat answers aren't clean measurements.
     row = conn.execute(
