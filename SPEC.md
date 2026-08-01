@@ -177,6 +177,17 @@ automatically.
   two-alternative task, a beginner wins half the time by guessing. So during
   calibration a shared answer is scored by Elo, which reads how hard the item
   actually was, instead.
+- **What is held is downloadable, and it is the same set deletion erases.**
+  The privacy policy describes the record in prose, and prose drifts; a file
+  that *is* the record cannot, so the honest answer to "what do you have on
+  me" is a copy rather than a paragraph about one. Tying it to the deletion
+  promise is the point — if the two ever name different sets, one of them is
+  lying. The one exception is the password hash, which exists so that nobody
+  holds the password and so is not the user's to have back. Being signed in
+  is the whole authorization, because it is already the whole authorization
+  for reading the same record inside the app: asking for a password would put
+  a wall in front of a guest, who has none, and whose copy is the only thing
+  that survives clearing the cookie.
 - **A deletion request erases the responses too**, and is reachable from
   inside the app. Being signed in is the proof of ownership the optional,
   unverified email can't supply, so deletion can't depend on an email

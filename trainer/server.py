@@ -18,7 +18,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from . import assets, auth, db, rating, trials
+from . import assets, auth, db, export, rating, trials
 from .db import DEFAULT_DB, connect
 
 log = logging.getLogger(__name__)
@@ -134,6 +134,16 @@ signup_limiter = auth.RateLimiter(limit=20, window_s=3600)
 login_limiter = auth.RateLimiter(limit=10, window_s=900)
 login_ip_limiter = auth.RateLimiter(limit=60, window_s=900)
 delete_limiter = auth.RateLimiter(limit=10, window_s=900)
+# Downloading your own record is neither a guess nor a write, so this rations
+# work rather than attempts: one export walks a whole history and parses a FEN
+# per answer, which is the only endpoint whose cost grows with how much
+# somebody has played. Loose enough that fetching both formats, twice, changes
+# nothing — and it is charged per address, because a session is free to mint.
+export_limiter = auth.RateLimiter(
+    limit=60,
+    window_s=900,
+    message="That's a lot of downloads at once. Try again in a few minutes.",
+)
 # Answering is the only unauthenticated write left — arriving costs nothing now —
 # and it is the one that mints rows: a `responses` row every time, and a guest
 # `users` row for a caller that arrives without one. Requiring a trial first
@@ -415,10 +425,6 @@ def account_payload(user: dict | None) -> dict:
     return {"username": auth.display_name(user), "guest": auth.is_guest(user)}
 
 
-def is_calibrating(user: dict) -> bool:
-    return user["calib_step"] >= rating.CALIB_END_STEP
-
-
 def san(fen: str, uci: str) -> str:
     board = chess.Board(fen)
     return board.san(chess.Move.from_uci(uci))
@@ -612,7 +618,7 @@ def next_item(item: str | None = None, user_id: int | None = OptionalUserId):
         # counter that reads it is seeded from /api/stats and counted down there.
         "trial_number": (u["attempts"] if u else 0) + 1,
         "user_rating": round(u["rating"] if u else rating.USER_START),
-        "calibrating": is_calibrating(u) if u else True,
+        "calibrating": rating.is_calibrating(u["calib_step"]) if u else True,
     }
 
 
@@ -700,7 +706,7 @@ def answer(a: Answer, request: Request):
         new_step = u["calib_step"]
         if is_repeat:
             new_user_r = u["rating"]
-        elif is_calibrating(u) and not served.shared:
+        elif rating.is_calibrating(u["calib_step"]) and not served.shared:
             new_user_r, new_step = rating.calibrate(u["rating"], u["calib_step"], correct)
         else:
             new_user_r = rating.update(u["rating"], item["rating"], correct)
@@ -735,7 +741,7 @@ def answer(a: Answer, request: Request):
         "repeat": is_repeat,
         "user_rating": round(new_user_r),
         "rating_delta": round(new_user_r - u["rating"], 1),
-        "calibrating": new_step >= rating.CALIB_END_STEP,
+        "calibrating": rating.is_calibrating(new_step),
         "correct": correct,
         "best": {
             "uci": item["best_uci"],
@@ -1004,6 +1010,44 @@ def delete_account(body: Deletion, request: Request):
     except auth.AuthError as e:
         raise auth_error(e) from e
     return {"deleted": True, "responses_deleted": counts["responses"]}
+
+
+@app.get("/api/account/export")
+def export_account(request: Request, format: str = "json"):
+    """Hand this session's own record back, as a file.
+
+    The session cookie is the whole authorization, exactly as it is for reading
+    the same record through `/api/stats` — this endpoint adds no reach, only a
+    format. No password, unlike deletion: the password there guards an
+    irreversible act on a browser somebody may have walked away from, and
+    asking for one here would put a wall in front of the one thing a guest —
+    who has no password at all — most needs, which is a copy of what they'd
+    lose by clearing the cookie.
+
+    A caller with no session has no row and so nothing to export; that is the
+    same "there is nothing here" that deletion answers, and it is said rather
+    than answered with an empty file.
+    """
+    # Charged first, like every other limiter here: a request must not be able
+    # to buy work by failing on its way to it.
+    spend(export_limiter, client_key(request))
+    fmt = format.strip().casefold()
+    if fmt not in export.FORMATS:
+        raise HTTPException(400, f"format must be one of: {', '.join(export.FORMATS)}")
+    u = auth.session_user(conn, request.cookies.get(auth.COOKIE_NAME))
+    if u is None:
+        raise HTTPException(
+            400,
+            "There's nothing here to export yet — answering a question is what starts a record.",
+        )
+    body, media_type, name = export.build(conn, u, fmt)
+    return Response(
+        body,
+        media_type=media_type,
+        # The filename is ours and ASCII (`export.filename`), so the quoted
+        # form is the whole story — no RFC 5987 encoding to get wrong.
+        headers={"Content-Disposition": f'attachment; filename="{name}"'},
+    )
 
 
 # Read once at startup: the tree is a few hundred KB, and holding it means the
