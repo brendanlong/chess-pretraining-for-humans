@@ -17,17 +17,24 @@ production will do. So everything that doesn't have to vary is held still:
   measure the same thing.
 * A scratch copy of a cached template database, so a run never reads or writes
   `data/items.db` and always starts from the same rows.
-* The server pinned to one core where `taskset` allows it. That is both the
-  shape of the machine we deploy to (one shared vCPU) and the cheapest way to
-  stop the result being a report on what else the box was doing.
+* The server confined to four whole physical cores, hyperthreads included.
+  Production is one small shared machine, so measuring against twenty-four
+  cores would be measuring something nobody runs — but one core cannot show a
+  lock or a threadpool becoming the bottleneck, and those are regressions too.
+  Whole cores rather than one thread of each: a neighbour on the other half of
+  a physical core costs roughly half its throughput, and that alone was worth
+  more than the threshold a regression has to clear.
 
-The driver is one process per virtual user because a Python process talking to
-a one-core server is close enough to the same speed to become the thing being
-measured. Latencies are the client's view, so loopback and httpx are inside
-every one of them. That subtracts from a difference measured in percent rather
-than cancelling: a scenario answering in a millisecond reports a 20% server
-regression as 10%. Which is why every run first measures the harness against a
-server that does nothing, and marks the rows close enough to it to be affected.
+Two numbers per scenario, because they fail differently on a shared machine.
+Wall-clock throughput is what a user would feel and what a neighbour ruins:
+measured under full saturation it read 53-70% low with no code change at all.
+Cpu spent per step is what the code's own cost moves, and held within 12% of
+its quiet value through the same saturation. So a regression in cpu per step
+fails a run whatever else was happening, throughput only fails one on cores we
+had to ourselves, and a run says which case it was in rather than leaving the
+reader to guess. Neither is trusted blind: `Contention` measures what else ran
+on the server's cores, and `driver_ceiling` measures how much of a fast row is
+this harness rather than the app.
 """
 
 import argparse
@@ -318,7 +325,7 @@ def free_port() -> int:
         return s.getsockname()[1]
 
 
-def start_server(db_path: Path, web_dir: Path | None, port: int, cpu: int | None):
+def start_server(db_path: Path, web_dir: Path | None, port: int, cpus: list[int]):
     env = {
         **os.environ,
         "TRAINER_DB": str(db_path),
@@ -336,8 +343,8 @@ def start_server(db_path: Path, web_dir: Path | None, port: int, cpu: int | None
         "--host", "127.0.0.1", "--port", str(port),
         "--proxy-headers", "--log-level", "warning",
     ]  # fmt: skip
-    if cpu is not None:
-        cmd = ["taskset", "-c", str(cpu), *cmd]
+    if cpus:
+        cmd = ["taskset", "-c", ",".join(map(str, cpus)), *cmd]
     proc = subprocess.Popen(cmd, cwd=_ROOT, env=env)
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
@@ -546,7 +553,12 @@ STEPS = {
 # --- the driver ------------------------------------------------------------
 
 
-SERVER_CPU = 0
+# Physical cores the server gets. Production is one small shared machine, so a
+# benchmark that hands the app twenty-four cores is measuring something nobody
+# will ever run — but one core cannot show a lock or a threadpool becoming the
+# bottleneck, and those are regressions too. Four is enough to have a scaling
+# story and small enough to still be that machine's bigger sibling.
+SERVER_CORES = 4
 
 
 def _siblings(cpu: int) -> set[int]:
@@ -566,7 +578,7 @@ def _siblings(cpu: int) -> set[int]:
     return cpus
 
 
-def driver_processes(concurrency: int, cores: int, pin: bool) -> int:
+def driver_processes(concurrency: int, cores: int, driver_cpus: list[int]) -> int:
     """One process per virtual user, as far as the cores allow.
 
     The driver has to be far enough from its own ceiling that what the table
@@ -575,8 +587,29 @@ def driver_processes(concurrency: int, cores: int, pin: bool) -> int:
     parsing — on the cheapest scenarios that alone was worth 20% of the
     throughput, which is the size of the regression this is meant to detect.
     """
-    available = cores - len(_siblings(SERVER_CPU)) if pin else cores
-    return max(1, min(concurrency, available))
+    return max(1, min(concurrency, len(driver_cpus) if driver_cpus else cores))
+
+
+def server_cpus(cores: int) -> list[int]:
+    """Whole physical cores for the server, hyperthreads included.
+
+    Both siblings of each core, not one: a logical CPU left out is one the rest
+    of the machine can schedule onto, and a neighbour on the other half of a
+    physical core costs roughly half its throughput. Owning both is the only
+    part of that this can decide without privileges — which is why the run also
+    measures what else landed there anyway.
+    """
+    taken: set[int] = set()
+    chosen: list[int] = []
+    for cpu in range(os.cpu_count() or 1):
+        if cpu in taken:
+            continue
+        siblings = _siblings(cpu)
+        taken |= siblings
+        chosen.extend(sorted(siblings))
+        if len(taken) >= cores * len(siblings):
+            break
+    return sorted(chosen)
 
 
 def _pin_worker(cpus: list[int]) -> None:
@@ -637,7 +670,7 @@ def _split(total: int, parts: int) -> list[int]:
     return [total // parts + (1 if i < total % parts else 0) for i in range(parts)]
 
 
-def summarize(samples: list[float], elapsed: float) -> dict:
+def summarize(samples: list[float], elapsed: float, cpu_ms: float | None = None) -> dict:
     ordered = sorted(samples)
 
     def pct(q: float) -> float:
@@ -650,6 +683,13 @@ def summarize(samples: list[float], elapsed: float) -> dict:
         "p95_ms": pct(0.95),
         "p99_ms": pct(0.99),
         "mean_ms": round(statistics.fmean(ordered), 3),
+        # What the server itself spent, per step. Not immune to a busy machine
+        # — sharing a physical core costs IPC, which costs CPU time for the
+        # same work — but it moves for different reasons than the wall clock
+        # does, so the pair together says whether the work grew or the machine
+        # shrank. Includes the warmup steps, which are the same work against
+        # colder caches, and are in the divisor to match.
+        "cpu_ms": None if cpu_ms is None else round(cpu_ms, 4),
     }
 
 
@@ -692,7 +732,9 @@ asyncio.run(main())
 DILUTED = 0.15
 
 
-def driver_ceiling(pool: ProcessPoolExecutor, procs: int, plan: dict, pin: bool) -> float | None:
+def driver_ceiling(
+    pool: ProcessPoolExecutor, procs: int, plan: dict, pin: list[int]
+) -> float | None:
     """Steps per second against a server that costs nothing.
 
     Every latency here is the client's, so the driver's own cost is inside all
@@ -705,7 +747,7 @@ def driver_ceiling(pool: ProcessPoolExecutor, procs: int, plan: dict, pin: bool)
     port = free_port()
     cmd = [sys.executable, "-c", NULL_SERVER, str(port)]
     if pin:
-        cmd = ["taskset", "-c", str(SERVER_CPU), *cmd]
+        cmd = ["taskset", "-c", ",".join(map(str, pin)), *cmd]
     proc = subprocess.Popen(cmd)
     try:
         deadline = time.monotonic() + 30
@@ -764,11 +806,24 @@ def elapsed_across(results: list[tuple[list[float], float, float]]) -> float:
     return max(r[2] for r in results) - min(r[1] for r in results)
 
 
-def run_scenario(scenario: Scenario, pool: ProcessPoolExecutor, procs: int, plan: dict) -> dict:
+def run_scenario(
+    scenario: Scenario,
+    pool: ProcessPoolExecutor,
+    procs: int,
+    plan: dict,
+    server_pid: int | None = None,
+) -> dict:
     """Drive one scenario to completion and rejoin the samples."""
-    results = list(pool.map(_worker, plan_scenario(scenario, procs, plan)))
+    plans = plan_scenario(scenario, procs, plan)
+    before = process_cpu_seconds(server_pid) if server_pid else None
+    results = list(pool.map(_worker, plans))
+    after = process_cpu_seconds(server_pid) if server_pid else None
+    cpu_ms = None
+    if before is not None and after is not None:
+        driven = sum(len(p["vus"]) * scenario.warmup + sum(p["counts"]) for p in plans)
+        cpu_ms = (after - before) / driven * 1000
     samples = [s for r in results for s in r[0]]
-    return summarize(samples, elapsed_across(results))
+    return summarize(samples, elapsed_across(results), cpu_ms)
 
 
 # --- reporting -------------------------------------------------------------
@@ -793,17 +848,45 @@ def _delta(now: float, before: float) -> float:
     return (now - before) / before * 100 if before else 0.0
 
 
-def _machine_cpu_seconds() -> float | None:
-    """CPU seconds this machine has spent on anything but idling, all cores."""
+def _cpu_seconds(cpus: list[int]) -> float | None:
+    """CPU seconds spent on anything but idling, on these logical CPUs.
+
+    Scoped to the server's own, because those are the only ones whose being
+    busy changes the answer. A neighbour compiling something on the far side of
+    the machine costs us almost nothing; one landing on a hyperthread of a core
+    we are measuring costs roughly half of it.
+    """
     stat = Path("/proc/stat")
     if not stat.exists():
         return None
-    # user nice system idle iowait irq softirq steal guest guest_nice — and
-    # the last two are already counted inside user and nice, so summing the
-    # line whole would bill a virtualised host's guest time twice.
-    ticks = [int(t) for t in stat.read_text().split("\n", 1)[0].split()[1:10]]
-    busy = sum(ticks[:3]) + sum(ticks[5:8])
-    return busy / os.sysconf("SC_CLK_TCK")
+    wanted = {f"cpu{c}" for c in cpus} if cpus else {"cpu"}
+    total = 0.0
+    for line in stat.read_text().splitlines():
+        name, _, rest = line.partition(" ")
+        if name not in wanted:
+            continue
+        # user nice system idle iowait irq softirq steal guest guest_nice.
+        # Only the buckets another *process* lands in: user, nice, system and
+        # steal. Interrupt and softirq time on these cores is mostly the
+        # loopback traffic this run generates itself, charged to the core
+        # rather than to the server process — counting it would have the
+        # benchmark reporting its own network as a stranger. (guest and
+        # guest_nice are already inside user and nice, so they are never
+        # summed either.)
+        ticks = [int(t) for t in rest.split()[:9]]
+        total += sum(ticks[:3]) + ticks[7]
+    return total / os.sysconf("SC_CLK_TCK")
+
+
+def process_cpu_seconds(pid: int) -> float | None:
+    """CPU a process has used across all its threads."""
+    try:
+        fields = Path(f"/proc/{pid}/stat").read_bytes().rpartition(b")")[2].split()
+    except OSError:
+        return None
+    # The split drops pid and comm, so what is left starts at `state`: utime is
+    # the twelfth of those, stime the thirteenth.
+    return (int(fields[11]) + int(fields[12])) / os.sysconf("SC_CLK_TCK")
 
 
 def _own_cpu_seconds() -> float:
@@ -814,36 +897,56 @@ def _own_cpu_seconds() -> float:
 
 
 class Contention:
-    """How much of the machine somebody else was using while we measured.
+    """How much of the server's own cores somebody else was using.
 
     Without this the tool cannot tell a slower app from a busier box, and the
-    two look identical in the table — a run sharing the machine with a build
-    reports a regression that isn't there. Our own cost is subtracted through
-    `rusage`, so what's left is other people's work, in cores.
+    two look identical in the table. Scoped to the cores the server was given,
+    and to the server's own usage of them, because a neighbour elsewhere on the
+    machine barely registers while one sharing a physical core costs half of it.
     """
 
-    def __init__(self):
-        self.machine = _machine_cpu_seconds()
-        self.ours = _own_cpu_seconds()
+    def __init__(self, cpus: list[int], pid: int):
+        self.cpus = cpus
+        self.pid = pid
+        self.busy = _cpu_seconds(cpus)
+        self.ours = self._ours()
         self.started = time.monotonic()
+        self.frozen: tuple[float | None, float, float] | None = None
+
+    def _ours(self) -> float:
+        """Ours, on the cores being watched. When the server has its own, it is
+        the only thing of ours running there; when nothing is pinned, the whole
+        run is."""
+        return (process_cpu_seconds(self.pid) or 0.0) if self.cpus else _own_cpu_seconds()
+
+    def freeze(self) -> None:
+        """Close the window while the server is still alive to be read from."""
+        self.frozen = (_cpu_seconds(self.cpus), self._ours(), time.monotonic() - self.started)
 
     def cores(self) -> float | None:
-        """Only meaningful once the server and the driver pool have been
-        reaped: `RUSAGE_CHILDREN` counts a child from the moment it's waited
-        for, not while it runs."""
-        machine = _machine_cpu_seconds()
-        if machine is None or self.machine is None:
+        if self.frozen is None:
+            self.freeze()
+        assert self.frozen is not None
+        busy, ours, elapsed = self.frozen
+        if busy is None or self.busy is None or elapsed <= 0:
             return None
-        # Both sides as deltas over the same window: `getrusage` reports since
-        # this process started, which is before the window opened.
-        ours = _own_cpu_seconds() - self.ours
-        return max(0.0, (machine - self.machine) - ours) / (time.monotonic() - self.started)
+        return max(0.0, (busy - self.busy) - (ours - self.ours)) / elapsed
 
 
-# Other work worth naming in the output. Below this the machine is idle
-# enough that the repetitions absorb it; above it, a "regression" is as likely
-# to be the neighbour as the code.
-BUSY_CORES = 0.5
+# Other work on the server's cores worth distrusting the wall clock over, as a
+# fraction of those cores. A shared machine always carries some — this one idles
+# at about an eighth of the eight logical cpus a four-core server owns — so an
+# absolute figure either refuses every run here or waves through a real
+# neighbour on a quieter box. Set above the ambient and far below the load that
+# was measured costing throughput.
+BUSY_FRACTION = 0.15
+# How much more cpu per step a contended run has to show before it counts as a
+# regression. Cpu survives a shared machine far better than the wall clock —
+# measured under full saturation with no code change, nine of the ten scenarios
+# moved under 12% while throughput fell by 53-70% — but the write path moved
+# 31%, so on a busy machine the bar goes up rather than the metric being
+# abandoned. A regression this hides is one a quiet re-run will show.
+BUSY_CPU_SLACK = 2.0
 
 
 def report(
@@ -851,32 +954,52 @@ def report(
     baseline: dict | None,
     threshold: float,
     busy: float | None,
+    busy_limit: float = 0.0,
     ceiling: float | None = None,
 ) -> bool:
     """Print the table; return True if anything regressed past the threshold."""
     old = (baseline or {}).get("scenarios", {})
-    header = f"{'scenario':<13} {'steps/s':>9} {'p50 ms':>9} {'p95 ms':>9} {'p99 ms':>9}"
+    # Whether wall-clock numbers are worth failing a build over.
+    trusted = busy is None or busy < busy_limit
+    cpu_threshold = threshold if trusted else threshold * BUSY_CPU_SLACK
+    header = (
+        f"{'scenario':<13} {'steps/s':>9} {'p50 ms':>9} {'p95 ms':>9} {'p99 ms':>9} {'cpu ms':>8}"
+    )
     print("\n" + header + ("   vs baseline" if old else ""))
     print("-" * (len(header) + (14 if old else 0)))
-    regressed, diluted = [], []
+    regressed, diluted, machine_shaped = [], [], []
     for name, r in results.items():
+        cpu = f"{r['cpu_ms']:>8.3f}" if r.get("cpu_ms") is not None else f"{'-':>8}"
         line = (
             f"{name:<13} {r['rps']:>9.1f} {r['p50_ms']:>9.2f} "
-            f"{r['p95_ms']:>9.2f} {r['p99_ms']:>9.2f}"
+            f"{r['p95_ms']:>9.2f} {r['p99_ms']:>9.2f} {cpu}"
         )
         if ceiling and r["rps"] > ceiling * DILUTED:
             diluted.append(name)
             line += " ~"
         was = old.get(name)
         if was:
-            # Throughput and median together: one moving without the other is
-            # usually the machine, both moving the same way is usually us.
-            d_rps, d_p50 = _delta(r["rps"], was["rps"]), _delta(r["p50_ms"], was["p50_ms"])
-            bad = d_rps <= -threshold or d_p50 >= threshold
-            mark = "SLOWER" if bad else ("faster" if d_rps >= threshold else "")
-            line += f"   {d_rps:+6.1f}% rps {d_p50:+6.1f}% p50 {mark}"
-            if bad:
+            # Two verdicts, because the two numbers survive a shared machine
+            # very differently. Cpu per step is what the code's own cost moves;
+            # throughput is that plus whoever else was on the cores, and under
+            # real contention it is out by more than any threshold worth
+            # setting — measured here at 56-70% low against 12-14% for cpu.
+            d_rps = _delta(r["rps"], was["rps"])
+            comparable = r.get("cpu_ms") and was.get("cpu_ms")
+            d_cpu = _delta(r["cpu_ms"], was["cpu_ms"]) if comparable else None
+            line += f"   {d_rps:+6.1f}% rps"
+            line += f" {d_cpu:+6.1f}% cpu" if d_cpu is not None else " " * 10
+            slow_cpu = d_cpu is not None and d_cpu >= cpu_threshold
+            slow_wall = d_rps <= -threshold
+            if slow_cpu or (slow_wall and trusted):
                 regressed.append(name)
+                line += " SLOWER"
+            elif slow_wall:
+                # The same work taking longer, on cores we know were shared.
+                machine_shaped.append(name)
+                line += " (busy)"
+            elif d_rps >= threshold:
+                line += " faster"
         print(line)
     if "trial-loop" in results:
         print("(a trial-loop step is two requests: the trial, then the answer)")
@@ -890,11 +1013,18 @@ def report(
         print(f"\nno scenario regressed by more than {threshold:.0f}%.")
     elif regressed:
         print(f"\nregressed by more than {threshold:.0f}%: {', '.join(regressed)}")
-    if busy is not None and busy >= BUSY_CORES:
+    if machine_shaped:
         print(
-            f"\nwarning: something else on this machine used {busy:.1f} cores "
-            "while this ran, so every number above is a lower bound. Re-run on "
-            "an idle machine before believing a regression."
+            f"(busy) lost throughput without the server spending more cpu per step: "
+            f"{', '.join(machine_shaped)}. On cores this contended that is the "
+            "neighbour rather than the app, so it is reported and not failed."
+        )
+    if not trusted and busy is not None:
+        print(
+            f"\nwarning: something else used {busy:.1f} of the server's cores while "
+            f"this ran (over the {busy_limit:.1f} this trusts), so the wall-clock "
+            f"columns are a lower bound and only a {cpu_threshold:.0f}% move in cpu "
+            "per step was failed on. Re-run quiet to hold it to the usual bar."
         )
     return bool(regressed)
 
@@ -973,7 +1103,13 @@ def main() -> None:
         help=f"times to run each scenario, best kept (1-{REPEAT_LIMIT}, default 3)",
     )
     ap.add_argument("--threshold", type=float, default=20.0, help="regression percent (default 20)")
-    ap.add_argument("--no-pin", action="store_true", help="don't confine the server to one core")
+    ap.add_argument(
+        "--server-cores",
+        type=int,
+        default=SERVER_CORES,
+        help=f"physical cores for the server (default {SERVER_CORES})",
+    )
+    ap.add_argument("--no-pin", action="store_true", help="let the server have the whole machine")
     ap.add_argument("--web-dir", type=Path, help="frontend tree to serve (default: the server's)")
     ap.add_argument("--baseline", type=Path, default=BASELINE)
     ap.add_argument(
@@ -995,8 +1131,18 @@ def main() -> None:
     check_budgets(chosen, args.concurrency, args.repeat)
 
     cores = os.cpu_count() or 1
-    pin = bool(not args.no_pin and shutil.which("taskset") and cores > 2)
-    procs = driver_processes(args.concurrency, cores, pin)
+    # The server's cores and the driver's, disjoint down to the hyperthread.
+    # Empty means the machine is too small to divide, or `--no-pin`: everything
+    # shares everything, which is honest but much noisier.
+    pin = bool(not args.no_pin and shutil.which("taskset") and cores > 2 * args.server_cores)
+    cpus = server_cpus(args.server_cores) if pin else []
+    driver_cpus = [c for c in range(cores) if c not in set(cpus)] if pin else []
+    procs = driver_processes(args.concurrency, cores, driver_cpus)
+    # This process keeps off the server's cores too. It is nearly idle while a
+    # scenario runs, but it seeds, copies and prints, and anything of ours that
+    # lands there is work the contention estimate below would have to call
+    # somebody else's.
+    _pin_worker(driver_cpus)
     # Everything here changes what the numbers mean, so a run that differs in
     # any of it is not a comparison. `driver_processes` and `pinned` decide how
     # much of the machine each side gets; `web` decides what four of the
@@ -1008,7 +1154,7 @@ def main() -> None:
         "items": args.items,
         "warm_history": WARM_HISTORY,
         "driver_processes": procs,
-        "pinned": pin,
+        "server_cpus": cpus,
         "web": served_tree(args.web_dir).name,
         "requests": {s.name: s.requests for s in SCENARIOS},
     }
@@ -1016,7 +1162,6 @@ def main() -> None:
     if baseline and not args.save:
         compare_settings(baseline, settings, chosen)
 
-    contention = Contention()
     source = template(args.items, args.reseed)
     scratch = _ROOT / "data" / "bench-run.db"
     for suffix in ("", "-wal", "-shm"):
@@ -1024,11 +1169,11 @@ def main() -> None:
     shutil.copy(source, scratch)
 
     port = free_port()
-    server = start_server(scratch, args.web_dir, port, cpu=SERVER_CPU if pin else None)
+    server = start_server(scratch, args.web_dir, port, cpus=cpus)
     base_url = f"http://127.0.0.1:{port}"
+    where = f"cpus {','.join(map(str, cpus))}" if pin else "unpinned"
     print(
-        f"serving {args.items} items on {base_url} "
-        f"({'pinned to cpu0' if pin else 'unpinned'}), "
+        f"serving {args.items} items on {base_url} ({where}), "
         f"{args.concurrency} virtual users across {procs} driver processes"
     )
     try:
@@ -1055,36 +1200,45 @@ def main() -> None:
         conn.close()
 
         plan = {"base_url": base_url, "ctx": ctx, "concurrency": args.concurrency}
-        # Every core the server isn't on, so the driver can't be the thing that
-        # runs out of room. Empty means leave its affinity alone.
-        off_limits = _siblings(SERVER_CPU)
-        driver_cpus = [c for c in range(cores) if c not in off_limits] if pin else []
         results = {}
         with ProcessPoolExecutor(procs, initializer=_pin_worker, initargs=(driver_cpus,)) as pool:
             print(f"  {CEILING.name}: {CEILING.doc}", end="", flush=True)
-            ceiling = driver_ceiling(pool, procs, plan, pin)
+            ceiling = driver_ceiling(pool, procs, plan, cpus)
             print(f" [{ceiling:.0f} steps/s]" if ceiling else " [unavailable]", flush=True)
+            # Started once the calibration's own server has gone: that one runs
+            # on the server's cores too, and is not the process being watched.
+            contention = Contention(cpus, server.pid)
             for scenario in chosen:
                 print(f"  {scenario.name}: {scenario.doc}", end="", flush=True)
                 runs = [
-                    run_scenario(scenario, pool, procs, {**plan, "repeat": r})
+                    run_scenario(scenario, pool, procs, {**plan, "repeat": r}, server.pid)
                     for r in range(args.repeat)
                 ]
                 # Best of the repeats, because interference only ever subtracts:
                 # a slow run means something else got the core for a moment, and
                 # averaging that in measures the machine rather than the code.
                 # Every repeat is printed so the spread stays visible.
-                best = max(runs, key=lambda r: r["rps"])
+                # Each metric taken at its least-interfered: interference only
+                # ever costs throughput and only ever adds CPU, so the best of
+                # each is the closest either got to the machine on its own.
+                best = dict(max(runs, key=lambda r: r["rps"]))
+                cpus_used = [r["cpu_ms"] for r in runs if r["cpu_ms"] is not None]
+                if cpus_used:
+                    best["cpu_ms"] = min(cpus_used)
                 print(" [" + ", ".join(f"{r['rps']:.0f}" for r in runs) + " req/s]", flush=True)
                 results[scenario.name] = best
+        contention.freeze()
     finally:
         stop_server(server)
 
     # After the server and the pool have been reaped, so their CPU counts as
     # ours rather than as somebody else's.
     busy = contention.cores()
-    regressed = report(results, None if args.save else baseline, args.threshold, busy, ceiling)
-    if args.save and busy is not None and busy >= BUSY_CORES and not args.force:
+    limit = BUSY_FRACTION * len(cpus or range(cores))
+    regressed = report(
+        results, None if args.save else baseline, args.threshold, busy, limit, ceiling
+    )
+    if args.save and busy is not None and busy >= limit and not args.force:
         # Refused rather than warned about. A baseline is read by every run
         # after it and by nobody at the time it is written, so one recorded
         # against a busy machine is a floor set too low, silently, until

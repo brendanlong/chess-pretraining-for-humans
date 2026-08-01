@@ -133,28 +133,64 @@ def test_throughput_spans_every_driver_process():
     assert bench.elapsed_across(results) == 6.0  # 106 - 100, not 104 - 100
 
 
-def _result(rps: float, p50: float) -> dict:
-    return {"steps": 100, "rps": rps, "p50_ms": p50, "p95_ms": p50, "p99_ms": p50, "mean_ms": p50}
+def _result(rps: float, p50: float, cpu_ms: float | None = None) -> dict:
+    return {
+        "steps": 100,
+        "rps": rps,
+        "p50_ms": p50,
+        "p95_ms": p50,
+        "p99_ms": p50,
+        "mean_ms": p50,
+        "cpu_ms": cpu_ms,
+    }
 
 
 def test_a_slower_run_is_reported_as_one():
     baseline = {"scenarios": {"healthz": _result(1000, 1.0)}}
     slower = {"healthz": _result(700, 1.4)}
-    assert bench.report(slower, baseline, threshold=20.0, busy=0.0)
-    assert not bench.report({"healthz": _result(950, 1.05)}, baseline, threshold=20.0, busy=0.0)
+    assert bench.report(slower, baseline, threshold=20.0, busy=0.0, busy_limit=1.2)
+    assert not bench.report(
+        {"healthz": _result(950, 1.05)}, baseline, threshold=20.0, busy=0.0, busy_limit=1.2
+    )
     # Nothing to compare against is not a regression.
-    assert not bench.report({"healthz": _result(1, 1000.0)}, None, threshold=20.0, busy=0.0)
+    assert not bench.report(
+        {"healthz": _result(1, 1000.0)}, None, threshold=20.0, busy=0.0, busy_limit=1.2
+    )
+
+
+def test_the_verdict_follows_the_metric_that_survives_a_shared_machine(capsys):
+    """Throughput is worth failing over only when the cores were ours. Cpu per
+    step is worth failing over either way: measured under full load it moved
+    12-14% where throughput moved 56-70%, so it is the one that still means
+    something when a neighbour is on the box."""
+    baseline = {"scenarios": {"stats": _result(1000, 1.0, cpu_ms=0.5)}}
+    same_work = {"stats": _result(700, 1.4, cpu_ms=0.51)}
+    more_work = {"stats": _result(700, 1.4, cpu_ms=0.67)}
+
+    # Quiet machine: losing a third of the throughput is a regression whatever
+    # the cpu did.
+    assert bench.report(same_work, baseline, threshold=20.0, busy=0.0, busy_limit=1.2)
+    # Busy machine, same work per step: reported, not failed.
+    assert not bench.report(same_work, baseline, threshold=20.0, busy=4.0, busy_limit=1.2)
+    assert "(busy)" in capsys.readouterr().out
+    # Busy machine, a third more cpu for the same step: under the widened bar a
+    # contended run is held to, because that much is what contention alone was
+    # measured doing to the write path.
+    assert not bench.report(more_work, baseline, threshold=20.0, busy=4.0, busy_limit=1.2)
+    # Twice the work, though, is nobody's neighbour.
+    doubled = {"stats": _result(700, 1.4, cpu_ms=1.0)}
+    assert bench.report(doubled, baseline, threshold=20.0, busy=4.0, busy_limit=1.2)
 
 
 def test_a_busy_machine_is_disclosed(capsys):
     """A run that shared the machine reports a regression it can't stand behind,
     so it has to say which it was."""
     baseline = {"scenarios": {"healthz": _result(1000, 1.0)}}
-    bench.report({"healthz": _result(700, 1.4)}, baseline, threshold=20.0, busy=4.0)
+    bench.report({"healthz": _result(700, 1.4)}, baseline, threshold=20.0, busy=4.0, busy_limit=1.2)
     # Beside the table, not on stderr: it is the line saying the table can't be
     # trusted, and a log that captured only stdout would keep one without it.
-    assert "4.0 cores" in capsys.readouterr().out
-    bench.report({"healthz": _result(700, 1.4)}, baseline, threshold=20.0, busy=0.1)
+    assert "4.0 of the server's cores" in capsys.readouterr().out
+    bench.report({"healthz": _result(700, 1.4)}, baseline, threshold=20.0, busy=0.1, busy_limit=1.2)
     assert "cores" not in capsys.readouterr().out
 
 
@@ -178,10 +214,10 @@ def test_rows_near_the_drivers_ceiling_are_marked(capsys):
     """A scenario the harness can barely outrun reports a change smaller than
     it is, so the row has to say which kind of row it is."""
     results = {"healthz": _result(3000, 2.4), "trial-loop": _result(170, 45.0)}
-    bench.report(results, None, threshold=20.0, busy=0.0, ceiling=10_000.0)
+    bench.report(results, None, threshold=20.0, busy=0.0, busy_limit=1.2, ceiling=10_000.0)
     out = capsys.readouterr().out
     assert "healthz" in out.split("~ within")[1]
     assert "trial-loop" not in out.split("~ within")[1]
     # No calibration means no claim either way.
-    bench.report(results, None, threshold=20.0, busy=0.0, ceiling=None)
+    bench.report(results, None, threshold=20.0, busy=0.0, busy_limit=1.2, ceiling=None)
     assert "~ within" not in capsys.readouterr().out

@@ -190,19 +190,23 @@ Nothing above notices a change that only makes the app slower, so there's a
 load benchmark over the API and the static tree:
 
 ```bash
-uv run python -m trainer.bench          # ~4 min, compares to bench-baseline.json
+uv run python -m trainer.bench          # ~2 min, compares to bench-baseline.json
 uv run python -m trainer.bench --save   # re-record the baseline
 uv run python -m trainer.bench --only static-js,trial-loop
 ```
 
-It builds its own item bank, serves it from a scratch database and a real
-uvicorn on a loopback port, and exits non-zero if any scenario lost more than
-20% of its throughput. Nothing it does touches `data/items.db`.
+It builds its own item bank and serves it from a scratch database and a real
+uvicorn, confined to four cores. Nothing it does touches `data/items.db`.
 
-Timings only mean something against a baseline recorded on the same idle
-machine — `bench-baseline.json` is committed so a regression shows up as a
-number rather than a feeling. The run warns when the machine underneath has
-changed, and again when something else was using it at the time, because a
-busy box and a slower app look identical in the table otherwise. Run it before
-and after a change that could plausibly cost anything, and re-record when a
-deliberate trade-off moves the numbers for good.
+Each scenario is reported twice over: throughput as a user would feel it, and
+cpu the server spent per step. The second is what survives a shared machine —
+under full load the first reads 53-70% low while the second holds within 12% —
+so a jump in cpu per step fails the run wherever it was measured, a drop in
+throughput only fails one that had the cores to itself, and the output says
+which. That means a busy machine gives a usable answer instead of a false
+alarm; it also means a quiet one gives a sharper answer, so prefer it.
+
+`bench-baseline.json` is committed, and only means something against the same
+machine — the run warns when that changed, and refuses to record a new
+baseline from a run that was sharing its cores. Re-record when a deliberate
+trade-off moves the numbers for good.
