@@ -377,8 +377,8 @@ body:not(.no-arrow-numbers) .line-card.bad .key { background: var(--bad); }
 #extra-actions button:hover { color: var(--text); }
 
 #repeat-note,
-#share-note { font-size: 13px; color: var(--muted); margin: 4px 0 8px; }
-.repeat-badge {
+#stale-link-note { font-size: 13px; color: var(--muted); margin: 4px 0 8px; }
+.note-badge {
   display: inline-block;
   background: var(--probe);
   color: #1c1425;

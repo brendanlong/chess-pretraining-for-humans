@@ -104,9 +104,11 @@ class InvalidTrial(Exception):
 class Served(NamedTuple):
     """How the server offered a trial, read back off its own token.
 
-    Both flags mean the same thing to the rating: the item wasn't the one
-    adaptive selection would have chosen, so the answer is recorded and given
-    feedback but moves nothing.
+    `repeat` is the bank being exhausted: answered before, so the answer earns
+    feedback and moves nothing. `shared` is a URL naming the item rather than
+    selection choosing it — the answer counts like any other, but it is marked
+    in the record, and it is scored by Elo rather than by the calibration
+    staircase, which only means anything on an item aimed at the user.
     """
 
     repeat: bool

@@ -202,20 +202,15 @@ function resetLine() {
 
 // --- sharing ------------------------------------------------------------
 
-// A link to the position on screen. Just the item id: which move is better is
-// not the client's to know before it answers, let alone to put in a URL.
-function shareUrl() {
-  return `${location.origin}${location.pathname}?item=${trial.item_id}`;
-}
-
-// The link opened the trial that is on screen now, so say so — an item somebody
-// chose isn't the one the app would have picked, and the reveal will say it
-// didn't move the rating.
-function showShareNote(honoured) {
-  el("share-note-text").textContent = honoured
-    ? "Someone shared this position with you. Your answer is recorded, but it won't move your rating."
-    : "That link's position isn't in the bank any more — here's a fresh one.";
-  el("share-note").hidden = false;
+// The URL names the trial on screen, always — so the address bar is already a
+// share link and the Share button only saves reaching for it, which on a phone
+// is most of the work. Only the item id goes in: which move is better isn't the
+// client's to know before it answers, let alone to put in a URL.
+//
+// `replaceState`, so the back button still leaves the app rather than walking
+// back through a session's worth of positions.
+function nameTrialInUrl() {
+  history.replaceState(null, "", `?item=${trial.item_id}`);
 }
 
 // --- copy-for-Claude ----------------------------------------------------
@@ -311,7 +306,7 @@ async function loadTrial(itemId) {
   stepIdx = -1;
   el("feedback").hidden = true;
   el("repeat-note").hidden = true;
-  el("share-note").hidden = true;
+  el("stale-link-note").hidden = true;
   el("ask").hidden = false;
   el("prompt").innerHTML = PROMPT_HTML;
   choiceEls.forEach((b) => (b.disabled = false));
@@ -326,9 +321,11 @@ async function loadTrial(itemId) {
   el("stat-rating").textContent = ratingLabel(trial.user_rating, trial.calibrating);
   el("stat-trial").textContent = trial.trial_number;
   if (trial.repeat) el("repeat-note").hidden = false;
-  // The server decides whether a link could be honoured; asking for one and
-  // getting an ordinary trial back is the answer that needs explaining.
-  if (itemId) showShareNote(trial.shared);
+  // Only the disappointing case is worth a word: we asked for a position by id
+  // and the server had none, so this is a different one from the one the link
+  // named. Being handed the position you asked for needs no announcement.
+  if (itemId && !trial.shared) el("stale-link-note").hidden = false;
+  nameTrialInUrl();
   phase = "choosing";
   shownAt = performance.now();
 }
@@ -384,18 +381,12 @@ async function choose(i) {
 
   streak = result.correct ? streak + 1 : 0;
   if (!result.repeat) {
+    accWindow.push(result.correct ? 1 : 0);
+    if (accWindow.length > 50) accWindow.shift();
     // Counted down here rather than re-read per trial: answering a fresh item
     // is exactly what consumes one, so the server needn't scan the bank to
-    // tell us a number we can derive. A shared item counts — it is gone from
-    // the unseen pile like any other.
+    // tell us a number we can derive.
     if (freshLeft !== null) el("stat-remaining").textContent = --freshLeft;
-    // But it stays out of the accuracy window, which is read as "am I being
-    // held near 80%" — a claim about what selection picked, and a shared item
-    // is one somebody else picked. /api/stats filters the same way.
-    if (!result.shared) {
-      accWindow.push(result.correct ? 1 : 0);
-      if (accWindow.length > 50) accWindow.shift();
-    }
   }
   el("stat-streak").textContent = streak;
   if (accWindow.length)
@@ -430,9 +421,7 @@ async function choose(i) {
   verdict.className = result.correct ? "good" : "bad";
   el("rating-delta").textContent = result.repeat
     ? "rerun — not rated"
-    : result.shared
-      ? "shared — not rated"
-      : `${result.rating_delta >= 0 ? "+" : ""}${result.rating_delta} Elo`;
+    : `${result.rating_delta >= 0 ? "+" : ""}${result.rating_delta} Elo`;
 
   // Built as nodes, not markup. `game_url` is the `Site` header of a mined PGN
   // — the one string here that didn't originate in this codebase — and
@@ -677,9 +666,8 @@ el("next").addEventListener("click", () => nextTrial());
 el("copy-btn").addEventListener("click", () => {
   if (lastResult) copyFrom(el("copy-btn"), buildCopyText());
 });
-el("share-btn").addEventListener("click", () => {
-  if (trial) copyFrom(el("share-btn"), shareUrl());
-});
+// The address bar is the share link, so this copies exactly what it shows.
+el("share-btn").addEventListener("click", () => copyFrom(el("share-btn"), location.href));
 el("ctl-reset").addEventListener("click", resetLine);
 el("ctl-back").addEventListener("click", () => stepLine(-1));
 el("ctl-fwd").addEventListener("click", () => stepLine(1));
@@ -687,13 +675,10 @@ el("prompt").addEventListener("click", () => {
   if (phase === "error") nextTrial();
 });
 
-// A share link's item, taken from the URL once and then removed from it. The id
-// belongs to the trial it opens, not to the tab: left in place, a reload after
-// answering would replay a spent trial as a rerun, and every later trial would
-// sit under a URL naming a position it isn't showing. Removing it costs
-// nothing, since the share button builds its link from the item on screen.
-const sharedItem = new URLSearchParams(location.search).get("item");
-if (sharedItem !== null) history.replaceState(null, "", location.pathname);
+// What the URL names, if anything: a link somebody sent, or this tab's own
+// last trial coming back on a reload. Every trial after it is named the same
+// way (`nameTrialInUrl`), so this is read once and the rest follows.
+const namedItem = new URLSearchParams(location.search).get("item");
 
 // Nothing at boot writes anything — identity is minted by the first answer —
 // so these are safe to race. /api/stats carries the account for the header;
@@ -701,4 +686,4 @@ if (sharedItem !== null) history.replaceState(null, "", location.pathname);
 // still work.
 applyArrowNumbers();
 initStats();
-nextTrial(sharedItem);
+nextTrial(namedItem);

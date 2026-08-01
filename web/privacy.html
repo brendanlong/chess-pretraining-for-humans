@@ -54,8 +54,8 @@
       guessable.</li>
       <li><b>One row per trial you answer</b>: which position you saw, which
       move you picked, whether it was correct, how long you took, when you
-      answered, your rating before and after, and whether a shared link put
-      that position in front of you rather than the app choosing it. This is the research
+      answered, your rating before and after, and whether that position was
+      opened by a link rather than chosen for you. This is the research
       record, and it is recorded whether or not you ever make an
       account.</li>
       <li><b>Account details, if you make an account</b>: the username you
@@ -91,8 +91,7 @@
     <ul>
       <li>A random per-user id — unrelated to your username.</li>
       <li>Your answers: the item, your choice, whether it was correct, timing,
-      rating snapshots, and whether the position arrived through a shared
-      link.</li>
+      rating snapshots, and whether the position was opened by a link.</li>
       <li>If you have linked Lichess, your rating as a band rather than a
       number — 200-point bands, with everything above 2200 collapsed into a
       single top band.</li>
@@ -124,9 +123,10 @@
     <p>We build that request ourselves rather than loading GoatCounter's script,
     which is what lets us say exactly what is in it. What we send: which of our
     pages you opened, chosen from a fixed list of the pages that exist, and the
-    width of your screen. Never the address bar's contents — so if you followed
-    a link to a particular position, which position it was stays in your
-    browser — and never the page's title. If you arrived from another site we
+    width of your screen, plus a random number so that the request isn't served
+    from a cache. Never the address bar's contents — it names the position you
+    are looking at, which is what makes it a link you can send someone, and it
+    stays in your browser — and never the page's title. If you arrived from another site we
     send that site's address without the page, and nothing at all when you
     arrived from ours.</p>
     <p>Your browser supplies the rest on its own: its user agent, its language,

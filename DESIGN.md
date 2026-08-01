@@ -66,15 +66,16 @@ nesting, raise — SQLite has no nested transaction to make either safe.
 
 Trial endpoints: next trial, answer, stats. Selection picks an
 unseen learnable item near the rating where the user's expected score is
-80%, unless a share link named one — `/api/next?item=` serves that instead,
-falling back to ordinary selection when the id names nothing servable, since
-a link outlives the bank it was made from. An answer moves the user's Elo
+80%, unless a URL named one — `/api/next?item=` serves that instead, falling
+back to ordinary selection whenever it can't: a link outlives the bank it was
+made from, arrives from chat clients with punctuation attached, and gets
+reopened after it has been answered. An answer moves the user's Elo
 rating and nothing else — item
 difficulty is fixed at labeling time, so the `items` row a trial came from
 is never written to and no user's answers change what another is served.
-A shared item moves nothing at all: it is marked in `responses`, left out of
-the reported accuracy, and left out of the rating for the reason beside the
-branch in `answer`.
+A named item rates and counts like any other and is marked in `responses`;
+the one difference is that during calibration it is scored by Elo rather than
+by the staircase, for the reason beside that branch in `answer`.
 New users run a calibration staircase first (start low, big steps, halve on
 miss). All responses are recorded with timing and the rating snapshots that
 make each trial reconstructible on its own.
@@ -188,11 +189,12 @@ per-ply FENs so the client only renders. Candidate moves are drawn as arrows;
 answers by tap or keyboard; the reveal shows evals in centipawns and win
 probability, auto-plays the chosen move's engine line (switchable to the other,
 steppable, speed configurable), and can copy the position + both lines as plain
-text for pasting into an assistant, or a link to the position for sending to
-somebody. A link arriving as `?item=` opens that trial and says so, and the id
-is taken out of the URL as it is read: it belongs to one trial, not to the tab,
-and left there a reload would replay a spent one. The share button builds its
-link from the item on screen, so nothing is lost by removing it.
+text for pasting into an assistant. The URL names the trial on screen
+throughout (`?item=`, by `replaceState`, so the back button still leaves the
+app), which makes the address bar the share link and the Share button a way of
+reaching it without one. Only the disappointing case is announced: a URL whose
+item the server won't serve gets an ordinary trial and a line saying so, which
+is also what a reload after answering looks like.
 
 `count.js` is the page counter, on every page and reporting only a path looked
 up in a table of the pages that exist — GoatCounter's own script reports the
@@ -266,7 +268,7 @@ can't ship without it.
 One SQLite database: `items` (positions, moves, evals, lines, difficulty),
 `users` (rating, calibration state, optional credentials), `sessions`
 (hashed cookie tokens), `responses` (every answer, timed, with rating
-snapshots and whether a share link chose the item rather than adaptive
+snapshots and whether the trial was asked for by item id rather than chosen by
 selection), `meta` (schema version, for the migrations that can't tell from
 the data whether they already ran — everything else is guarded by a read).
 The item bank is disposable and rebuildable from the pipeline —

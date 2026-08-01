@@ -49,9 +49,14 @@ function isLocal(hostname) {
 
 // Where people arrive from is the one thing worth knowing that the page itself
 // can't say — but document.referrer is the *previous* page's full URL, and when
-// that page was ours it carries the share link's item id: the same leak the
-// path table exists to prevent, arriving through a second door. So: reported
-// only when it is cross-origin, and then only its origin.
+// that page was ours it carries the item id this page's URL carries: the same
+// leak the path table exists to prevent, arriving through a second door. So:
+// reported only when it is cross-origin, and then only its origin.
+//
+// The beacon request sends a `Referer` header of its own, which is that same
+// leak a third time and is closed elsewhere: `Referrer-Policy: same-origin`
+// (trainer/server.py) means a cross-origin request carries none at all.
+// Loosening that header would reopen this with nothing here to notice.
 function crossOriginReferrer() {
   try {
     const url = new URL(document.referrer);

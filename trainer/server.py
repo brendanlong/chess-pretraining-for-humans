@@ -531,46 +531,61 @@ def healthz():
     return {"ok": True}
 
 
-def shared_item(item_id: int, user_id: int | None) -> tuple[dict, bool] | None:
-    """The item a share link names, and whether this caller has answered it.
+def named_item(item_id: int, user_id: int | None) -> dict | None:
+    """The item a URL names, if this caller can be served it.
 
-    None when the link names nothing servable — an id from another bank, or an
-    item the engine won't hold an answer to. The link is then just a link to the
-    app, so the caller gets an ordinary trial rather than an error page.
+    None for an id from another bank, an item the engine won't hold an answer
+    to, and — the case that isn't about the link at all — one this caller has
+    already answered. A URL is a durable thing that gets reopened: the tab
+    reloads, somebody clicks the link twice. Honouring it the second time would
+    hand back a position whose answer is on the screen it just came from, which
+    is the one thing an item may never be, so a URL cannot buy a second
+    exposure any more than selection can. The caller gets an ordinary trial and
+    a line saying why.
 
     Nothing here is a leak the ordinary trial flow doesn't already allow: the
     payload is symmetric between the two moves, so naming an item buys the
     position and the pair, never which one is better. What it does buy is
-    reaching an item selection would not have offered, which is why the answer
-    to one is marked and left out of the rating.
+    reaching an item selection would not have offered, and in bulk — the ids
+    are sequential, so this is the bank's positions readable by counting. The
+    answers stay behind `/api/answer`, which is where they were.
     """
-    row = conn.execute("SELECT * FROM items WHERE id = ? AND learnable = 1", (item_id,)).fetchone()
-    if row is None:
-        return None
-    seen = conn.execute(
-        "SELECT 1 FROM responses WHERE user_id = ? AND item_id = ? LIMIT 1",
-        (user_id or 0, item_id),
+    row = conn.execute(
+        """SELECT * FROM items
+           WHERE id = ? AND learnable = 1
+             AND id NOT IN (SELECT item_id FROM responses WHERE user_id = ?)""",
+        (item_id, user_id or 0),
     ).fetchone()
-    return dict(row), seen is not None
+    return dict(row) if row else None
 
 
 @app.get("/api/next")
-def next_item(item: int | None = None, user_id: int | None = OptionalUserId):
+def next_item(item: str | None = None, user_id: int | None = OptionalUserId):
     """Serve a trial. Writes nothing — a first-time visitor has no row yet, and
     getting one is what answering earns.
 
-    `item` is a share link's doing: somebody sent this position on, so it is
-    served instead of the one selection would have picked.
+    `item` names a position rather than asking for one: a link somebody sent,
+    or the page reloading a URL that already named the trial on screen. It is
+    served instead of what selection would have picked, and the answer to it
+    says so — or, if `named_item` won't have it, selection picks after all and
+    `shared` is how the page knows which of the two it got.
     """
     u = auth.get_user(conn, user_id) if user_id is not None else None
-    shared = shared_item(item, user_id) if item is not None else None
-    if shared is not None:
-        row, is_repeat = shared
-    else:
+    # Text, parsed here, rather than declared an integer: a link travels through
+    # chat clients and Markdown and comes back with a bracket on the end, and a
+    # framework's validation error is not what somebody who followed one should
+    # be looking at. So anything that isn't an id reads as no id, which is the
+    # same fallback an id the bank can't serve gets. `isascii` because
+    # `isdigit` alone accepts other scripts' digits, which `int` then parses.
+    wanted = int(item) if item and item.isascii() and item.isdigit() else None
+    named = named_item(wanted, user_id) if wanted is not None else None
+    is_repeat = False
+    row = named
+    if row is None:
         row, is_repeat = pick_item(u["rating"] if u else rating.USER_START, user_id)
     if row is None:
         raise HTTPException(503, "no items in bank — run the mining/labeling pipeline")
-    served = trials.Served(repeat=is_repeat, shared=shared is not None)
+    served = trials.Served(repeat=is_repeat, shared=named is not None)
     moves = [row["best_uci"], row["distractor_uci"]]
     rng.shuffle(moves)
     return {
@@ -582,8 +597,8 @@ def next_item(item: int | None = None, user_id: int | None = OptionalUserId):
         "side_to_move": "white" if chess.Board(row["fen"]).turn else "black",
         "moves": [{"uci": m, "san": san(row["fen"], m)} for m in moves],
         "repeat": is_repeat,
-        # Says whether the link was honoured, so a stale one gets a fresh trial
-        # and an explanation rather than a position it didn't name.
+        # Whether a URL that named an item got it, so one that didn't gets a
+        # line saying so rather than a position it never named.
         "shared": served.shared,
         # No fresh-item count: it costs a pass over the bank, and the drawer
         # counter that reads it is seeded from /api/stats and counted down there.
@@ -662,17 +677,22 @@ def answer(a: Answer, request: Request):
         # see the `trials` module docstring.
         if is_repeat and not served.repeat:
             raise HTTPException(409, "that trial has already been answered — fetch a new one")
-        # Two kinds of trial get feedback but move nothing. A repeat, served once
-        # the bank is exhausted, can be answered from memory of the reveal rather
-        # than from skill. A shared one is an item a friend picked: off the
-        # difficulty selection was aiming at, and — during calibration, whose
-        # staircase steps by a fixed amount and not by what the item was worth —
-        # able to move a new user's rating hundreds of points on a position
-        # nothing about them chose.
+        # Repeats get feedback but move nothing: served once the bank is
+        # exhausted, they can be answered from memory of the reveal.
+        #
+        # A shared item moves the rating like any other — it is a real first
+        # exposure and Elo already prices how hard it was. The staircase is what
+        # can't take one: it steps by a fixed amount *because* selection
+        # guarantees the item was aimed at the user, so on an item nobody aimed
+        # it would pay a quarter of the scale for what, in a two-alternative
+        # task, a beginner wins half the time by guessing. Elo reads the item's
+        # difficulty, so it prices the same answer at a whole K if the item was
+        # far above them and at nothing if it wasn't — which is the question
+        # "are they better than we thought" actually being asked.
         new_step = u["calib_step"]
-        if is_repeat or served.shared:
+        if is_repeat:
             new_user_r = u["rating"]
-        elif is_calibrating(u):
+        elif is_calibrating(u) and not served.shared:
             new_user_r, new_step = rating.calibrate(u["rating"], u["calib_step"], correct)
         else:
             new_user_r = rating.update(u["rating"], item["rating"], correct)
@@ -705,7 +725,6 @@ def answer(a: Answer, request: Request):
 
     return {
         "repeat": is_repeat,
-        "shared": served.shared,
         "user_rating": round(new_user_r),
         "rating_delta": round(new_user_r - u["rating"], 1),
         "calibrating": new_step >= rating.CALIB_END_STEP,
@@ -743,11 +762,8 @@ def answer(a: Answer, request: Request):
     }
 
 
-# Accuracy is over first exposures the app itself chose: repeats, served once
-# the bank is exhausted, can be answered from memory of the reveal rather than
-# from skill, and a shared item is one somebody else aimed. The number is read
-# as "am I being held near 80%", which is a claim about selection — so the
-# trials selection didn't make don't belong in it.
+# Accuracy is over first exposures only: repeats, served once the bank is
+# exhausted, can be answered from memory of the reveal rather than from skill.
 #
 # Newest-first with a limit, which is what keeps this endpoint a constant cost
 # rather than one that grows with a user's history — the window is all anyone
@@ -760,7 +776,6 @@ RECENT_FIRST_EXPOSURES_SQL = f"""
     SELECT r.correct
       FROM responses r
      WHERE r.user_id = ?
-       AND r.shared = 0
        AND NOT EXISTS (SELECT 1 FROM responses p
                        WHERE p.user_id = r.user_id
                          AND p.item_id = r.item_id AND p.id < r.id)

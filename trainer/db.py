@@ -115,10 +115,11 @@ CREATE TABLE IF NOT EXISTS responses (
     -- The item's difficulty as served. Recorded rather than joined so a row
     -- stays interpretable if difficulty_rating's constants are ever retuned.
     item_rating_before REAL,
-    -- Whether a share link chose this item instead of adaptive selection. The
-    -- item is then one somebody found worth sending on rather than one aimed at
-    -- this user, so the row is outside the sampling every other row belongs to
-    -- and analysis has to be able to say so. 0 for everything the app selected.
+    -- Whether the trial was asked for by item id — a link somebody sent, or a
+    -- reload of a URL already naming the position on screen — instead of being
+    -- chosen by adaptive selection. The answer counts like any other; this is
+    -- for the analysis, which has to be able to hold out the rows nobody aimed.
+    -- 0 for everything the app chose.
     shared INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );

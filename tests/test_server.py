@@ -14,7 +14,7 @@ import brotli
 import pytest
 from fastapi.testclient import TestClient
 
-from trainer import assets, auth, server, trials
+from trainer import assets, auth, rating, server, trials
 from trainer.db import connect
 
 from .conftest import FEN_TMPL, ITEM, add_item, answer, answer_body, next_trial
@@ -146,11 +146,15 @@ def test_first_exposure_accuracy_excludes_repeats(client):
 
 # --- share links ----------------------------------------------------------
 #
-# A link names an item, so it reaches one selection would not have offered.
-# What that costs is bounded by two things: the payload is the same symmetric
-# one every trial gets, so naming an item buys the position and the pair and
-# never the answer; and the response it produces is marked, kept out of the
-# rating, and kept out of the accuracy the app reports.
+# A URL names an item, so it reaches one selection would not have offered. The
+# payload is the same symmetric one every trial gets, so naming an item buys
+# the position and the pair and never the answer; the answer counts like any
+# other, and carries a mark saying nobody aimed this one.
+
+
+def choice_index_of(trial, uci) -> int:
+    """Which button that move is on this trial — the pair is shuffled per trial."""
+    return [m["uci"] for m in trial["moves"]].index(uci)
 
 
 def other_item(db, trial) -> int:
@@ -176,67 +180,76 @@ def test_a_share_link_serves_the_item_it_names(client, db):
         assert not set(NEVER_BEFORE_ANSWERING) & set(trial)
 
 
-def test_an_answer_from_a_share_link_is_recorded_and_marked_but_not_rated(client, db):
-    """Elo could take an off-target item in its stride; the calibration
-    staircase could not — it steps by a fixed amount, so a hard position a
-    friend sent would move a new user hundreds of points. Both are claims about
-    what selection chose, so a shared answer is research data and nothing else.
-    """
+def test_an_answer_from_a_share_link_counts_like_any_other_and_is_marked(client, db):
+    """The mark is the whole of what sharing costs: the answer is a real first
+    exposure, so it rates and it counts, and what the analysis needs is to be
+    able to hold out the rows nobody aimed."""
     first = next_trial(client)
-    answer(client, first)  # mints the identity and the rating this must not move
+    answer(client, first, choice_index_of(first, ITEM["best_uci"]))
     before = user_row(db, client)["rating"]
-    shared = other_item(db, first)
+    shared = shared_trial(client, other_item(db, first))
 
-    result = answer(client, shared_trial(client, shared))
-    assert result["shared"] is True
+    result = answer(client, shared, choice_index_of(shared, ITEM["best_uci"]))
     assert "correct" in result and "best" in result  # feedback, like any trial
-    assert user_row(db, client)["rating"] == before
+    assert user_row(db, client)["rating"] > before  # and a rating that moved
+    assert result["rating_delta"] > 0
     row = db.execute("SELECT * FROM responses ORDER BY id DESC LIMIT 1").fetchone()
-    assert (row["item_id"], row["shared"]) == (shared, 1)
-    # And it is gone from the unseen pile, exactly like an ordinary answer.
-    assert client.get("/api/stats").json()["items_remaining"] == 0
-
-
-def test_shared_answers_stay_out_of_the_reported_accuracy(client, db):
-    """The number is read as "am I being held near 80%", which is a claim about
-    what selection picked."""
-
-    def answer_with(trial, uci):
-        answer(client, trial, [m["uci"] for m in trial["moves"]].index(uci))
-
-    first = next_trial(client)
-    answer_with(first, ITEM["best_uci"])
-    assert client.get("/api/stats").json()["accuracy_last_50"] == 1.0
-
-    shared = other_item(db, first)
-    answer_with(shared_trial(client, shared), ITEM["distractor_uci"])
+    assert (row["item_id"], row["shared"]) == (shared["item_id"], 1)
+    # Counted where every other first exposure is, too.
     stats = client.get("/api/stats").json()
-    assert stats["attempts"] == 2  # both recorded
-    assert stats["accuracy_last_50"] == 1.0  # only the selected one counted
+    assert stats["attempts"] == 2
+    assert stats["accuracy_last_50"] == 1.0
+    assert stats["items_remaining"] == 0  # gone from the unseen pile as well
 
 
-def test_a_shared_item_you_have_answered_comes_back_as_a_repeat(client, db):
-    """Nothing about a link exempts it from the one-first-exposure rule: the
-    second answer to an item is a rerun whoever sent it."""
+def test_a_shared_answer_is_scored_by_elo_even_during_calibration(client, db):
+    """The staircase steps by a fixed amount *because* selection guarantees the
+    item was aimed at the user. On an item nobody aimed it would pay a quarter
+    of the scale for a two-alternative guess — so during calibration a shared
+    answer goes through Elo, which reads how hard the item actually was."""
+    first = next_trial(client)
+    answer(client, first, choice_index_of(first, ITEM["best_uci"]))
+    calibrating = user_row(db, client)
+    assert calibrating["calib_step"] == rating.CALIB_START_STEP  # still on the staircase
+    # The staircase's own move, for comparison: the full step, whatever the item.
+    assert calibrating["rating"] == rating.USER_START + rating.CALIB_START_STEP
+
+    shared = shared_trial(client, other_item(db, first))
+    before = calibrating["rating"]
+    answer(client, shared, choice_index_of(shared, ITEM["best_uci"]))
+    after = user_row(db, client)
+
+    # The fixture item is far above a calibrating user, so Elo pays nearly the
+    # whole K for beating it — and nothing like the step it would have paid.
+    assert 0 < after["rating"] - before <= rating.K_USER
+    # The staircase is where it was: a trial it didn't choose doesn't advance it.
+    assert after["calib_step"] == calibrating["calib_step"]
+
+
+def test_a_url_naming_an_item_you_have_answered_is_not_honoured(client, db):
+    """The case that isn't about links at all: the tab reloads, and the URL it
+    reloads names the trial whose answer is on the screen it came from. A URL
+    buys no more second exposures than selection does, so it falls back."""
     first = next_trial(client)
     answer(client, first)
 
     again = shared_trial(client, first["item_id"])
-    assert (again["item_id"], again["repeat"], again["shared"]) == (first["item_id"], True, True)
-    assert answer(client, again)["repeat"] is True
-    assert db.execute("SELECT COUNT(*) FROM responses").fetchone()[0] == 2
+    assert again["item_id"] != first["item_id"]
+    assert (again["repeat"], again["shared"]) == (False, False)
+    answer(client, again)
+    # Two answers, two items — no second row for the one the URL named.
+    assert db.execute("SELECT COUNT(DISTINCT item_id) FROM responses").fetchone()[0] == 2
 
 
-@pytest.mark.parametrize("named", ["99999", "0", "-1", "not-an-id"])
-def test_a_link_the_bank_cannot_honour_still_opens_the_app(client, named):
-    """A link outlives the bank it was made from, and a stale one should be a
-    trial with an explanation rather than an error page. `shared` is how the
-    page knows which it got."""
+@pytest.mark.parametrize("named", ["99999", "0", "-1", "not-an-id", "12)", "", "1e3"])
+def test_a_url_the_bank_cannot_honour_still_opens_the_app(client, named):
+    """A link outlives the bank it was made from, and travels through chat
+    clients that hand it back with a bracket on the end. Every way of naming
+    nothing lands on an ordinary trial, because the alternative in front of
+    somebody who just followed a link is a validation error."""
     r = client.get(f"/api/next?item={named}")
-    if r.status_code == 422:  # not an id at all; FastAPI refuses it before we see it
-        return
     assert r.status_code == 200, r.text
-    assert r.json()["shared"] is False
+    assert r.json()["shared"] is False  # which is what puts the note on the page
     assert r.json()["item_id"] > 0
 
 
@@ -765,6 +778,16 @@ def test_the_counted_path_is_a_constant_and_never_the_url(client):
 
     for leak in ("document.title", "location.search", "location.href", "location.hash"):
         assert leak not in COUNT_JS_CODE, f"{leak} would put the URL or the title in a hit"
+    # The referrer is the second door to the same leak — from one of our pages
+    # it is that page's full URL, item id and all — and the grep above doesn't
+    # cover it, because `new URL(document.referrer).href` names neither
+    # `location` nor `title`. So the function that reads it is held to
+    # returning an origin.
+    referrer_fn = COUNT_JS_CODE.split("function crossOriginReferrer()")[1].split("\n}")[0]
+    assert "document.referrer" not in COUNT_JS_CODE.replace(referrer_fn, "")
+    assert "url.origin" in referrer_fn
+    for whole_url in (".href", ".toString()", ".pathname", ".search", "`${"):
+        assert whole_url not in referrer_fn, f"{whole_url}: the referrer is more than an origin"
     sent = set(re.findall(r'params\.set\("(\w+)"', COUNT_JS_CODE)) | set(
         re.findall(r"^\s{4}(\w+):", COUNT_JS_CODE, re.M)
     )
