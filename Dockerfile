@@ -26,7 +26,7 @@ COPY pyproject.toml uv.lock ./
 # `exclude-newer` from the authoring machine that a build host doesn't have.
 RUN uv sync --frozen --no-dev
 
-FROM python:3.12-slim-bookworm
+FROM python:3.14-slim-bookworm
 COPY --from=litestream /usr/local/bin/litestream /usr/local/bin/litestream
 # The server reads the code and writes one directory. Running it as root means a
 # code-execution bug also gets to rewrite the image, the database, and
