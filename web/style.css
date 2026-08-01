@@ -363,8 +363,8 @@ body:not(.no-arrow-numbers) .line-card.bad .key { background: var(--bad); }
 #detail { font-size: 13px; color: var(--muted); margin: 6px 0 0; }
 #detail a { color: var(--accent-1); }
 
-#extra-actions { margin-top: 12px; }
-#copy-btn {
+#extra-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+#extra-actions button {
   font: inherit;
   font-size: 13px;
   padding: 8px 12px;
@@ -374,9 +374,10 @@ body:not(.no-arrow-numbers) .line-card.bad .key { background: var(--bad); }
   color: var(--muted);
   cursor: pointer;
 }
-#copy-btn:hover { color: var(--text); }
+#extra-actions button:hover { color: var(--text); }
 
-#repeat-note { font-size: 13px; color: var(--muted); margin: 4px 0 8px; }
+#repeat-note,
+#share-note { font-size: 13px; color: var(--muted); margin: 4px 0 8px; }
 .repeat-badge {
   display: inline-block;
   background: var(--probe);

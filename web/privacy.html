@@ -22,13 +22,9 @@
 <link rel="manifest" href="site.webmanifest">
 <meta name="theme-color" content="#211f1c">
 <link rel="stylesheet" href="style.css">
-<!-- Page counter; privacy.html says what it collects. Pinned to a version
-     and a hash because it runs on the origin holding the session cookie —
-     moving to a newer one means changing both. -->
-<script data-goatcounter="https://chess-pretraining.goatcounter.com/count"
-        async src="https://gc.zgo.at/count.v5.js"
-        crossorigin="anonymous"
-        integrity="sha384-atnOLvQb9t+jTSipvd75X2yginT4PjVbqDdlJAmxMm+wYElFmeR6EmLP5bYeoRVQ"></script>
+<!-- Page counter; privacy.html says what it collects. First-party on
+     purpose: see the reasoning at the top of count.js. -->
+<script type="module" src="count.js"></script>
 </head>
 <body class="legal">
 <header id="topbar">
@@ -41,7 +37,7 @@
 <main>
   <article>
     <h1>Privacy policy</h1>
-    <p class="updated">Last updated 31 July 2026</p>
+    <p class="updated">Last updated 1 August 2026</p>
 
     <p>Chess Pretraining is a small research project run by
     <a href="https://www.brendanlong.com/pages/about-me.html">Brendan Long</a>. This page
@@ -58,7 +54,8 @@
       guessable.</li>
       <li><b>One row per trial you answer</b>: which position you saw, which
       move you picked, whether it was correct, how long you took, when you
-      answered, and your rating before and after. This is the research
+      answered, your rating before and after, and whether a shared link put
+      that position in front of you rather than the app choosing it. This is the research
       record, and it is recorded whether or not you ever make an
       account.</li>
       <li><b>Account details, if you make an account</b>: the username you
@@ -94,7 +91,8 @@
     <ul>
       <li>A random per-user id — unrelated to your username.</li>
       <li>Your answers: the item, your choice, whether it was correct, timing,
-      and rating snapshots.</li>
+      rating snapshots, and whether the position arrived through a shared
+      link.</li>
       <li>If you have linked Lichess, your rating as a band rather than a
       number — 200-point bands, with everything above 2200 collapsed into a
       single top band.</li>
@@ -115,21 +113,30 @@
     never touches this database.</p>
 
     <h2>Page counts</h2>
-    <p>Every page loads <a href="https://www.goatcounter.com/">GoatCounter</a>, a
-    hosted counter, so we can tell how many people arrive and which links sent
-    them. It sets no cookie and stores nothing in your browser. So that a reload
-    isn't counted as a second person, it holds your IP address and browser string
-    in memory for eight hours, paired with a random id; none of the three reaches
-    its database, and nothing it keeps follows you to another site or back here
+    <p>Every page sends one request to
+    <a href="https://www.goatcounter.com/">GoatCounter</a>, a hosted counter, so
+    we can tell how many people arrive and which sites sent them. It sets no
+    cookie and stores nothing in your browser. So that a reload isn't counted as
+    a second person, it holds your IP address and browser string in memory for
+    eight hours, paired with a random id; none of the three reaches its
+    database, and nothing it keeps follows you to another site or back here
     tomorrow.</p>
-    <p>What it is sent: the page you opened and its title, the referring link
-    and any campaign tags on it, your browser and operating system, your screen
-    size and language, and — from your IP address — a country, plus a state or
-    province if that country is the United States, Russia, or China. What it
-    keeps is counts, one table per kind of detail: pages and referrers by the
-    hour, everything else by the day. Each table records the page, so it can
-    count Firefox visits to this one; no two details share a table, so it can't
-    tell whether that Firefox visit came from Texas. GoatCounter's own
+    <p>We build that request ourselves rather than loading GoatCounter's script,
+    which is what lets us say exactly what is in it. What we send: which of our
+    pages you opened, chosen from a fixed list of the pages that exist, and the
+    width of your screen. Never the address bar's contents — so if you followed
+    a link to a particular position, which position it was stays in your
+    browser — and never the page's title. If you arrived from another site we
+    send that site's address without the page, and nothing at all when you
+    arrived from ours.</p>
+    <p>Your browser supplies the rest on its own: its user agent, its language,
+    and your IP address, from which GoatCounter derives a browser, an operating
+    system, a language and a country — plus a state or province if that country
+    is the United States, Russia, or China. What it keeps is counts, one table
+    per kind of detail: pages and referrers by the hour, everything else by the
+    day. Each table records the page, so it can count Firefox visits to this
+    one; no two details share a table, so it can't tell whether that Firefox
+    visit came from Texas. GoatCounter's own
     <a href="https://www.goatcounter.com/help/privacy">privacy policy</a> is the
     authority on all of that.</p>
     <p>It never sees your answers, your rating, your account, or your session

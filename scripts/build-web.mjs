@@ -24,7 +24,7 @@ const out = join(root, "web-dist");
 // The files a page links directly. Each pulls in whatever it imports —
 // app.js takes chessground with it, board.css takes the three board
 // stylesheets — which is why vendor/ is not copied.
-const ENTRIES = ["app.js", "board.css", "style.css"];
+const ENTRIES = ["app.js", "count.js", "board.css", "style.css"];
 // Inlined into the entries above; shipping them too would be dead weight
 // nothing references.
 const BUNDLED_AWAY = "vendor";

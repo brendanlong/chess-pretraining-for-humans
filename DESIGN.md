@@ -66,9 +66,15 @@ nesting, raise — SQLite has no nested transaction to make either safe.
 
 Trial endpoints: next trial, answer, stats. Selection picks an
 unseen learnable item near the rating where the user's expected score is
-80%. An answer moves the user's Elo rating and nothing else — item
+80%, unless a share link named one — `/api/next?item=` serves that instead,
+falling back to ordinary selection when the id names nothing servable, since
+a link outlives the bank it was made from. An answer moves the user's Elo
+rating and nothing else — item
 difficulty is fixed at labeling time, so the `items` row a trial came from
 is never written to and no user's answers change what another is served.
+A shared item moves nothing at all: it is marked in `responses`, left out of
+the reported accuracy, and left out of the rating for the reason beside the
+branch in `answer`.
 New users run a calibration staircase first (start low, big steps, halve on
 miss). All responses are recorded with timing and the rating snapshots that
 make each trial reconstructible on its own.
@@ -79,7 +85,9 @@ answer payload *is* the answer key, and item ids are small sequential
 integers, so otherwise the whole bank reads out by counting. Signed rather
 than stored so that no row has to exist before the first trial and two tabs
 don't fight over one pending-trial slot. The token names its holder and its
-item, and says whether the trial was served as a repeat; a token issued
+item, and says how it was served — as a repeat, and from a share link, both
+being claims about the request that fetched it which the request that
+answers it cannot see; a token issued
 before its holder has any identity is additionally remembered once spent
 (`server.anonymous_trial_use`), because redeeming it is what creates the row
 that would otherwise notice the replay. The threat model — who a replayed
@@ -106,8 +114,8 @@ a database read grants no logins; the token is rotated on every privilege
 change and expires both on idleness and absolutely. `SameSite=Lax` plus
 `no-store` on every API response is the CSRF-and-shared-cache story, and a
 CSP is what stops a hostile string in mined data from being script. Its
-allowlist is two named origins, both the hosted page counter — everything
-else the page loads is ours.
+allowlist is one URL, the page counter's beacon — every line of script the
+page runs is ours, including the one that sends that beacon.
 
 Abuse control is rate limiting, not captchas — the cost of a wrong guess
 should be a wait, not a lost signup. Password checks are metered twice (per
@@ -180,7 +188,17 @@ per-ply FENs so the client only renders. Candidate moves are drawn as arrows;
 answers by tap or keyboard; the reveal shows evals in centipawns and win
 probability, auto-plays the chosen move's engine line (switchable to the other,
 steppable, speed configurable), and can copy the position + both lines as plain
-text for pasting into an assistant.
+text for pasting into an assistant, or a link to the position for sending to
+somebody. A link arriving as `?item=` opens that trial and says so, and the id
+is taken out of the URL as it is read: it belongs to one trial, not to the tab,
+and left there a reload would replay a spent one. The share button builds its
+link from the item on screen, so nothing is lost by removing it.
+
+`count.js` is the page counter, on every page and reporting only a path looked
+up in a table of the pages that exist — GoatCounter's own script reports the
+query string and the title, which a share link makes exactly the wrong thing to
+report. Why the table is closed rather than a sanitizer is at the top of the
+file.
 
 The palette lives entirely in `:root`, including the dark, saturated
 arrow variants the light board needs alongside the light ones the dark
@@ -248,7 +266,8 @@ can't ship without it.
 One SQLite database: `items` (positions, moves, evals, lines, difficulty),
 `users` (rating, calibration state, optional credentials), `sessions`
 (hashed cookie tokens), `responses` (every answer, timed, with rating
-snapshots), `meta` (schema version, for the migrations that can't tell from
+snapshots and whether a share link chose the item rather than adaptive
+selection), `meta` (schema version, for the migrations that can't tell from
 the data whether they already ran — everything else is guarded by a read).
 The item bank is disposable and rebuildable from the pipeline —
 literally so, since nothing the app does writes to it; responses are the

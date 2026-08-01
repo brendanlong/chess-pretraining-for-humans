@@ -149,12 +149,25 @@ automatically.
   policy promises is a constraint on what the analysis may export, not
   just prose.
 - **The page counter learns that a page was opened, and nothing else.**
-  It is sent the URL, the query string and the title, so what keeps the
-  research record out of it is that the app writes none of the three — an
-  item id in the URL would ship answers off-site without touching a line
-  that looks like it is about privacy. Being a third party's script on an
-  origin that holds a session cookie, it is pinned to a hash: what the
-  policy says about it is enforced, not trusted.
+  A share link puts an item id in the query string, so nothing read off the
+  URL may reach it: what it is sent is a path chosen from a closed list of
+  pages, never the URL, the query string, the title, or a referrer from our
+  own origin. A page missing from that list counts as nothing, which is the
+  failure a sanitizer can't have — that one is always an unanticipated URL
+  away from the other. Building the request ourselves is also what keeps a
+  third party's script off an origin that holds a session cookie: what the
+  privacy policy says about the counter is then enforced by code that ships
+  with the app rather than trusted to code that doesn't.
+- **A shared position is a trial, not a measurement.** Sending a link to a
+  friend is how this spreads, and the price is that the item was chosen by
+  whoever sent it rather than by adaptation — so an answer to one is
+  recorded and marked as such, and kept out of the rating and out of the
+  accuracy the app reports. Not because Elo couldn't absorb an off-target
+  item, but because the calibration staircase steps by a fixed amount and
+  would move a newcomer hundreds of points on a position nothing about them
+  chose. The link carries an item id and never an answer, and what it opens
+  is the same symmetric trial everyone else gets — one-per-user like any
+  other, so a second answer to it is a rerun whoever sent it.
 - **A deletion request erases the responses too**, and is reachable from
   inside the app. Being signed in is the proof of ownership the optional,
   unverified email can't supply, so deletion can't depend on an email

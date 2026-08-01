@@ -17,7 +17,7 @@ from fastapi.testclient import TestClient
 from trainer import assets, auth, server, trials
 from trainer.db import connect
 
-from .conftest import ITEM, answer, answer_body, next_trial
+from .conftest import FEN_TMPL, ITEM, add_item, answer, answer_body, next_trial
 
 
 class Head(HTMLParser):
@@ -142,6 +142,115 @@ def test_first_exposure_accuracy_excludes_repeats(client):
     stats = client.get("/api/stats").json()
     assert stats["attempts"] == 4  # all four were recorded
     assert stats["accuracy_last_50"] == 1.0  # but only the two fresh ones counted
+
+
+# --- share links ----------------------------------------------------------
+#
+# A link names an item, so it reaches one selection would not have offered.
+# What that costs is bounded by two things: the payload is the same symmetric
+# one every trial gets, so naming an item buys the position and the pair and
+# never the answer; and the response it produces is marked, kept out of the
+# rating, and kept out of the accuracy the app reports.
+
+
+def other_item(db, trial) -> int:
+    """An item the trial on screen isn't, so a share of it is a fresh one."""
+    return db.execute("SELECT id FROM items WHERE id != ?", (trial["item_id"],)).fetchone()[0]
+
+
+def shared_trial(client, item_id):
+    r = client.get(f"/api/next?item={item_id}")
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_a_share_link_serves_the_item_it_names(client, db):
+    wanted = db.execute("SELECT id FROM items ORDER BY id DESC").fetchone()[0]
+    # Ask enough times that ordinary selection landing on it would be a
+    # coincidence rather than the thing being tested.
+    for _ in range(5):
+        trial = shared_trial(client, wanted)
+        assert trial["item_id"] == wanted
+        assert trial["shared"] is True
+        # Still a trial like any other: nothing about which move is better.
+        assert not set(NEVER_BEFORE_ANSWERING) & set(trial)
+
+
+def test_an_answer_from_a_share_link_is_recorded_and_marked_but_not_rated(client, db):
+    """Elo could take an off-target item in its stride; the calibration
+    staircase could not — it steps by a fixed amount, so a hard position a
+    friend sent would move a new user hundreds of points. Both are claims about
+    what selection chose, so a shared answer is research data and nothing else.
+    """
+    first = next_trial(client)
+    answer(client, first)  # mints the identity and the rating this must not move
+    before = user_row(db, client)["rating"]
+    shared = other_item(db, first)
+
+    result = answer(client, shared_trial(client, shared))
+    assert result["shared"] is True
+    assert "correct" in result and "best" in result  # feedback, like any trial
+    assert user_row(db, client)["rating"] == before
+    row = db.execute("SELECT * FROM responses ORDER BY id DESC LIMIT 1").fetchone()
+    assert (row["item_id"], row["shared"]) == (shared, 1)
+    # And it is gone from the unseen pile, exactly like an ordinary answer.
+    assert client.get("/api/stats").json()["items_remaining"] == 0
+
+
+def test_shared_answers_stay_out_of_the_reported_accuracy(client, db):
+    """The number is read as "am I being held near 80%", which is a claim about
+    what selection picked."""
+
+    def answer_with(trial, uci):
+        answer(client, trial, [m["uci"] for m in trial["moves"]].index(uci))
+
+    first = next_trial(client)
+    answer_with(first, ITEM["best_uci"])
+    assert client.get("/api/stats").json()["accuracy_last_50"] == 1.0
+
+    shared = other_item(db, first)
+    answer_with(shared_trial(client, shared), ITEM["distractor_uci"])
+    stats = client.get("/api/stats").json()
+    assert stats["attempts"] == 2  # both recorded
+    assert stats["accuracy_last_50"] == 1.0  # only the selected one counted
+
+
+def test_a_shared_item_you_have_answered_comes_back_as_a_repeat(client, db):
+    """Nothing about a link exempts it from the one-first-exposure rule: the
+    second answer to an item is a rerun whoever sent it."""
+    first = next_trial(client)
+    answer(client, first)
+
+    again = shared_trial(client, first["item_id"])
+    assert (again["item_id"], again["repeat"], again["shared"]) == (first["item_id"], True, True)
+    assert answer(client, again)["repeat"] is True
+    assert db.execute("SELECT COUNT(*) FROM responses").fetchone()[0] == 2
+
+
+@pytest.mark.parametrize("named", ["99999", "0", "-1", "not-an-id"])
+def test_a_link_the_bank_cannot_honour_still_opens_the_app(client, named):
+    """A link outlives the bank it was made from, and a stale one should be a
+    trial with an explanation rather than an error page. `shared` is how the
+    page knows which it got."""
+    r = client.get(f"/api/next?item={named}")
+    if r.status_code == 422:  # not an id at all; FastAPI refuses it before we see it
+        return
+    assert r.status_code == 200, r.text
+    assert r.json()["shared"] is False
+    assert r.json()["item_id"] > 0
+
+
+@pytest.mark.parametrize("item_count", [1])
+def test_a_link_to_an_unlearnable_item_is_not_honoured(client, db, item_count):
+    """The one thing that is never served: an item whose answer the engine
+    won't hold still has nothing to teach, and a link is not a way in."""
+    add_item(db, FEN_TMPL.format("7P"), learnable=0)
+    db.commit()
+    unlearnable = db.execute("SELECT id FROM items WHERE learnable = 0").fetchone()[0]
+
+    trial = shared_trial(client, unlearnable)
+    assert trial["shared"] is False
+    assert trial["item_id"] != unlearnable
 
 
 def test_first_exposure_filter_is_answered_from_an_index_covering_item_id(db):
@@ -452,6 +561,17 @@ def test_a_trial_issued_to_one_session_cannot_be_redeemed_by_another(client, db)
     assert client.post("/api/answer", json=answer_body(theirs)).status_code == 409
 
 
+# The signed payload's fields, by position: item, user, served-as-repeat,
+# served-as-shared, nonce, expiry — then the mac.
+USER_FIELD, SHARED_FIELD, EXPIRY_FIELD = 1, 3, trials.FIELDS - 1
+
+
+def rewrite_token_field(token: str, index: int, value) -> str:
+    parts = token.split(".")
+    parts[index] = str(value)
+    return ".".join(parts)
+
+
 @pytest.mark.parametrize(
     "mangle",
     [
@@ -459,7 +579,13 @@ def test_a_trial_issued_to_one_session_cannot_be_redeemed_by_another(client, db)
         pytest.param(lambda t: "", id="empty"),
         pytest.param(lambda t: "not-a-token", id="malformed"),
         pytest.param(lambda t: t[:-1] + ("a" if t[-1] != "a" else "b"), id="tampered-signature"),
-        pytest.param(lambda t: t.replace(t.split(".")[2], "99999999999", 1), id="extended-expiry"),
+        pytest.param(
+            lambda t: rewrite_token_field(t, EXPIRY_FIELD, 99999999999), id="extended-expiry"
+        ),
+        # Every field is the server's claim about what it offered, including the
+        # one that says an answer shouldn't be rated. Signing is what stops a
+        # client deciding that for itself.
+        pytest.param(lambda t: rewrite_token_field(t, SHARED_FIELD, 1), id="claimed-shared"),
     ],
 )
 def test_a_token_we_did_not_sign_is_refused(client, db, mangle):
@@ -485,11 +611,11 @@ def test_an_anonymous_token_expires_sooner_than_a_bound_one(client):
     keeps that memory small."""
     assert trials.ANON_TOKEN_TTL_S < trials.TOKEN_TTL_S
     anon = next_trial(client)["trial_token"]
-    assert anon.split(".")[1] == "0"  # the user field: issued to nobody yet
+    assert anon.split(".")[USER_FIELD] == "0"  # issued to nobody yet
     answer(client, next_trial(client))  # now `client` has an identity
     bound = next_trial(client)["trial_token"]
-    assert bound.split(".")[1] != "0"
-    assert int(bound.split(".")[4]) > int(anon.split(".")[4])
+    assert bound.split(".")[USER_FIELD] != "0"
+    assert int(bound.split(".")[EXPIRY_FIELD]) > int(anon.split(".")[EXPIRY_FIELD])
 
 
 def test_an_answer_is_spent_once(client, db):
@@ -539,52 +665,111 @@ def csp_directives(response) -> dict[str, list[str]]:
     return {d.split()[0]: d.split()[1:] for d in (p.strip() for p in parts) if d}
 
 
-@pytest.mark.parametrize("name", WEB_PAGES)
-def test_the_page_counter_is_on_every_page_and_allowed_by_the_csp(client, name):
-    """A CSP refusal is silent in the browser — the counter just stops
-    counting — so the header and the tag are checked against each other."""
-    served = client.get("/" if name == "index.html" else f"/{name}")
-    tags = [s for s in Head.of(served.text).scripts if "data-goatcounter" in s]
-    assert len(tags) == 1, f"{name} should load the counter exactly once"
-    tag = tags[0]
+# The source, not whichever tree is being served: minifying renames the
+# constants these read, and what is being asserted is what the code we wrote
+# does. The served copy is held to it separately, by the literals it still has
+# to contain.
+COUNT_JS = (server._ROOT / "web" / "count.js").read_text()
+# count.js explains at length what GoatCounter's own script does instead, which
+# names every field this one must not send. Whole-line comments only, which is
+# all it has.
+COUNT_JS_CODE = "\n".join(
+    line for line in COUNT_JS.splitlines() if not line.strip().startswith("//")
+)
 
-    csp = csp_directives(served)
-    assert tag["src"].rsplit("/", 1)[0] in csp["script-src"]
-    # Both allowed by path, so the attribute has to appear verbatim.
-    assert tag["data-goatcounter"] in csp["connect-src"]
-    assert tag["data-goatcounter"] in csp["img-src"]
-    # A protocol-relative src would inherit http: on a plaintext first hop.
-    assert tag["src"].startswith("https://") and "async" in tag
-    # Pinned and hashed; without `crossorigin` the response is opaque and the
-    # hash can't be checked at all.
-    assert "/count.v" in tag["src"], "the rolling count.js can change under us"
-    assert tag["integrity"].startswith("sha384-")
-    assert tag["crossorigin"] == "anonymous"
+
+def packed(text: str) -> str:
+    """Whitespace out, so a literal reads the same minified as it does here."""
+    return re.sub(r"\s+", "", text)
+
+
+def count_js_endpoint() -> str:
+    found = re.search(r'const ENDPOINT = "([^"]+)"', COUNT_JS)
+    assert found, "count.js no longer declares an ENDPOINT this test can read"
+    return found.group(1)
+
+
+def counted_paths() -> dict[str, str]:
+    """The beacon's whole vocabulary: URL path -> what it is reported as."""
+    block = re.search(r"const COUNTED = \{(.*?)\n\};", COUNT_JS, re.S)
+    assert block, "count.js no longer declares a COUNTED table this test can read"
+    return dict(re.findall(r'"([^"]+)":\s*"([^"]+)"', block.group(1)))
+
+
+@pytest.mark.parametrize("name", WEB_PAGES)
+def test_every_page_counts_itself_and_loads_no_third_party_script(client, name):
+    """The counter is a hosted service reached by our own code, so every page
+    has to carry that code — and the page it reports has to be in the closed
+    vocabulary, since anything outside it is silently uncounted."""
+    path = "/" if name == "index.html" else f"/{name}"
+    scripts = Head.of(client.get(path).text).scripts
+    counters = [s for s in scripts if s.get("src", "").split("?")[0] == "count.js"]
+    assert len(counters) == 1, f"{name} should load the counter exactly once"
+    # Nothing here may be somebody else's: `script-src 'self'` is the point of
+    # building the beacon ourselves, and an off-site src would need it widened.
+    assert not [s for s in scripts if "//" in s.get("src", "")], f"{name} loads a foreign script"
+    assert path in counted_paths(), f"{name} would be served but never counted"
+
+
+def test_the_beacon_posts_where_the_csp_lets_it(client):
+    """A CSP refusal is silent in the browser — the counter just stops counting
+    — so the header and the endpoint are checked against each other."""
+    endpoint = count_js_endpoint()
+    assert endpoint == server.ANALYTICS_BEACON
+    # And the copy that ships posts there too, whichever tree is being served.
+    assert endpoint in client.get("/count.js").text
+    csp = csp_directives(client.get("/"))
+    assert csp["script-src"] == ["'self'"], "the counter needs no script origin"
+    # `sendBeacon` is a connect; the fallback when that is refused is an image.
+    assert endpoint in csp["connect-src"]
+    assert endpoint in csp["img-src"]
+    assert endpoint.startswith("https://")
 
 
 def test_the_csp_allowlists_nothing_beyond_the_page_counter(client):
     """Enumerated, not grepped: a substring assertion still passes with
     `'unsafe-inline'` bolted on, which is how an allowlist rots."""
-    allowed = {"'self'", "'none'", "data:", server.ANALYTICS_SCRIPT, server.ANALYTICS_BEACON}
+    allowed = {"'self'", "'none'", "data:", server.ANALYTICS_BEACON}
     for directive, sources in csp_directives(client.get("/")).items():
         assert set(sources) <= allowed, f"{directive} allows more than the counter"
 
 
-def test_the_privacy_policy_names_the_counter_it_loads(client):
-    """Loading a third party's script is only honest if the page that says
-    what the site collects names it and links their terms."""
+def test_the_privacy_policy_names_the_counter_it_reports_to(client):
+    """The counts land in somebody else's database, so the page that says what
+    the site collects has to name them and link their terms."""
     policy = client.get("/privacy.html").text
     assert "GoatCounter" in policy
     assert "https://www.goatcounter.com/help/privacy" in policy
 
 
-def test_no_trial_state_can_reach_the_page_counter(client):
-    """The counter is sent the path, the query string and the title, none of
-    which can carry trial state today only because the app writes none of
-    them. An `?item=` would ship the research record off-site."""
-    app_js = (server.WEB_DIR / "app.js").read_text()
-    for leak in ("document.title", "pushState", "replaceState", "location.search"):
-        assert leak not in app_js, f"{leak} puts trial state where the counter reads"
+# What the beacon may send, and what each one is. GoatCounter's own script also
+# sends `q` (the raw query string) and `t` (the title); both are absent here and
+# that is the entire reason this file exists rather than a <script> tag.
+BEACON_PARAMS = {"p", "s", "rnd", "r", "b"}
+
+
+def test_the_counted_path_is_a_constant_and_never_the_url(client):
+    """An item id in the URL is the research record, so a share link makes the
+    query string exactly the thing that must not be reported. The defence is
+    that the reported path is a value looked up in a table — a page missing
+    from it counts as nothing, where a sanitizer would have counted as a leak.
+    """
+    vocabulary = counted_paths()
+    assert vocabulary, "an empty table would pass every assertion below"
+    shipped = packed(client.get("/count.js").text)
+    for url_path, reported in vocabulary.items():
+        assert reported in ("/", url_path), f"{url_path} reports as {reported}"
+        # The build may only make files smaller, so the table it ships is the
+        # same table — pairs and all.
+        assert f'"{url_path}":"{reported}"' in shipped
+
+    for leak in ("document.title", "location.search", "location.href", "location.hash"):
+        assert leak not in COUNT_JS_CODE, f"{leak} would put the URL or the title in a hit"
+    sent = set(re.findall(r'params\.set\("(\w+)"', COUNT_JS_CODE)) | set(
+        re.findall(r"^\s{4}(\w+):", COUNT_JS_CODE, re.M)
+    )
+    assert sent, "the parameters are no longer written in a form this test can read"
+    assert sent <= BEACON_PARAMS, f"the beacon sends {sent - BEACON_PARAMS}"
 
 
 def test_answering_is_rate_limited_but_arriving_is_free(client, db, monkeypatch):

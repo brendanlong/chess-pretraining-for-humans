@@ -284,22 +284,23 @@ def queue_cookie(request: Request, token: str | None) -> None:
     request.state.session_cookie = "" if token is None else token
 
 
-# Almost everything the app loads is its own: one module script, local
-# stylesheets, a vendored chessground, and favicons as inline data: URIs (which
-# is what `img-src data:` is for, along with the piece sprites in the
-# chessground CSS). The reason to bother is that the reveal builds one string
-# from mined game data — a CSP is what keeps a bad `Site` header in some future
-# PGN from being script instead of a broken link.
+# Everything the app loads is its own: two module scripts, local stylesheets, a
+# vendored chessground, and favicons as inline data: URIs (which is what
+# `img-src data:` is for, along with the piece sprites in the chessground CSS).
+# The reason to bother is that the reveal builds one string from mined game data
+# — a CSP is what keeps a bad `Site` header in some future PGN from being script
+# instead of a broken link.
 #
-# The page counter is the exception, and costs three entries: the script, plus
-# the beacon under both `connect-src` (it uses `sendBeacon`) and `img-src` (it
-# falls back to an image when that's refused). Scoped to the one path it posts
-# to, because `connect-src` is otherwise a door out for the same hostile string
-# the rest of this policy exists to contain.
-ANALYTICS_SCRIPT = "https://gc.zgo.at"
+# The page counter is a hosted service but not a hosted script: `web/count.js`
+# builds the `/count` request itself, so `script-src` stays `'self'` and the
+# counter costs two entries rather than three — the beacon under `connect-src`
+# (`sendBeacon`) and under `img-src` (the fallback when that's refused). Scoped
+# to the one path it posts to, because `connect-src` is otherwise a door out for
+# the same hostile string the rest of this policy exists to contain. A test
+# holds this constant against the one `count.js` posts to.
 ANALYTICS_BEACON = "https://chess-pretraining.goatcounter.com/count"
 CSP = (
-    f"default-src 'self'; script-src 'self' {ANALYTICS_SCRIPT}; style-src 'self'; "
+    "default-src 'self'; script-src 'self'; style-src 'self'; "
     f"img-src 'self' data: {ANALYTICS_BEACON}; "
     f"connect-src 'self' {ANALYTICS_BEACON}; "
     "base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
@@ -530,25 +531,60 @@ def healthz():
     return {"ok": True}
 
 
+def shared_item(item_id: int, user_id: int | None) -> tuple[dict, bool] | None:
+    """The item a share link names, and whether this caller has answered it.
+
+    None when the link names nothing servable — an id from another bank, or an
+    item the engine won't hold an answer to. The link is then just a link to the
+    app, so the caller gets an ordinary trial rather than an error page.
+
+    Nothing here is a leak the ordinary trial flow doesn't already allow: the
+    payload is symmetric between the two moves, so naming an item buys the
+    position and the pair, never which one is better. What it does buy is
+    reaching an item selection would not have offered, which is why the answer
+    to one is marked and left out of the rating.
+    """
+    row = conn.execute("SELECT * FROM items WHERE id = ? AND learnable = 1", (item_id,)).fetchone()
+    if row is None:
+        return None
+    seen = conn.execute(
+        "SELECT 1 FROM responses WHERE user_id = ? AND item_id = ? LIMIT 1",
+        (user_id or 0, item_id),
+    ).fetchone()
+    return dict(row), seen is not None
+
+
 @app.get("/api/next")
-def next_item(user_id: int | None = OptionalUserId):
+def next_item(item: int | None = None, user_id: int | None = OptionalUserId):
     """Serve a trial. Writes nothing — a first-time visitor has no row yet, and
-    getting one is what answering earns."""
+    getting one is what answering earns.
+
+    `item` is a share link's doing: somebody sent this position on, so it is
+    served instead of the one selection would have picked.
+    """
     u = auth.get_user(conn, user_id) if user_id is not None else None
-    item, is_repeat = pick_item(u["rating"] if u else rating.USER_START, user_id)
-    if item is None:
+    shared = shared_item(item, user_id) if item is not None else None
+    if shared is not None:
+        row, is_repeat = shared
+    else:
+        row, is_repeat = pick_item(u["rating"] if u else rating.USER_START, user_id)
+    if row is None:
         raise HTTPException(503, "no items in bank — run the mining/labeling pipeline")
-    moves = [item["best_uci"], item["distractor_uci"]]
+    served = trials.Served(repeat=is_repeat, shared=shared is not None)
+    moves = [row["best_uci"], row["distractor_uci"]]
     rng.shuffle(moves)
     return {
-        "item_id": item["id"],
+        "item_id": row["id"],
         # The server's proof that it offered this item to this caller, which is
         # what /api/answer checks instead of consulting a row that may not exist.
-        "trial_token": trials.issue(item["id"], user_id, is_repeat),
-        "fen": item["fen"],
-        "side_to_move": "white" if chess.Board(item["fen"]).turn else "black",
-        "moves": [{"uci": m, "san": san(item["fen"], m)} for m in moves],
+        "trial_token": trials.issue(row["id"], user_id, served),
+        "fen": row["fen"],
+        "side_to_move": "white" if chess.Board(row["fen"]).turn else "black",
+        "moves": [{"uci": m, "san": san(row["fen"], m)} for m in moves],
         "repeat": is_repeat,
+        # Says whether the link was honoured, so a stale one gets a fresh trial
+        # and an explanation rather than a position it didn't name.
+        "shared": served.shared,
         # No fresh-item count: it costs a pass over the bank, and the drawer
         # counter that reads it is seeded from /api/stats and counted down there.
         "trial_number": (u["attempts"] if u else 0) + 1,
@@ -588,7 +624,7 @@ def answer(a: Answer, request: Request):
         # sequential integers, so nothing here may reflect one back without proof
         # that we served it.
         try:
-            served_as_repeat = trials.redeem(a.trial_token, a.item_id, u["id"] if u else None)
+            served = trials.redeem(a.trial_token, a.item_id, u["id"] if u else None)
         except trials.InvalidTrial as e:
             raise HTTPException(409, f"{e} — fetch a new trial") from e
         if u is None:
@@ -624,12 +660,17 @@ def answer(a: Answer, request: Request):
         # A repeat is legitimate only if we *offered* it as one, which the token
         # says. Deciding it from the bank here instead gets both boundaries wrong —
         # see the `trials` module docstring.
-        if is_repeat and not served_as_repeat:
+        if is_repeat and not served.repeat:
             raise HTTPException(409, "that trial has already been answered — fetch a new one")
-        # Repeats only happen when the bank is exhausted; they get feedback like
-        # any trial but don't move the rating — a remembered answer isn't skill.
+        # Two kinds of trial get feedback but move nothing. A repeat, served once
+        # the bank is exhausted, can be answered from memory of the reveal rather
+        # than from skill. A shared one is an item a friend picked: off the
+        # difficulty selection was aiming at, and — during calibration, whose
+        # staircase steps by a fixed amount and not by what the item was worth —
+        # able to move a new user's rating hundreds of points on a position
+        # nothing about them chose.
         new_step = u["calib_step"]
-        if is_repeat:
+        if is_repeat or served.shared:
             new_user_r = u["rating"]
         elif is_calibrating(u):
             new_user_r, new_step = rating.calibrate(u["rating"], u["calib_step"], correct)
@@ -639,8 +680,8 @@ def answer(a: Answer, request: Request):
         tx.execute(
             """INSERT INTO responses
                (user_id, item_id, choice_uci, correct, response_ms,
-                user_rating_before, user_rating_after, item_rating_before)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                user_rating_before, user_rating_after, item_rating_before, shared)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 u["id"],
                 item["id"],
@@ -650,6 +691,9 @@ def answer(a: Answer, request: Request):
                 u["rating"],
                 new_user_r,
                 item["rating"],
+                # Off the token, not off the request: what the client sends is
+                # the answer, not the story of how it got the question.
+                int(served.shared),
             ),
         )
         tx.execute(
@@ -661,6 +705,7 @@ def answer(a: Answer, request: Request):
 
     return {
         "repeat": is_repeat,
+        "shared": served.shared,
         "user_rating": round(new_user_r),
         "rating_delta": round(new_user_r - u["rating"], 1),
         "calibrating": new_step >= rating.CALIB_END_STEP,
@@ -698,8 +743,11 @@ def answer(a: Answer, request: Request):
     }
 
 
-# Accuracy is over first exposures only: repeats, served once the bank is
-# exhausted, can be answered from memory of the reveal rather than from skill.
+# Accuracy is over first exposures the app itself chose: repeats, served once
+# the bank is exhausted, can be answered from memory of the reveal rather than
+# from skill, and a shared item is one somebody else aimed. The number is read
+# as "am I being held near 80%", which is a claim about selection — so the
+# trials selection didn't make don't belong in it.
 #
 # Newest-first with a limit, which is what keeps this endpoint a constant cost
 # rather than one that grows with a user's history — the window is all anyone
@@ -712,6 +760,7 @@ RECENT_FIRST_EXPOSURES_SQL = f"""
     SELECT r.correct
       FROM responses r
      WHERE r.user_id = ?
+       AND r.shared = 0
        AND NOT EXISTS (SELECT 1 FROM responses p
                        WHERE p.user_id = r.user_id
                          AND p.item_id = r.item_id AND p.id < r.id)
