@@ -115,6 +115,7 @@ def db(tmp_path, monkeypatch, item_count):
         ("login_limiter", auth.RateLimiter(20, 900)),
         ("login_ip_limiter", auth.RateLimiter(200, 900)),
         ("delete_limiter", auth.RateLimiter(20, 900)),
+        ("export_limiter", auth.RateLimiter(200, 900)),
         # Every client in a test shares one address, and some tests answer in
         # bulk on purpose. The real limit gets its own test.
         ("answer_limiter", auth.RateLimiter(100_000, 900)),

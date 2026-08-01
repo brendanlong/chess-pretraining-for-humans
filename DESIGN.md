@@ -145,6 +145,17 @@ operator's way in for what the app can't reach — rows that predate accounts,
 or a password nobody remembers — and doubles as the only recovery path, so
 setting a password there also signs the account's existing sessions out.
 
+`trainer/export.py` is deletion's other half: the same rows, handed back
+instead of destroyed. Two formats, because the file has two jobs that one
+format can't hold — JSON carries the account and every answer, which is the
+claim the privacy policy makes in prose, and CSV carries the answers alone,
+one table wide enough for a spreadsheet. Each answer is joined to the item
+it was about, which is only ever an item the exporting user has already
+answered and been shown the reveal for. It reads no rows the app doesn't
+already show, so the session cookie is the whole authorization, and the
+limiter in front of it rations work rather than guesses — this is the only
+endpoint whose cost grows with how much somebody has played.
+
 Two ordering constraints are easy to get wrong. Identity resolution is a
 dependency, but it yields a user *id*: FastAPI finishes dependencies before
 the endpoint body — possibly on another thread, and so another connection —
@@ -245,10 +256,13 @@ then replay controls with a primary Next, then the two engine lines as
 tappable cards; secondary detail sits below the fold. Desktop places the
 same panel beside the board. A settings drawer holds replay speed, the
 account controls (sign up / sign in / sign out / delete, reached from the
-header chip), session/debug counters like the fresh-item count, and the legal
+header chip), the two buttons that download this user's own record,
+session/debug counters like the fresh-item count, and the legal
 links. Delete is two deliberate steps behind a password field, and collapses
 again whenever the drawer or the account changes — a destructive control
-should never be found already armed.
+should never be found already armed. A download is fetched rather than
+linked, so that a refused one can say so in the drawer instead of saving the
+refusal as a file.
 
 `terms.html` and `privacy.html` are plain pages beside `index.html`,
 sharing its stylesheet, so they ship and version with the app instead of

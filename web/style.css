@@ -491,12 +491,28 @@ body:not(.no-arrow-numbers) .line-card.bad .key { background: var(--bad); }
 #account-guest, #account-user { display: flex; flex-direction: column; gap: 8px; }
 #account-guest[hidden], #account-user[hidden] { display: none; }
 
-#auth-error {
+#auth-error,
+#export-error {
   margin: 0;
   font-size: 13px;
   color: var(--danger);
 }
-#auth-error[hidden] { display: none; }
+#auth-error[hidden], #export-error[hidden] { display: none; }
+
+/* Two ways of reading the same record, so neither button outranks the other. */
+#export-buttons { display: flex; gap: 8px; }
+#export-buttons button {
+  flex: 1;
+  font: inherit;
+  font-size: 14px;
+  padding: 9px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--card);
+  color: var(--text);
+  cursor: pointer;
+}
+#export-buttons button:disabled { opacity: 0.6; cursor: default; }
 
 #drawer-stats {
   display: grid;

@@ -189,6 +189,12 @@ def target_gap(user_rating: float) -> float:
     return _gap_for_difficulty(user_rating + _TARGET_OFFSET)
 
 
+def is_calibrating(calib_step: float) -> bool:
+    """Whether the staircase still owns this user's rating. Here rather than at
+    the callers, so the one threshold is compared in one place."""
+    return calib_step >= CALIB_END_STEP
+
+
 def calibrate(user_rating: float, step: float, correct: bool) -> tuple[float, float]:
     """One staircase move; returns (new_rating, new_step)."""
     if correct:

@@ -289,7 +289,10 @@ async function copyFrom(btn, text) {
   setTimeout(() => (btn.innerHTML = old), 1500);
 }
 
-async function api(path, body) {
+// A request that fails throws something with a message worth showing. Split
+// from `api` because the export is the one response we don't parse — it is a
+// file — and a download failing still deserves the same sentence.
+async function request(path, body) {
   const res = await fetch(path, body && {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -308,7 +311,11 @@ async function api(path, body) {
     err.status = res.status;
     throw err;
   }
-  return res.json();
+  return res;
+}
+
+async function api(path, body) {
+  return (await request(path, body)).json();
 }
 
 async function loadTrial(itemId) {
@@ -520,23 +527,27 @@ function showAuthForm(which) {
   el("tab-login").classList.toggle("active", which === "login");
 }
 
-// Guards double submits and gives the button something to say while argon2
-// works (deliberately slow, ~100ms+).
-async function submitAuth(btn, run) {
+// Guards double submits and gives the button something to say while the server
+// works — argon2 is deliberately slow (~100ms+), and an export walks a whole
+// history. Which box the failure lands in is the caller's, because the drawer's
+// sections each say their own errors where they happened.
+async function whileBusy(btn, showError, run) {
   if (btn.disabled) return;
   const label = btn.textContent;
   btn.disabled = true;
   btn.textContent = "…";
-  showAuthError(null);
+  showError(null);
   try {
     await run();
   } catch (e) {
-    showAuthError(e.message);
+    showError(e.message);
   } finally {
     btn.disabled = false;
     btn.textContent = label;
   }
 }
+
+const submitAuth = (btn, run) => whileBusy(btn, showAuthError, run);
 
 // --- settings drawer ------------------------------------------------------
 
@@ -545,6 +556,7 @@ let settingsReturnFocus = null;
 function openSettings(focusAccount) {
   settingsReturnFocus = document.activeElement;
   showDeleteConfirm(false); // also clears any error left from last time
+  showExportError(null);
   el("settings").hidden = false;
   const target = focusAccount && account.guest ? el("tab-signup") : el("settings-close");
   target.focus();
@@ -621,6 +633,36 @@ el("delete-form").addEventListener("submit", (e) => {
     location.reload();
   });
 });
+
+// --- data export ----------------------------------------------------------
+
+function showExportError(message) {
+  const box = el("export-error");
+  box.textContent = message || "";
+  box.hidden = !message;
+}
+
+// Fetched rather than linked, because a plain download link that fails saves
+// the refusal as a file instead of saying it out loud. The name comes off the
+// response, so the server stays the only thing that decides what the file is
+// called; the fallback is only reached if a proxy stripped the header.
+function downloadExport(btn, format) {
+  return whileBusy(btn, showExportError, async () => {
+    const res = await request(`/api/account/export?format=${format}`);
+    const named = /filename="([^"]+)"/.exec(res.headers.get("content-disposition") || "");
+    const url = URL.createObjectURL(await res.blob());
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = named ? named[1] : `chess-pretraining.${format}`;
+    link.click();
+    // Freed a turn later: revoking in the same one can cancel the download
+    // before the browser has finished reading the blob.
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  });
+}
+
+el("export-json").addEventListener("click", (e) => downloadExport(e.currentTarget, "json"));
+el("export-csv").addEventListener("click", (e) => downloadExport(e.currentTarget, "csv"));
 
 // A settings row where one of the buttons is the current value: mark it,
 // remember the choice, and hand it to whoever cares.
