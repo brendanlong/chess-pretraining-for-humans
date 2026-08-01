@@ -11,7 +11,7 @@ frontend. Data flows one way:
   dump — no full download — keeps server-analyzed blitz-and-slower games,
   and emits decision points where the played move lost a calibrated slice
   of win probability. (Evals become win probabilities through
-  `trainer/winprob.py`, which every stage that reads a gap shares.)
+  `trainer/winprob.py`, the one conversion mining and labeling share.)
 - **Labeling** (`trainer/label.py`) runs local Stockfish per candidate:
   a deep multipv search provides ground truth (best move, both evals,
   8-ply lines for both moves); then one more search, restricted to those two
@@ -277,8 +277,8 @@ One SQLite database: `items` (positions, moves, evals, lines, difficulty),
 `users` (rating, calibration state, optional credentials), `sessions`
 (hashed cookie tokens), `responses` (every answer, timed, with rating
 snapshots and whether the trial was asked for by item id rather than chosen by
-selection), `meta` (the few facts about the record that aren't derivable from
-it — the comment on the table in `trainer/db.py` names them).
+selection), `meta` (facts about the record that aren't derivable from it —
+the comment on the table in `trainer/db.py` says what it holds).
 The item bank is disposable and rebuildable from the pipeline —
 literally so, since nothing the app does writes to it; responses are the
 experimental record.
