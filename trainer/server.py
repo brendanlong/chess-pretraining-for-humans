@@ -284,22 +284,23 @@ def queue_cookie(request: Request, token: str | None) -> None:
     request.state.session_cookie = "" if token is None else token
 
 
-# Almost everything the app loads is its own: one module script, local
-# stylesheets, a vendored chessground, and favicons as inline data: URIs (which
-# is what `img-src data:` is for, along with the piece sprites in the
-# chessground CSS). The reason to bother is that the reveal builds one string
-# from mined game data — a CSP is what keeps a bad `Site` header in some future
-# PGN from being script instead of a broken link.
+# Everything the app loads is its own: two module scripts, local stylesheets, a
+# vendored chessground, and favicons as inline data: URIs (which is what
+# `img-src data:` is for, along with the piece sprites in the chessground CSS).
+# The reason to bother is that the reveal builds one string from mined game data
+# — a CSP is what keeps a bad `Site` header in some future PGN from being script
+# instead of a broken link.
 #
-# The page counter is the exception, and costs three entries: the script, plus
-# the beacon under both `connect-src` (it uses `sendBeacon`) and `img-src` (it
-# falls back to an image when that's refused). Scoped to the one path it posts
-# to, because `connect-src` is otherwise a door out for the same hostile string
-# the rest of this policy exists to contain.
-ANALYTICS_SCRIPT = "https://gc.zgo.at"
+# The page counter is a hosted service but not a hosted script: `web/count.js`
+# builds the `/count` request itself, so `script-src` stays `'self'` and the
+# counter costs two entries rather than three — the beacon under `connect-src`
+# (`sendBeacon`) and under `img-src` (the fallback when that's refused). Scoped
+# to the one path it posts to, because `connect-src` is otherwise a door out for
+# the same hostile string the rest of this policy exists to contain. A test
+# holds this constant against the one `count.js` posts to.
 ANALYTICS_BEACON = "https://chess-pretraining.goatcounter.com/count"
 CSP = (
-    f"default-src 'self'; script-src 'self' {ANALYTICS_SCRIPT}; style-src 'self'; "
+    "default-src 'self'; script-src 'self'; style-src 'self'; "
     f"img-src 'self' data: {ANALYTICS_BEACON}; "
     f"connect-src 'self' {ANALYTICS_BEACON}; "
     "base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
@@ -530,24 +531,82 @@ def healthz():
     return {"ok": True}
 
 
+def named_item(item_id: int, user_id: int | None) -> dict | None:
+    """The item a URL names, if this caller can be served it.
+
+    None for an id from another bank, an item the engine won't hold an answer
+    to, and — the case that isn't about the link at all — one this caller has
+    already answered. A URL is a durable thing that gets reopened: the tab
+    reloads, somebody clicks the link twice. Honouring it the second time would
+    hand back a position whose answer is on the screen it just came from, which
+    is the one thing an item may never be, so a URL cannot buy a second
+    exposure any more than selection can. The caller gets an ordinary trial and
+    a line saying why.
+
+    Nothing here is a leak the ordinary trial flow doesn't already allow: the
+    payload is symmetric between the two moves, so naming an item buys the
+    position and the pair, never which one is better. What it does buy is
+    reaching an item selection would not have offered, and in bulk — the ids
+    are sequential, so this is the bank's positions readable by counting. The
+    answers stay behind `/api/answer`, which is where they were.
+    """
+    # One statement, and the cheapest shape either half has: a primary-key seek
+    # for the item, and `NOT EXISTS` probing `idx_responses_item` at exactly
+    # (user, item) for the history — the same reason selection uses it, one
+    # candidate instead of a walk's worth.
+    row = conn.execute(
+        """SELECT * FROM items
+           WHERE id = ? AND learnable = 1
+             AND NOT EXISTS (SELECT 1 FROM responses
+                             WHERE user_id = ? AND item_id = ?)""",
+        (item_id, user_id or 0, item_id),
+    ).fetchone()
+    return dict(row) if row else None
+
+
 @app.get("/api/next")
-def next_item(user_id: int | None = OptionalUserId):
+def next_item(item: str | None = None, user_id: int | None = OptionalUserId):
     """Serve a trial. Writes nothing — a first-time visitor has no row yet, and
-    getting one is what answering earns."""
+    getting one is what answering earns.
+
+    `item` names a position rather than asking for one, which is what following
+    somebody's link does. It is served instead of what selection would have
+    picked, and the answer to it is marked — or, if `named_item` won't have it,
+    selection picks after all and the caller can see it didn't get what it
+    asked for, which is all the page needs to say so.
+    """
     u = auth.get_user(conn, user_id) if user_id is not None else None
-    item, is_repeat = pick_item(u["rating"] if u else rating.USER_START, user_id)
-    if item is None:
+    # Text, parsed here, rather than declared an integer: a link travels through
+    # chat clients and Markdown and comes back with a bracket on the end, and a
+    # framework's validation error is not what somebody who followed one should
+    # be looking at. So anything that isn't an id reads as no id, which is the
+    # same fallback an id the bank can't serve gets.
+    #
+    # All three conditions earn their place. `isascii`, because `isdigit` alone
+    # accepts other scripts' digits, which `int` then parses. And a length, on
+    # both sides of `int`: past 18 digits SQLite can't bind the value, and past
+    # 4300 Python won't parse the string at all — either one is a 500 on an
+    # endpoint anyone can reach, which is a worse answer than the 422 this is
+    # here to avoid.
+    wanted = int(item) if item and item.isascii() and item.isdigit() and len(item) < 19 else None
+    named = named_item(wanted, user_id) if wanted is not None else None
+    is_repeat = False
+    row = named
+    if row is None:
+        row, is_repeat = pick_item(u["rating"] if u else rating.USER_START, user_id)
+    if row is None:
         raise HTTPException(503, "no items in bank — run the mining/labeling pipeline")
-    moves = [item["best_uci"], item["distractor_uci"]]
+    served = trials.Served(repeat=is_repeat, shared=named is not None)
+    moves = [row["best_uci"], row["distractor_uci"]]
     rng.shuffle(moves)
     return {
-        "item_id": item["id"],
+        "item_id": row["id"],
         # The server's proof that it offered this item to this caller, which is
         # what /api/answer checks instead of consulting a row that may not exist.
-        "trial_token": trials.issue(item["id"], user_id, is_repeat),
-        "fen": item["fen"],
-        "side_to_move": "white" if chess.Board(item["fen"]).turn else "black",
-        "moves": [{"uci": m, "san": san(item["fen"], m)} for m in moves],
+        "trial_token": trials.issue(row["id"], user_id, served),
+        "fen": row["fen"],
+        "side_to_move": "white" if chess.Board(row["fen"]).turn else "black",
+        "moves": [{"uci": m, "san": san(row["fen"], m)} for m in moves],
         "repeat": is_repeat,
         # No fresh-item count: it costs a pass over the bank, and the drawer
         # counter that reads it is seeded from /api/stats and counted down there.
@@ -588,7 +647,7 @@ def answer(a: Answer, request: Request):
         # sequential integers, so nothing here may reflect one back without proof
         # that we served it.
         try:
-            served_as_repeat = trials.redeem(a.trial_token, a.item_id, u["id"] if u else None)
+            served = trials.redeem(a.trial_token, a.item_id, u["id"] if u else None)
         except trials.InvalidTrial as e:
             raise HTTPException(409, f"{e} — fetch a new trial") from e
         if u is None:
@@ -624,14 +683,24 @@ def answer(a: Answer, request: Request):
         # A repeat is legitimate only if we *offered* it as one, which the token
         # says. Deciding it from the bank here instead gets both boundaries wrong —
         # see the `trials` module docstring.
-        if is_repeat and not served_as_repeat:
+        if is_repeat and not served.repeat:
             raise HTTPException(409, "that trial has already been answered — fetch a new one")
-        # Repeats only happen when the bank is exhausted; they get feedback like
-        # any trial but don't move the rating — a remembered answer isn't skill.
+        # Repeats get feedback but move nothing: served once the bank is
+        # exhausted, they can be answered from memory of the reveal.
+        #
+        # A shared item moves the rating like any other — it is a real first
+        # exposure and Elo already prices how hard it was. The staircase is what
+        # can't take one: it steps by a fixed amount *because* selection
+        # guarantees the item was aimed at the user, so on an item nobody aimed
+        # it would pay a quarter of the scale for what, in a two-alternative
+        # task, a beginner wins half the time by guessing. Elo reads the item's
+        # difficulty, so it prices the same answer at a whole K if the item was
+        # far above them and at nothing if it wasn't — which is the question
+        # "are they better than we thought" actually being asked.
         new_step = u["calib_step"]
         if is_repeat:
             new_user_r = u["rating"]
-        elif is_calibrating(u):
+        elif is_calibrating(u) and not served.shared:
             new_user_r, new_step = rating.calibrate(u["rating"], u["calib_step"], correct)
         else:
             new_user_r = rating.update(u["rating"], item["rating"], correct)
@@ -639,8 +708,8 @@ def answer(a: Answer, request: Request):
         tx.execute(
             """INSERT INTO responses
                (user_id, item_id, choice_uci, correct, response_ms,
-                user_rating_before, user_rating_after, item_rating_before)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                user_rating_before, user_rating_after, item_rating_before, shared)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 u["id"],
                 item["id"],
@@ -650,6 +719,9 @@ def answer(a: Answer, request: Request):
                 u["rating"],
                 new_user_r,
                 item["rating"],
+                # Off the token, not off the request: what the client sends is
+                # the answer, not the story of how it got the question.
+                int(served.shared),
             ),
         )
         tx.execute(

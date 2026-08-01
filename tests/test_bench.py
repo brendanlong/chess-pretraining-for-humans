@@ -75,6 +75,42 @@ def test_no_address_is_charged_past_its_block(users):
         assert max(own.values()) <= scenario.address_block, scenario.name
 
 
+@pytest.mark.parametrize("users", [1, 8, 16, 31])
+def test_the_named_scenario_asks_for_items_the_account_has_not_answered(tmp_path, users):
+    """`named_item` falls back to ordinary selection for an item the caller has
+    already answered, and falling back is *silent* — it is what a stale link is
+    supposed to do. So a scenario naming one would quietly measure `pick_item`
+    twice and report it as two different things. Checked against the rows the
+    seeder really writes, not against the constant it writes them from."""
+    seeded = tmp_path / "seeded.db"
+    bench.build_template(seeded, items=bench.WARM_HISTORY + 64)
+    conn = db.connect(seeded)
+    answered = {
+        row["item_id"]
+        for row in conn.execute(
+            """SELECT item_id FROM responses
+                WHERE user_id = (SELECT id FROM users WHERE name = 'bench-warm-0')"""
+        )
+    }
+    assert answered, "the warm accounts were seeded with no history to avoid"
+    servable = {row["id"] for row in conn.execute("SELECT id FROM items WHERE learnable = 1")}
+    ctx = {"items": bench.WARM_HISTORY + 64}
+    for i in range(users):
+        vu = bench.VU(i, users, 0, 0, "http://x", 500, ctx)
+        wanted = bench.named_id(vu)
+        assert wanted not in answered, "this user would measure selection, not the link"
+        assert wanted in servable, "this user would name an item that isn't there"
+
+
+def test_a_bank_too_small_to_name_anything_says_so(tmp_path):
+    """The seeder gives every warm account the first `WARM_HISTORY` items, so a
+    `--items` at or below that leaves nothing for a link to name. Better a
+    sentence than a scenario that measures the fallback."""
+    vu = bench.VU(0, 1, 0, 0, "http://x", 500, {"items": bench.WARM_HISTORY})
+    with pytest.raises(RuntimeError, match="hasn't answered"):
+        bench.named_id(vu)
+
+
 def test_a_run_that_could_not_fit_is_refused_before_it_starts():
     login = bench.BY_NAME["login"]
     bench.check_budgets((login,), concurrency=8, repeat=3)  # the default, and it fits

@@ -31,13 +31,9 @@
 <meta name="theme-color" content="#211f1c">
 <link rel="stylesheet" href="board.css">
 <link rel="stylesheet" href="style.css">
-<!-- Page counter; privacy.html says what it collects. Pinned to a version
-     and a hash because it runs on the origin holding the session cookie —
-     moving to a newer one means changing both. -->
-<script data-goatcounter="https://chess-pretraining.goatcounter.com/count"
-        async src="https://gc.zgo.at/count.v5.js"
-        crossorigin="anonymous"
-        integrity="sha384-atnOLvQb9t+jTSipvd75X2yginT4PjVbqDdlJAmxMm+wYElFmeR6EmLP5bYeoRVQ"></script>
+<!-- Page counter; privacy.html says what it collects. First-party on
+     purpose: see the reasoning at the top of count.js. -->
+<script type="module" src="count.js"></script>
 </head>
 <body>
 <header id="topbar">
@@ -56,8 +52,13 @@
   </div>
   <section id="panel">
     <div id="repeat-note" hidden>
-      <span class="repeat-badge">rerun</span>
+      <span class="note-badge">rerun</span>
       You've seen every item — this one won't affect your rating.
+    </div>
+    <div id="stale-link-note" hidden>
+      <span class="note-badge">link</span>
+      We couldn't open the position that link named &mdash; most likely you've
+      answered it already. Here's a fresh one.
     </div>
     <div id="ask">
       <p id="prompt">Which move is better?<span class="kbd-hint"> Press <kbd>1</kbd> or <kbd>2</kbd>.</span></p>
@@ -93,6 +94,7 @@
       <div id="detail"></div>
       <div id="extra-actions">
         <button id="copy-btn" title="Copy the position and both engine lines as a question for Claude">&#10697; Copy for Claude</button>
+        <button id="share-btn" title="Copy a link to this position">&#128279; Share</button>
       </div>
     </div>
   </section>

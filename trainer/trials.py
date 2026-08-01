@@ -29,12 +29,20 @@ nothing more is spent on it: the reveal hands over the answer as soon as you
 commit, so peeking buys, at the cost of a burnt trial, something answering would
 have told you for free.
 
-The token also carries whether the trial was served *as a repeat*, so the "you
-already answered this" rule is decided from what the server offered rather than
-from what the bank happens to look like when the answer arrives. Deciding it
-from the bank at redemption time gets both boundaries wrong: answering your
-last unseen item drops the count to zero and makes that token replayable, and a
-bank refilled mid-trial makes a legitimately-served repeat unanswerable.
+The token also carries how the trial was served — as a repeat, and from a share
+link — so both are decided from what the server offered rather than from what
+the client says or from what the bank happens to look like when the answer
+arrives. Deciding the repeat from the bank at redemption time gets both
+boundaries wrong: answering your last unseen item drops the count to zero and
+makes that token replayable, and a bank refilled mid-trial makes a
+legitimately-served repeat unanswerable. And a share is a claim about the
+request that fetched the trial, which the request that answers it can't see;
+taking the client's word for it would buy a caller the calibration staircase's
+exemption on demand, and leave a friend's link unmarked in the research record.
+
+Changing the payload's shape invalidates the tokens in flight, exactly as
+rotating the key does: they stop verifying, the client is told 409, and it
+fetches a trial it can answer.
 """
 
 import base64
@@ -44,6 +52,7 @@ import logging
 import os
 import secrets
 import time
+from typing import NamedTuple
 
 log = logging.getLogger(__name__)
 
@@ -92,31 +101,48 @@ class InvalidTrial(Exception):
     """The token is missing, malformed, forged, expired, or someone else's."""
 
 
+class Served(NamedTuple):
+    """How the server offered a trial, read back off its own token.
+
+    `repeat` is the bank being exhausted: answered before, so the answer earns
+    feedback and moves nothing. `shared` is a URL naming the item rather than
+    selection choosing it — the answer counts like any other, but it is marked
+    in the record, and it is scored by Elo rather than by the calibration
+    staircase, which only means anything on an item aimed at the user.
+    """
+
+    repeat: bool
+    shared: bool
+
+
 def _sign(payload: str) -> str:
     mac = hmac.new(SECRET, payload.encode(), hashlib.sha256).digest()
     return base64.urlsafe_b64encode(mac).decode().rstrip("=")
 
 
-FIELDS = 5  # item, user, served-as-repeat, nonce, expiry — then the mac
+FIELDS = 6  # item, user, repeat, shared, nonce, expiry — then the mac
 
 
-def issue(item_id: int, user_id: int | None, served_as_repeat: bool) -> str:
+def issue(item_id: int, user_id: int | None, served: Served) -> str:
     """A token asserting that `item_id` was offered to `user_id` (0 = nobody yet,
-    which is every trial served before its owner has answered anything), and
-    whether it was offered as a repeat."""
+    which is every trial served before its owner has answered anything), and how
+    it was offered."""
     ttl = TOKEN_TTL_S if user_id else ANON_TOKEN_TTL_S
     # The nonce makes every issuance distinct. Without it, two anonymous callers
     # served the same item in the same second get byte-identical tokens — and a
     # spend-once ledger keyed on the token would let the first of them answer and
     # refuse the second, which is two strangers colliding rather than a replay.
     nonce = secrets.token_urlsafe(8)
-    payload = f"{item_id}.{user_id or 0}.{int(served_as_repeat)}.{nonce}.{int(time.time()) + ttl}"
+    payload = (
+        f"{item_id}.{user_id or 0}.{int(served.repeat)}.{int(served.shared)}"
+        f".{nonce}.{int(time.time()) + ttl}"
+    )
     return f"{payload}.{_sign(payload)}"
 
 
-def redeem(token: str | None, item_id: int, user_id: int | None) -> bool:
+def redeem(token: str | None, item_id: int, user_id: int | None) -> Served:
     """Raise unless `token` is this server's proof that it offered `item_id` to
-    `user_id`; return whether it offered it as a repeat.
+    `user_id`; return how it offered it.
 
     Every field is signed, so all of this is the server reading back its own
     claim. Nothing is consumed here — spending an anonymous token is the caller's
@@ -131,8 +157,8 @@ def redeem(token: str | None, item_id: int, user_id: int | None) -> bool:
     if not hmac.compare_digest(mac, _sign(payload)):
         raise InvalidTrial("trial token does not verify")
     try:  # the nonce is opaque, and only ever compared as part of the payload
-        token_item, token_user, served_as_repeat = (int(p) for p in parts[:3])
-        expires = int(parts[4])
+        token_item, token_user, repeat, shared = (int(p) for p in parts[:4])
+        expires = int(parts[5])
     except ValueError as e:  # we signed it, so this is corruption, not an attack
         raise InvalidTrial("unreadable trial token") from e
     if token_item != item_id:
@@ -141,4 +167,4 @@ def redeem(token: str | None, item_id: int, user_id: int | None) -> bool:
         raise InvalidTrial("trial token was issued to a different session")
     if time.time() >= expires:
         raise InvalidTrial("trial token has expired")
-    return bool(served_as_repeat)
+    return Served(repeat=bool(repeat), shared=bool(shared))

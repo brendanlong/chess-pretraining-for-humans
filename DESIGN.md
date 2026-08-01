@@ -66,9 +66,16 @@ nesting, raise — SQLite has no nested transaction to make either safe.
 
 Trial endpoints: next trial, answer, stats. Selection picks an
 unseen learnable item near the rating where the user's expected score is
-80%. An answer moves the user's Elo rating and nothing else — item
+80%, unless a URL named one — `/api/next?item=` serves that instead, falling
+back to ordinary selection whenever it can't: a link outlives the bank it was
+made from, arrives from chat clients with punctuation attached, and gets
+reopened after it has been answered. An answer moves the user's Elo
+rating and nothing else — item
 difficulty is fixed at labeling time, so the `items` row a trial came from
 is never written to and no user's answers change what another is served.
+A named item rates and counts like any other and is marked in `responses`;
+the one difference is that during calibration it is scored by Elo rather than
+by the staircase, for the reason beside that branch in `answer`.
 New users run a calibration staircase first (start low, big steps, halve on
 miss). All responses are recorded with timing and the rating snapshots that
 make each trial reconstructible on its own.
@@ -79,7 +86,9 @@ answer payload *is* the answer key, and item ids are small sequential
 integers, so otherwise the whole bank reads out by counting. Signed rather
 than stored so that no row has to exist before the first trial and two tabs
 don't fight over one pending-trial slot. The token names its holder and its
-item, and says whether the trial was served as a repeat; a token issued
+item, and says how it was served — as a repeat, and from a share link, both
+being claims about the request that fetched it which the request that
+answers it cannot see; a token issued
 before its holder has any identity is additionally remembered once spent
 (`server.anonymous_trial_use`), because redeeming it is what creates the row
 that would otherwise notice the replay. The threat model — who a replayed
@@ -106,8 +115,8 @@ a database read grants no logins; the token is rotated on every privilege
 change and expires both on idleness and absolutely. `SameSite=Lax` plus
 `no-store` on every API response is the CSRF-and-shared-cache story, and a
 CSP is what stops a hostile string in mined data from being script. Its
-allowlist is two named origins, both the hosted page counter — everything
-else the page loads is ours.
+allowlist is one URL, the page counter's beacon — every line of script the
+page runs is ours, including the one that sends that beacon.
 
 Abuse control is rate limiting, not captchas — the cost of a wrong guess
 should be a wait, not a lost signup. Password checks are metered twice (per
@@ -180,7 +189,21 @@ per-ply FENs so the client only renders. Candidate moves are drawn as arrows;
 answers by tap or keyboard; the reveal shows evals in centipawns and win
 probability, auto-plays the chosen move's engine line (switchable to the other,
 steppable, speed configurable), and can copy the position + both lines as plain
-text for pasting into an assistant.
+text for pasting into an assistant. Answering a trial names it in the URL
+(`?item=`, by `replaceState`, so the back button still leaves the app) and
+loading the next one takes the name back out, which makes the address bar the
+share link and the Share button a way of reaching it without one. Why it goes
+in on the answer rather than on arrival is at `nameTrialInUrl`. Only the
+disappointing case is announced: a URL whose item the server won't serve —
+stale, already answered, or not an id at all — gets an ordinary trial and a
+line saying so, which the page recognises by not being handed what it asked
+for.
+
+`count.js` is the page counter, on every page and reporting only a path looked
+up in a table of the pages that exist — GoatCounter's own script reports the
+query string and the title, which a share link makes exactly the wrong thing to
+report. Why the table is closed rather than a sanitizer is at the top of the
+file.
 
 The palette lives entirely in `:root`, including the dark, saturated
 arrow variants the light board needs alongside the light ones the dark
@@ -248,7 +271,8 @@ can't ship without it.
 One SQLite database: `items` (positions, moves, evals, lines, difficulty),
 `users` (rating, calibration state, optional credentials), `sessions`
 (hashed cookie tokens), `responses` (every answer, timed, with rating
-snapshots), `meta` (schema version, for the migrations that can't tell from
+snapshots and whether the trial was asked for by item id rather than chosen by
+selection), `meta` (schema version, for the migrations that can't tell from
 the data whether they already ran — everything else is guarded by a read).
 The item bank is disposable and rebuildable from the pipeline —
 literally so, since nothing the app does writes to it; responses are the

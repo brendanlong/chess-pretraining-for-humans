@@ -115,6 +115,11 @@ CREATE TABLE IF NOT EXISTS responses (
     -- The item's difficulty as served. Recorded rather than joined so a row
     -- stays interpretable if difficulty_rating's constants are ever retuned.
     item_rating_before REAL,
+    -- Whether the trial was asked for by item id — somebody's link, followed —
+    -- instead of being chosen by adaptive selection. The answer counts like any
+    -- other; this is for the analysis, which has to be able to hold out the
+    -- rows nobody aimed. 0 for everything the app chose.
+    shared INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -256,6 +261,10 @@ def connect(path: Path = DEFAULT_DB, check_same_thread: bool = True) -> sqlite3.
     response_cols = {row[1] for row in conn.execute("PRAGMA table_info(responses)")}
     if "item_rating_after" in response_cols:
         conn.execute("ALTER TABLE responses DROP COLUMN item_rating_after")
+    # Every row that predates share links was selected by the app, which is what
+    # the default says — so there is nothing to backfill.
+    if "shared" not in response_cols:
+        conn.execute("ALTER TABLE responses ADD COLUMN shared INTEGER NOT NULL DEFAULT 0")
     # The full rating index is subsumed by the partial one above: every query
     # that ranges or orders on rating also asks for learnable = 1, so all the
     # unfiltered index bought was a second copy of the column to keep current

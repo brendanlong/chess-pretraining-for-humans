@@ -149,12 +149,34 @@ automatically.
   policy promises is a constraint on what the analysis may export, not
   just prose.
 - **The page counter learns that a page was opened, and nothing else.**
-  It is sent the URL, the query string and the title, so what keeps the
-  research record out of it is that the app writes none of the three — an
-  item id in the URL would ship answers off-site without touching a line
-  that looks like it is about privacy. Being a third party's script on an
-  origin that holds a session cookie, it is pinned to a hash: what the
-  policy says about it is enforced, not trusted.
+  The address bar names the position on screen, so nothing read off the URL
+  may reach it: what it is sent is a path chosen from a closed list of pages,
+  never the URL, the query string, the title, or a referrer from our own
+  origin. A page missing from that list counts as nothing, which is the
+  failure a sanitizer can't have — that one is always an unanticipated URL
+  away from the other. Building the request ourselves is also what keeps a
+  third party's script off an origin that holds a session cookie: what the
+  privacy policy says about the counter is then enforced by code that ships
+  with the app rather than trusted to code that doesn't.
+- **A shared position is an ordinary trial that says it was shared.** Once you
+  have answered one, the address bar names it, so sending it to a friend is
+  copying a URL, and what arrives is the same symmetric trial everyone else
+  gets — carrying an item id and never an answer. It names it only *after* the
+  answer, because a URL that named the trial in progress would be asking the
+  server for it on every reload, and marking a position the app itself chose
+  as one nobody aimed. A URL also buys no second exposures — it is a durable
+  thing that gets reopened, so one naming an item this user has answered is
+  not honoured at all. The
+  answer counts: it rates and it is counted in accuracy, because it is a real
+  first exposure against an item of measured difficulty, and Elo is a
+  statement about the item and not about who chose it. What it carries is a
+  mark, so the analysis can hold out the trials nobody aimed. The one thing
+  that can't take an unaimed item is the calibration staircase, which steps
+  by a fixed amount *because* selection guarantees the item was aimed: on
+  somebody else's position it would pay a quarter of the scale for what, in a
+  two-alternative task, a beginner wins half the time by guessing. So during
+  calibration a shared answer is scored by Elo, which reads how hard the item
+  actually was, instead.
 - **A deletion request erases the responses too**, and is reachable from
   inside the app. Being signed in is the proof of ownership the optional,
   unverified email can't supply, so deletion can't depend on an email

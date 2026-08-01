@@ -63,6 +63,9 @@ def test_migration_preserves_users_and_responses(tmp_path):
     assert user["password_hash"] is None  # a legacy row is just a guest
     assert user["created_at"] is not None  # backfilled, not left NULL
     assert conn.execute("SELECT COUNT(*) FROM responses").fetchone()[0] == 2
+    # Answers given before share links existed were all the app's own choice,
+    # which is what the new column's default says — nothing to backfill.
+    assert conn.execute("SELECT COUNT(*) FROM responses WHERE shared = 0").fetchone()[0] == 2
 
 
 def test_migration_drops_the_columns_that_carried_answers_into_difficulty(tmp_path):

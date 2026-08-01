@@ -200,6 +200,31 @@ function resetLine() {
   renderStep();
 }
 
+// --- sharing ------------------------------------------------------------
+
+// Naming the position in the address bar is what makes it a share link — the
+// Share button only saves reaching for it, which on a phone is most of the
+// work. Only the item id goes in: which move is better isn't the client's to
+// know before it answers, let alone to put in a URL.
+//
+// It goes in when the trial is *answered*, and comes out again when the next
+// one loads, so the URL only ever names a position this user is done with.
+// Naming it on arrival instead would mean a reload before answering asked the
+// server for the trial already on screen — which it would serve, and mark as
+// one nobody aimed, on a trial selection had aimed. That mark is what the
+// research record holds out and what excuses the answer from the calibration
+// staircase, so it has to stay rare and true.
+//
+// `replaceState`, so the back button still leaves the app rather than walking
+// back through a session's worth of positions.
+function nameTrialInUrl() {
+  history.replaceState(null, "", `?item=${trial.item_id}`);
+}
+
+function unnameTrialInUrl() {
+  if (location.search) history.replaceState(null, "", location.pathname);
+}
+
 // --- copy-for-Claude ----------------------------------------------------
 
 function describeMove(mv, tag) {
@@ -245,9 +270,8 @@ function buildCopyText() {
   ].join("\n");
 }
 
-async function copyForClaude() {
-  if (!lastResult) return;
-  const text = buildCopyText();
+// Copy `text`, and let the button that asked for it say so.
+async function copyFrom(btn, text) {
   window.__lastCopyText = text; // debugging/testing hook
   try {
     await navigator.clipboard.writeText(text);
@@ -260,7 +284,6 @@ async function copyForClaude() {
     document.execCommand("copy");
     ta.remove();
   }
-  const btn = el("copy-btn");
   const old = btn.innerHTML;
   btn.textContent = "Copied ✓";
   setTimeout(() => (btn.innerHTML = old), 1500);
@@ -288,18 +311,20 @@ async function api(path, body) {
   return res.json();
 }
 
-async function loadTrial() {
+async function loadTrial(itemId) {
   phase = "loading";
+  unnameTrialInUrl(); // whatever it named, we are leaving it
   stopAutoplay();
   lines = [];
   stepIdx = -1;
   el("feedback").hidden = true;
   el("repeat-note").hidden = true;
+  el("stale-link-note").hidden = true;
   el("ask").hidden = false;
   el("prompt").innerHTML = PROMPT_HTML;
   choiceEls.forEach((b) => (b.disabled = false));
 
-  trial = await api("/api/next");
+  trial = await api(itemId ? `/api/next?item=${encodeURIComponent(itemId)}` : "/api/next");
   el("turn-label").textContent = `${trial.side_to_move} to move`;
   el("turn-dot").className = trial.side_to_move;
   setBoard(trial.fen, trial.side_to_move, candidateArrows());
@@ -309,6 +334,13 @@ async function loadTrial() {
   el("stat-rating").textContent = ratingLabel(trial.user_rating, trial.calibrating);
   el("stat-trial").textContent = trial.trial_number;
   if (trial.repeat) el("repeat-note").hidden = false;
+  // Only the disappointing case is worth a word, and it is exactly "we asked
+  // for a position and this isn't it" — which also keeps the note off the
+  // exhausted-bank case, where the fallback can legitimately hand back the very
+  // item that was asked for, as a rerun. Being handed what you asked for needs
+  // no announcement.
+  if (itemId && String(trial.item_id) !== String(itemId))
+    el("stale-link-note").hidden = false;
   phase = "choosing";
   shownAt = performance.now();
 }
@@ -323,8 +355,8 @@ function showLoadError(e) {
   el("prompt").textContent = `${e.message} — tap here to retry`;
 }
 
-function nextTrial() {
-  loadTrial().catch(showLoadError);
+function nextTrial(itemId) {
+  loadTrial(itemId).catch(showLoadError);
 }
 
 async function choose(i) {
@@ -377,6 +409,9 @@ async function choose(i) {
       Math.round((100 * accWindow.reduce((a, b) => a + b, 0)) / accWindow.length) + "%";
 
   lastResult = result;
+  // Answered, so the position is now something to send on rather than
+  // something to be served: the address bar becomes the link to it.
+  nameTrialInUrl();
 
   // Replay lines: your pick first (it auto-plays), the other switchable.
   const mkLine = (mv, isBest, tag) => ({
@@ -643,8 +678,14 @@ document.addEventListener("keydown", (e) => {
 choiceEls.forEach((b, i) => b.addEventListener("click", () => choose(i)));
 el("tab-0").addEventListener("click", () => switchLine(0, true));
 el("tab-1").addEventListener("click", () => switchLine(1, true));
-el("next").addEventListener("click", nextTrial);
-el("copy-btn").addEventListener("click", copyForClaude);
+// Wrapped rather than passed: the handler's argument is a click event, and
+// nextTrial's is an item id to open.
+el("next").addEventListener("click", () => nextTrial());
+el("copy-btn").addEventListener("click", () => {
+  if (lastResult) copyFrom(el("copy-btn"), buildCopyText());
+});
+// The address bar is the share link, so this copies exactly what it shows.
+el("share-btn").addEventListener("click", () => copyFrom(el("share-btn"), location.href));
 el("ctl-reset").addEventListener("click", resetLine);
 el("ctl-back").addEventListener("click", () => stepLine(-1));
 el("ctl-fwd").addEventListener("click", () => stepLine(1));
@@ -652,10 +693,15 @@ el("prompt").addEventListener("click", () => {
   if (phase === "error") nextTrial();
 });
 
+// What the URL names, if anything: a link somebody sent, or this tab's own
+// last trial coming back on a reload. Every trial after it is named the same
+// way (`nameTrialInUrl`), so this is read once and the rest follows.
+const namedItem = new URLSearchParams(location.search).get("item");
+
 // Nothing at boot writes anything — identity is minted by the first answer —
 // so these are safe to race. /api/stats carries the account for the header;
 // if it fails, the page keeps its default guest view and the drawer's forms
 // still work.
 applyArrowNumbers();
 initStats();
-nextTrial();
+nextTrial(namedItem);

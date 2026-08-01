@@ -14,10 +14,10 @@ import brotli
 import pytest
 from fastapi.testclient import TestClient
 
-from trainer import assets, auth, server, trials
+from trainer import assets, auth, rating, server, trials
 from trainer.db import connect
 
-from .conftest import ITEM, answer, answer_body, next_trial
+from .conftest import FEN_TMPL, ITEM, add_item, answer, answer_body, next_trial
 
 
 class Head(HTMLParser):
@@ -142,6 +142,147 @@ def test_first_exposure_accuracy_excludes_repeats(client):
     stats = client.get("/api/stats").json()
     assert stats["attempts"] == 4  # all four were recorded
     assert stats["accuracy_last_50"] == 1.0  # but only the two fresh ones counted
+
+
+# --- share links ----------------------------------------------------------
+#
+# A URL names an item, so it reaches one selection would not have offered. The
+# payload is the same symmetric one every trial gets, so naming an item buys
+# the position and the pair and never the answer; the answer counts like any
+# other, and carries a mark saying nobody aimed this one.
+
+
+def choice_index_of(trial, uci) -> int:
+    """Which button that move is on this trial — the pair is shuffled per trial."""
+    return [m["uci"] for m in trial["moves"]].index(uci)
+
+
+def other_item(db, trial) -> int:
+    """An item the trial on screen isn't, so a share of it is a fresh one."""
+    return db.execute("SELECT id FROM items WHERE id != ?", (trial["item_id"],)).fetchone()[0]
+
+
+def shared_trial(client, item_id):
+    r = client.get(f"/api/next?item={item_id}")
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_a_share_link_serves_the_item_it_names(client, db):
+    wanted = db.execute("SELECT id FROM items ORDER BY id DESC").fetchone()[0]
+    # Ask enough times that ordinary selection landing on it would be a
+    # coincidence rather than the thing being tested.
+    for _ in range(5):
+        trial = shared_trial(client, wanted)
+        assert trial["item_id"] == wanted
+        # Still a trial like any other: nothing about which move is better.
+        assert not set(NEVER_BEFORE_ANSWERING) & set(trial)
+
+
+def test_an_answer_from_a_share_link_counts_like_any_other_and_is_marked(client, db):
+    """The mark is the whole of what sharing costs: the answer is a real first
+    exposure, so it rates and it counts, and what the analysis needs is to be
+    able to hold out the rows nobody aimed.
+
+    Answered *wrongly*, because that is what tells the two designs apart: an
+    answer held out of the rating and the accuracy leaves both exactly where
+    they were, and a rating that only ever moves up would agree with either.
+    """
+    first = next_trial(client)
+    answer(client, first, choice_index_of(first, ITEM["best_uci"]))
+    before = user_row(db, client)["rating"]
+    shared = shared_trial(client, other_item(db, first))
+
+    result = answer(client, shared, choice_index_of(shared, ITEM["distractor_uci"]))
+    assert result["correct"] is False
+    assert "best" in result  # feedback, like any trial
+    assert user_row(db, client)["rating"] < before  # and a rating that moved
+    row = db.execute("SELECT * FROM responses ORDER BY id DESC LIMIT 1").fetchone()
+    assert (row["item_id"], row["shared"]) == (shared["item_id"], 1)
+    # Counted where every other first exposure is, too.
+    stats = client.get("/api/stats").json()
+    assert stats["attempts"] == 2
+    assert stats["accuracy_last_50"] == 0.5  # one right, one wrong — both counted
+    assert stats["items_remaining"] == 0  # gone from the unseen pile as well
+
+
+def test_a_shared_answer_is_scored_by_elo_even_during_calibration(client, db):
+    """The staircase steps by a fixed amount *because* selection guarantees the
+    item was aimed at the user. On an item nobody aimed it would pay a quarter
+    of the scale for a two-alternative guess — so during calibration a shared
+    answer goes through Elo, which reads how hard the item actually was."""
+    first = next_trial(client)
+    answer(client, first, choice_index_of(first, ITEM["best_uci"]))
+    calibrating = user_row(db, client)
+    assert calibrating["calib_step"] == rating.CALIB_START_STEP  # still on the staircase
+    # The staircase's own move, for comparison: the full step, whatever the item.
+    assert calibrating["rating"] == rating.USER_START + rating.CALIB_START_STEP
+
+    shared = shared_trial(client, other_item(db, first))
+    before = calibrating["rating"]
+    answer(client, shared, choice_index_of(shared, ITEM["best_uci"]))
+    after = user_row(db, client)
+
+    # The fixture item is far above a calibrating user, so Elo pays nearly the
+    # whole K for beating it — and nothing like the step it would have paid.
+    assert 0 < after["rating"] - before <= rating.K_USER
+    # The staircase is where it was: a trial it didn't choose doesn't advance it.
+    assert after["calib_step"] == calibrating["calib_step"]
+
+
+def test_a_url_naming_an_item_you_have_answered_is_not_honoured(client, db):
+    """The case that isn't about links at all: the tab reloads, and the URL it
+    reloads names the trial whose answer is on the screen it came from. A URL
+    buys no more second exposures than selection does, so it falls back."""
+    first = next_trial(client)
+    answer(client, first)
+
+    again = shared_trial(client, first["item_id"])
+    assert again["item_id"] != first["item_id"]
+    assert again["repeat"] is False
+    answer(client, again)
+    # Two answers, two items — no second row for the one the URL named.
+    assert db.execute("SELECT COUNT(DISTINCT item_id) FROM responses").fetchone()[0] == 2
+
+
+@pytest.mark.parametrize(
+    "named",
+    [
+        "99999",  # an id from a bank this one isn't
+        "0",
+        "-1",
+        "not-an-id",
+        "12)",  # a link that went through a chat client
+        "",
+        "1e3",
+        "١٢٣",  # digits `isdigit` accepts and `int` parses
+        "1" * 20,  # past what SQLite can bind
+        "9" * 5000,  # past what Python will parse
+    ],
+)
+def test_a_url_the_bank_cannot_honour_still_opens_the_app(client, db, named):
+    """A link outlives the bank it was made from, and travels through chat
+    clients that hand it back with a bracket on the end. Every way of naming
+    nothing lands on an ordinary trial, because what is in front of somebody
+    who just followed a link should never be a stack trace or a validation
+    error — and this endpoint is reachable by anyone, unmetered."""
+    r = client.get(f"/api/next?item={named}")
+    assert r.status_code == 200, r.text
+    # Served something real, and not the thing that was asked for — which is
+    # how the page knows to say the link couldn't be opened.
+    assert r.json()["item_id"] != named
+    assert db.execute("SELECT 1 FROM items WHERE id = ?", (r.json()["item_id"],)).fetchone()
+
+
+@pytest.mark.parametrize("item_count", [1])
+def test_a_link_to_an_unlearnable_item_is_not_honoured(client, db, item_count):
+    """The one thing that is never served: an item whose answer the engine
+    won't hold still has nothing to teach, and a link is not a way in."""
+    add_item(db, FEN_TMPL.format("7P"), learnable=0)
+    db.commit()
+    unlearnable = db.execute("SELECT id FROM items WHERE learnable = 0").fetchone()[0]
+
+    assert shared_trial(client, unlearnable)["item_id"] != unlearnable
 
 
 def test_first_exposure_filter_is_answered_from_an_index_covering_item_id(db):
@@ -452,6 +593,17 @@ def test_a_trial_issued_to_one_session_cannot_be_redeemed_by_another(client, db)
     assert client.post("/api/answer", json=answer_body(theirs)).status_code == 409
 
 
+# The signed payload's fields, by position: item, user, served-as-repeat,
+# served-as-shared, nonce, expiry — then the mac.
+USER_FIELD, SHARED_FIELD, EXPIRY_FIELD = 1, 3, trials.FIELDS - 1
+
+
+def rewrite_token_field(token: str, index: int, value) -> str:
+    parts = token.split(".")
+    parts[index] = str(value)
+    return ".".join(parts)
+
+
 @pytest.mark.parametrize(
     "mangle",
     [
@@ -459,7 +611,13 @@ def test_a_trial_issued_to_one_session_cannot_be_redeemed_by_another(client, db)
         pytest.param(lambda t: "", id="empty"),
         pytest.param(lambda t: "not-a-token", id="malformed"),
         pytest.param(lambda t: t[:-1] + ("a" if t[-1] != "a" else "b"), id="tampered-signature"),
-        pytest.param(lambda t: t.replace(t.split(".")[2], "99999999999", 1), id="extended-expiry"),
+        pytest.param(
+            lambda t: rewrite_token_field(t, EXPIRY_FIELD, 99999999999), id="extended-expiry"
+        ),
+        # Every field is the server's claim about what it offered, including the
+        # one that says an answer shouldn't be rated. Signing is what stops a
+        # client deciding that for itself.
+        pytest.param(lambda t: rewrite_token_field(t, SHARED_FIELD, 1), id="claimed-shared"),
     ],
 )
 def test_a_token_we_did_not_sign_is_refused(client, db, mangle):
@@ -485,11 +643,11 @@ def test_an_anonymous_token_expires_sooner_than_a_bound_one(client):
     keeps that memory small."""
     assert trials.ANON_TOKEN_TTL_S < trials.TOKEN_TTL_S
     anon = next_trial(client)["trial_token"]
-    assert anon.split(".")[1] == "0"  # the user field: issued to nobody yet
+    assert anon.split(".")[USER_FIELD] == "0"  # issued to nobody yet
     answer(client, next_trial(client))  # now `client` has an identity
     bound = next_trial(client)["trial_token"]
-    assert bound.split(".")[1] != "0"
-    assert int(bound.split(".")[4]) > int(anon.split(".")[4])
+    assert bound.split(".")[USER_FIELD] != "0"
+    assert int(bound.split(".")[EXPIRY_FIELD]) > int(anon.split(".")[EXPIRY_FIELD])
 
 
 def test_an_answer_is_spent_once(client, db):
@@ -539,52 +697,128 @@ def csp_directives(response) -> dict[str, list[str]]:
     return {d.split()[0]: d.split()[1:] for d in (p.strip() for p in parts) if d}
 
 
-@pytest.mark.parametrize("name", WEB_PAGES)
-def test_the_page_counter_is_on_every_page_and_allowed_by_the_csp(client, name):
-    """A CSP refusal is silent in the browser — the counter just stops
-    counting — so the header and the tag are checked against each other."""
-    served = client.get("/" if name == "index.html" else f"/{name}")
-    tags = [s for s in Head.of(served.text).scripts if "data-goatcounter" in s]
-    assert len(tags) == 1, f"{name} should load the counter exactly once"
-    tag = tags[0]
+# The source, not whichever tree is being served: minifying renames the
+# constants these read, and what is being asserted is what the code we wrote
+# does. The served copy is held to it separately, by the literals it still has
+# to contain.
+COUNT_JS = (server._ROOT / "web" / "count.js").read_text()
+# count.js explains at length what GoatCounter's own script does instead, which
+# names every field this one must not send. Whole-line comments only, which is
+# all it has.
+COUNT_JS_CODE = "\n".join(
+    line for line in COUNT_JS.splitlines() if not line.strip().startswith("//")
+)
 
-    csp = csp_directives(served)
-    assert tag["src"].rsplit("/", 1)[0] in csp["script-src"]
-    # Both allowed by path, so the attribute has to appear verbatim.
-    assert tag["data-goatcounter"] in csp["connect-src"]
-    assert tag["data-goatcounter"] in csp["img-src"]
-    # A protocol-relative src would inherit http: on a plaintext first hop.
-    assert tag["src"].startswith("https://") and "async" in tag
-    # Pinned and hashed; without `crossorigin` the response is opaque and the
-    # hash can't be checked at all.
-    assert "/count.v" in tag["src"], "the rolling count.js can change under us"
-    assert tag["integrity"].startswith("sha384-")
-    assert tag["crossorigin"] == "anonymous"
+
+def packed(text: str) -> str:
+    """Whitespace out, so a literal reads the same minified as it does here."""
+    return re.sub(r"\s+", "", text)
+
+
+def count_js_endpoint() -> str:
+    found = re.search(r'const ENDPOINT = "([^"]+)"', COUNT_JS)
+    assert found, "count.js no longer declares an ENDPOINT this test can read"
+    return found.group(1)
+
+
+def counted_paths() -> dict[str, str]:
+    """The beacon's whole vocabulary: URL path -> what it is reported as."""
+    block = re.search(r"const COUNTED = \{(.*?)\n\};", COUNT_JS, re.S)
+    assert block, "count.js no longer declares a COUNTED table this test can read"
+    return dict(re.findall(r'"([^"]+)":\s*"([^"]+)"', block.group(1)))
+
+
+@pytest.mark.parametrize("name", WEB_PAGES)
+def test_every_page_counts_itself_and_loads_no_third_party_script(client, name):
+    """The counter is a hosted service reached by our own code, so every page
+    has to carry that code — and the page it reports has to be in the closed
+    vocabulary, since anything outside it is silently uncounted."""
+    path = "/" if name == "index.html" else f"/{name}"
+    scripts = Head.of(client.get(path).text).scripts
+    counters = [s for s in scripts if s.get("src", "").split("?")[0] == "count.js"]
+    assert len(counters) == 1, f"{name} should load the counter exactly once"
+    # Nothing here may be somebody else's: `script-src 'self'` is the point of
+    # building the beacon ourselves, and an off-site src would need it widened.
+    assert not [s for s in scripts if "//" in s.get("src", "")], f"{name} loads a foreign script"
+    assert path in counted_paths(), f"{name} would be served but never counted"
+
+
+def test_the_beacon_posts_where_the_csp_lets_it(client):
+    """A CSP refusal is silent in the browser — the counter just stops counting
+    — so the header and the endpoint are checked against each other."""
+    endpoint = count_js_endpoint()
+    assert endpoint == server.ANALYTICS_BEACON
+    # And the copy that ships posts there too, whichever tree is being served.
+    assert endpoint in client.get("/count.js").text
+    csp = csp_directives(client.get("/"))
+    assert csp["script-src"] == ["'self'"], "the counter needs no script origin"
+    # `sendBeacon` is a connect; the fallback when that is refused is an image.
+    assert endpoint in csp["connect-src"]
+    assert endpoint in csp["img-src"]
+    assert endpoint.startswith("https://")
 
 
 def test_the_csp_allowlists_nothing_beyond_the_page_counter(client):
     """Enumerated, not grepped: a substring assertion still passes with
     `'unsafe-inline'` bolted on, which is how an allowlist rots."""
-    allowed = {"'self'", "'none'", "data:", server.ANALYTICS_SCRIPT, server.ANALYTICS_BEACON}
+    allowed = {"'self'", "'none'", "data:", server.ANALYTICS_BEACON}
     for directive, sources in csp_directives(client.get("/")).items():
         assert set(sources) <= allowed, f"{directive} allows more than the counter"
 
 
-def test_the_privacy_policy_names_the_counter_it_loads(client):
-    """Loading a third party's script is only honest if the page that says
-    what the site collects names it and links their terms."""
+def test_the_privacy_policy_names_the_counter_it_reports_to(client):
+    """The counts land in somebody else's database, so the page that says what
+    the site collects has to name them and link their terms."""
     policy = client.get("/privacy.html").text
     assert "GoatCounter" in policy
     assert "https://www.goatcounter.com/help/privacy" in policy
 
 
-def test_no_trial_state_can_reach_the_page_counter(client):
-    """The counter is sent the path, the query string and the title, none of
-    which can carry trial state today only because the app writes none of
-    them. An `?item=` would ship the research record off-site."""
-    app_js = (server.WEB_DIR / "app.js").read_text()
-    for leak in ("document.title", "pushState", "replaceState", "location.search"):
-        assert leak not in app_js, f"{leak} puts trial state where the counter reads"
+# What the beacon may send, and what each one is. GoatCounter's own script also
+# sends `q` (the raw query string) and `t` (the title); both are absent here and
+# that is the entire reason this file exists rather than a <script> tag.
+BEACON_PARAMS = {"p", "s", "rnd", "r", "b"}
+
+
+def test_the_counted_path_is_a_constant_and_never_the_url(client):
+    """An item id in the URL is the research record, so a share link makes the
+    query string exactly the thing that must not be reported. The defence is
+    that the reported path is a value looked up in a table — a page missing
+    from it counts as nothing, where a sanitizer would have counted as a leak.
+    """
+    vocabulary = counted_paths()
+    assert vocabulary, "an empty table would pass every assertion below"
+    shipped = packed(client.get("/count.js").text)
+    for url_path, reported in vocabulary.items():
+        assert reported in ("/", url_path), f"{url_path} reports as {reported}"
+        # The build may only make files smaller, so the table it ships is the
+        # same table — pairs and all.
+        assert f'"{url_path}":"{reported}"' in shipped
+
+    for leak in ("document.title", "location.search", "location.href", "location.hash"):
+        assert leak not in COUNT_JS_CODE, f"{leak} would put the URL or the title in a hit"
+    # The referrer is the second door to the same leak — from one of our pages
+    # it is that page's full URL, item id and all — and the grep above doesn't
+    # cover it, because `new URL(document.referrer).href` names neither
+    # `location` nor `title`. So the function that reads it is held to
+    # returning an origin.
+    referrer_fn = COUNT_JS_CODE.split("function crossOriginReferrer()")[1].split("\n}")[0]
+    assert "document.referrer" not in COUNT_JS_CODE.replace(referrer_fn, "")
+    assert "url.origin" in referrer_fn
+    # What it *returns*, not what it mentions: the substrings above still allow
+    # `... ? null : document.referrer`, which is the whole leak in one line.
+    returned = re.findall(r"return ([^;]+);", referrer_fn)
+    assert returned, "the referrer function no longer returns in a form this can read"
+    for expression in returned:
+        assert "document.referrer" not in expression, f"reported verbatim: {expression}"
+        assert "url" not in expression or "url.origin" in expression, expression
+    for whole_url in (".href", ".toString()", ".pathname", ".search", "`${"):
+        assert whole_url not in referrer_fn, f"{whole_url}: the referrer is more than an origin"
+    sent = set(re.findall(r'params\.set\("(\w+)"', COUNT_JS_CODE)) | set(
+        re.findall(r"^\s{4}(\w+):", COUNT_JS_CODE, re.M)
+    )
+    assert sent, "the parameters are no longer written in a form this test can read"
+    assert sent <= BEACON_PARAMS, f"the beacon sends {sent - BEACON_PARAMS}"
 
 
 def test_answering_is_rate_limited_but_arriving_is_free(client, db, monkeypatch):
