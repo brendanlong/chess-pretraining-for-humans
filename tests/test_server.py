@@ -173,7 +173,9 @@ def test_selection_walks_the_rating_index_instead_of_scanning_the_bank(db):
     walks = [s for s in steps if "idx_items_learnable_rating" in s]
     assert len(walks) == 2, steps  # one per direction
     assert all(s.startswith("SEARCH") for s in walks), steps
-    assert not any("SCAN items" in s for s in steps), steps
+    # "SCAN items" on this SQLite; older ones say "SCAN TABLE items". Matching
+    # both keeps the guard from going quiet under a different interpreter.
+    assert not any(s.startswith("SCAN") and "items" in s for s in steps), steps
 
 
 def test_the_unseen_count_is_answered_without_reading_item_rows(db):

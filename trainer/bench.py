@@ -296,7 +296,7 @@ def build_template(path: Path, items: int) -> None:
         user = auth.create_account(
             conn, f"bench-warm-{i}", password_hash, None, 1200.0, rating.CALIB_END_STEP - 1
         )
-        # A history is what makes `pick_item`'s NOT IN subquery cost something,
+        # A history is what makes `pick_item`'s seen-item filter cost something,
         # and what a real user's requests are served against. Never longer than
         # the bank: a response names an item, and a `--items` below the usual
         # history would otherwise be answers to rows that don't exist.
