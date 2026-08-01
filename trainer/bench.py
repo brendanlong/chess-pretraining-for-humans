@@ -11,7 +11,10 @@ production will do. So everything that doesn't have to vary is held still:
   history a run writes. A timed run therefore measures a different mix of
   database states on a fast machine than on a slow one, and stops being a
   comparison. Counting the requests instead makes every run walk the database
-  through the same states in the same order.
+  through the same states in the same order. Repetitions of the writing
+  scenario are not identical — each leaves rows behind — but each starts with
+  fresh guests, and per-user history is what the cost depends on, so they
+  measure the same thing.
 * A scratch copy of a cached template database, so a run never reads or writes
   `data/items.db` and always starts from the same rows.
 * The server pinned to one core where `taskset` allows it. That is both the
@@ -26,6 +29,7 @@ that overhead is a constant the comparison cancels out.
 
 import argparse
 import asyncio
+import contextlib
 import json
 import math
 import os
@@ -55,14 +59,19 @@ BASELINE = _ROOT / "bench-baseline.json"
 TEMPLATE = _ROOT / "data" / "bench-template.db"
 TEMPLATE_VERSION = 2  # bumped when the seeding below changes what it writes
 
-# The live bank's size, because `pick_item` and `unseen_count` both scan it and
-# a benchmark against a toy bank would miss exactly the regressions that matter.
-ITEM_COUNT = 12_660
+# What the deployment serves, because `pick_item` and `unseen_count` both scan
+# the bank once per request: their cost is linear in this, and a benchmark
+# against a toy bank would report a fifth of the work the real one does. It is
+# pinned rather than read from anywhere, since a baseline is only a comparison
+# if both runs measured the same amount of work — raise it when the live bank
+# grows enough to matter, and re-record.
+ITEM_COUNT = 24_989
 # Accounts the login scenario spends. Its per-name limit is 10 per 15 minutes,
 # so this is what caps how many logins one run may measure.
 LOGIN_ACCOUNTS = 192
 # Accounts the read scenarios browse as, each with a plausible history behind
-# it. More than the default concurrency so `-c 16` still gets one apiece.
+# it. Enough for twice the default concurrency; past this the users double up,
+# which costs nothing but realism, since these scenarios only read.
 WARM_ACCOUNTS = 16
 WARM_HISTORY = 300
 PASSWORD = "bench-password-1"
@@ -75,6 +84,9 @@ PASSWORD = "bench-password-1"
 # CLIENT_IP_HEADER pointed at this header, which is the same path a deployed
 # instance uses to believe its proxy.
 ADDRESS_HEADER = "x-bench-client"
+# Repetitions per scenario, bounded because the address carries it alongside
+# which scenario is running, and the two share an octet.
+REPEAT_LIMIT = 8
 
 
 @dataclass(frozen=True)
@@ -103,7 +115,10 @@ SCENARIOS = (
     Scenario("static-html", "entry point, brotli, revalidated every load", 4000),
     Scenario("static-js", "versioned bundle, brotli, served immutable", 4000),
     Scenario("static-304", "the same bundle, conditional, answered 304", 4000),
-    Scenario("static-png", "73 KB image: body throughput, nothing to compress", 2000),
+    # Requested without a digest, which is the branch `assets.py` serves
+    # briefly-cached for the sake of bookmarks — and the only scenario here
+    # that carries a body big enough for the copying to show.
+    Scenario("static-png", "73 KB image, unversioned: body throughput", 2000),
     Scenario("next-cold", "trial for a first-time visitor with no history", 2000),
     Scenario("next-warm", f"trial for an account {WARM_HISTORY} answers in", 2000),
     Scenario("stats", "drawer numbers, including the unseen-item count", 2000),
@@ -273,6 +288,18 @@ def template(items: int, reseed: bool) -> Path:
 # --- the server under test -------------------------------------------------
 
 
+def served_tree(override: Path | None) -> Path:
+    """The frontend directory the server will pick, worked out the same way it
+    does. Not a detail: `web-dist/` appears when someone runs `npm run build`
+    and disappears when they delete it, and four scenarios transfer whichever
+    one is there — so a baseline that doesn't name it can silently compare
+    minified bytes against unminified ones."""
+    if override is not None:
+        return override
+    built = _ROOT / "web-dist"
+    return built if built.is_dir() else _ROOT / "web"
+
+
 def free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
@@ -304,13 +331,27 @@ def start_server(db_path: Path, web_dir: Path | None, port: int, cpu: int | None
     while time.monotonic() < deadline:
         if proc.poll() is not None:
             raise RuntimeError(f"server exited with {proc.returncode} before serving")
-        try:
+        with contextlib.suppress(httpx.HTTPError):
             if httpx.get(f"http://127.0.0.1:{port}/healthz", timeout=1).status_code == 200:
                 return proc
-        except httpx.HTTPError:
-            time.sleep(0.1)
-    proc.terminate()
+        # Outside the handler, so a server answering something other than 200
+        # waits like the rest. Spinning here would burn the core the server is
+        # pinned to, which is the one thing this must not touch.
+        time.sleep(0.1)
+    stop_server(proc)
     raise RuntimeError("server never became healthy")
+
+
+def stop_server(proc: subprocess.Popen) -> None:
+    """Leave nothing holding the port or the scratch database."""
+    proc.terminate()
+    try:
+        proc.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        # A SIGTERM it never answered. Raising here would replace whatever the
+        # run actually failed on with a report about the shutdown.
+        proc.kill()
+        proc.wait()
 
 
 # --- what each virtual user does ------------------------------------------
@@ -323,10 +364,20 @@ class VU:
     the scenario's concurrency is exactly the number of these.
     """
 
-    def __init__(self, index: int, count: int, repeat: int, base_url: str, block: int, ctx: dict):
+    def __init__(
+        self,
+        index: int,
+        count: int,
+        repeat: int,
+        scenario: int,
+        base_url: str,
+        block: int,
+        ctx: dict,
+    ):
         self.index = index
         self.count = count  # how many of us there are, which is the concurrency
-        self.repeat = repeat  # which repetition, which is what keeps the two apart
+        self.repeat = repeat
+        self.scenario = scenario
         self.ctx = ctx
         self.block = block
         self.n = 0
@@ -347,12 +398,17 @@ class VU:
             await self._client.aclose()
 
     def headers(self) -> dict[str, str]:
-        # The repetition is part of the address: a repeat re-runs the same
-        # requests inside the same fifteen-minute window, so reusing the
-        # address would stack its spend on top of the last one's.
+        # Scenario and repetition are both part of the address. A whole run
+        # happens inside one fifteen-minute window, so any two stretches of it
+        # that shared an address would stack their spend into one counter —
+        # and the limit they hit would be one neither of them asked for.
+        # Four octets for four things that must not collide: which scenario,
+        # which repetition, which user, and how far through its block it is.
+        # Scenario and repetition share the first, which bounds a run at
+        # `REPEAT_LIMIT` repetitions — `check_budgets` enforces that.
         return {
-            ADDRESS_HEADER: f"10.{self.repeat % 256}.{self.index % 256}."
-            f"{(self.n // self.block) % 256}"
+            ADDRESS_HEADER: f"10.{self.scenario * REPEAT_LIMIT + self.repeat}."
+            f"{self.index % 256}.{(self.n // self.block) % 256}"
         }
 
     async def request(self, method: str, url: str, *, expect: int = 200, **kw) -> httpx.Response:
@@ -429,7 +485,13 @@ async def _step_trial(vu: VU) -> None:
     )
 
 
-LOGINS_PER_ACCOUNT = 9  # the limiter allows ten per name per fifteen minutes
+# The per-name limiter allows ten guesses per fifteen minutes. A *successful*
+# login clears that counter (`auth.RateLimiter.clear`, called from the login
+# endpoint), and every login here succeeds, so staying under it is belt rather
+# than braces — the per-address limiter, which nothing clears, is the one that
+# binds. Kept anyway: it costs a modulo, and it is what makes the plan correct
+# rather than accidentally correct.
+LOGINS_PER_ACCOUNT = 9
 
 
 def login_account(vu: VU) -> int:
@@ -477,10 +539,9 @@ SERVER_CPU = 0
 def _siblings(cpu: int) -> set[int]:
     """Every logical CPU sharing a physical core with this one.
 
-    The driver has to stay off all of them, not just off the server's. An SMT
-    sibling runs on the same core, so a driver process that lands there takes
-    perhaps 15% of the throughput being measured — which showed up as runs that
-    were randomly either fast or slow rather than as a steady tax.
+    The driver has to stay off all of them, not just off the server's own. An
+    SMT sibling shares the physical core's execution units, so a driver process
+    scheduled there competes with the thing being measured for about 15% of it.
     """
     listing = Path(f"/sys/devices/system/cpu/cpu{cpu}/topology/thread_siblings_list")
     if not listing.exists():
@@ -490,6 +551,19 @@ def _siblings(cpu: int) -> set[int]:
         lo, _, hi = part.partition("-")
         cpus.update(range(int(lo), int(hi or lo) + 1))
     return cpus
+
+
+def driver_processes(concurrency: int, cores: int, pin: bool) -> int:
+    """One process per virtual user, as far as the cores allow.
+
+    The driver has to be far enough from its own ceiling that what the table
+    reports is the server. Each virtual user is a synchronous chain of awaits,
+    so two sharing a process share a GIL and queue behind each other's response
+    parsing — on the cheapest scenarios that alone was worth 20% of the
+    throughput, which is the size of the regression this is meant to detect.
+    """
+    available = cores - len(_siblings(SERVER_CPU)) if pin else cores
+    return max(1, min(concurrency, available))
 
 
 def _pin_worker(cpus: list[int]) -> None:
@@ -505,6 +579,7 @@ async def _run_vus(plan: dict) -> tuple[list[float], float, float]:
             i,
             plan["concurrency"],
             plan["repeat"],
+            plan["scenario_index"],
             plan["base_url"],
             scenario.address_block,
             plan["ctx"],
@@ -527,11 +602,14 @@ async def _run_vus(plan: dict) -> tuple[list[float], float, float]:
     # Warm up first and time only what follows, so process startup and the
     # slower first pass over every SQLite page stay out of the throughput.
     await asyncio.gather(*(drive(vu, scenario.warmup, 0) for vu in vus))
-    started = time.time()
+    # perf_counter, not time.time: this is the one number joined across driver
+    # processes, and a wall clock can be stepped by NTP mid-run. On Linux it is
+    # CLOCK_MONOTONIC, which shares an origin between processes on one machine.
+    started = time.perf_counter()
     per_vu = await asyncio.gather(
         *(drive(vu, 0, n) for vu, n in zip(vus, plan["counts"], strict=True))
     )
-    ended = time.time()
+    ended = time.perf_counter()
     for vu in vus:
         await vu.close()
     return [s for samples in per_vu for s in samples], started, ended
@@ -568,24 +646,46 @@ def _login_blocks(users: int) -> int:
     return math.ceil((_split(login.requests, users)[0] + login.warmup) / LOGINS_PER_ACCOUNT)
 
 
-def run_scenario(scenario: Scenario, pool: ProcessPoolExecutor, procs: int, plan: dict) -> dict:
-    """Split the virtual users across driver processes and rejoin the samples."""
+def plan_scenario(scenario: Scenario, procs: int, plan: dict) -> list[dict]:
+    """One plan per driver process, partitioning the virtual users between them.
+
+    Requests are dealt per virtual user rather than per process, so the work is
+    the same work however many processes the driver happens to get — otherwise
+    the throughput reported would be a function of the machine's core count.
+    """
     vus = scenario.users(plan["concurrency"])
-    groups = [g for g in _split(vus, min(procs, vus)) if g]
-    assigned, plans = 0, []
-    for group in groups:
+    counts = _split(scenario.requests, vus)
+    plans, assigned = [], 0
+    for group in _split(vus, min(procs, vus)):
         indices = list(range(assigned, assigned + group))
         assigned += group
-        plans.append({**plan, "scenario": scenario.name, "vus": indices, "concurrency": vus})
-    # Requests are dealt per virtual user, not per process, so the total is the
-    # same however many processes the driver happens to use.
-    counts = _split(scenario.requests, vus)
-    for p in plans:
-        p["counts"] = [counts[i] for i in p["vus"]]
-    results = list(pool.map(_worker, plans))
+        plans.append(
+            {
+                **plan,
+                "scenario": scenario.name,
+                "scenario_index": SCENARIOS.index(scenario),
+                "vus": indices,
+                "counts": [counts[i] for i in indices],
+                "concurrency": vus,
+            }
+        )
+    return plans
+
+
+def elapsed_across(results: list[tuple[list[float], float, float]]) -> float:
+    """The window every driver process was inside, which is the union of theirs.
+
+    They neither start nor stop together, so anything narrower reports a rate
+    that no part of the run actually sustained.
+    """
+    return max(r[2] for r in results) - min(r[1] for r in results)
+
+
+def run_scenario(scenario: Scenario, pool: ProcessPoolExecutor, procs: int, plan: dict) -> dict:
+    """Drive one scenario to completion and rejoin the samples."""
+    results = list(pool.map(_worker, plan_scenario(scenario, procs, plan)))
     samples = [s for r in results for s in r[0]]
-    elapsed = max(r[2] for r in results) - min(r[1] for r in results)
-    return summarize(samples, elapsed)
+    return summarize(samples, elapsed_across(results))
 
 
 # --- reporting -------------------------------------------------------------
@@ -615,9 +715,19 @@ def _machine_cpu_seconds() -> float | None:
     stat = Path("/proc/stat")
     if not stat.exists():
         return None
-    ticks = [int(t) for t in stat.read_text().split("\n", 1)[0].split()[1:]]
-    idle = ticks[3] + ticks[4]  # idle, iowait
-    return (sum(ticks) - idle) / os.sysconf("SC_CLK_TCK")
+    # user nice system idle iowait irq softirq steal guest guest_nice — and
+    # the last two are already counted inside user and nice, so summing the
+    # line whole would bill a virtualised host's guest time twice.
+    ticks = [int(t) for t in stat.read_text().split("\n", 1)[0].split()[1:10]]
+    busy = sum(ticks[:3]) + sum(ticks[5:8])
+    return busy / os.sysconf("SC_CLK_TCK")
+
+
+def _own_cpu_seconds() -> float:
+    """CPU seconds this process and its reaped children have used."""
+    return sum(
+        getrusage(who).ru_utime + getrusage(who).ru_stime for who in (RUSAGE_SELF, RUSAGE_CHILDREN)
+    )
 
 
 class Contention:
@@ -631,6 +741,7 @@ class Contention:
 
     def __init__(self):
         self.machine = _machine_cpu_seconds()
+        self.ours = _own_cpu_seconds()
         self.started = time.monotonic()
 
     def cores(self) -> float | None:
@@ -640,10 +751,9 @@ class Contention:
         machine = _machine_cpu_seconds()
         if machine is None or self.machine is None:
             return None
-        ours = sum(
-            getrusage(who).ru_utime + getrusage(who).ru_stime
-            for who in (RUSAGE_SELF, RUSAGE_CHILDREN)
-        )
+        # Both sides as deltas over the same window: `getrusage` reports since
+        # this process started, which is before the window opened.
+        ours = _own_cpu_seconds() - self.ours
         return max(0.0, (machine - self.machine) - ours) / (time.monotonic() - self.started)
 
 
@@ -656,7 +766,7 @@ BUSY_CORES = 0.5
 def report(results: dict, baseline: dict | None, threshold: float, busy: float | None) -> bool:
     """Print the table; return True if anything regressed past the threshold."""
     old = (baseline or {}).get("scenarios", {})
-    header = f"{'scenario':<13} {'req/s':>9} {'p50 ms':>9} {'p95 ms':>9} {'p99 ms':>9}"
+    header = f"{'scenario':<13} {'steps/s':>9} {'p50 ms':>9} {'p95 ms':>9} {'p99 ms':>9}"
     print("\n" + header + ("   vs baseline" if old else ""))
     print("-" * (len(header) + (14 if old else 0)))
     regressed = []
@@ -676,6 +786,8 @@ def report(results: dict, baseline: dict | None, threshold: float, busy: float |
             if bad:
                 regressed.append(name)
         print(line)
+    if "trial-loop" in results:
+        print("(a trial-loop step is two requests: the trial, then the answer)")
     if old and not regressed:
         print(f"\nno scenario regressed by more than {threshold:.0f}%.")
     elif regressed:
@@ -684,8 +796,7 @@ def report(results: dict, baseline: dict | None, threshold: float, busy: float |
         print(
             f"\nwarning: something else on this machine used {busy:.1f} cores "
             "while this ran, so every number above is a lower bound. Re-run on "
-            "an idle machine before believing a regression.",
-            file=sys.stderr,
+            "an idle machine before believing a regression."
         )
     return bool(regressed)
 
@@ -734,6 +845,8 @@ def check_budgets(chosen: tuple[Scenario, ...], concurrency: int, repeat: int) -
     trips a limiter fails on a 429 after minutes of work, and the arithmetic
     that decides is all known up front.
     """
+    if not 1 <= repeat <= REPEAT_LIMIT:
+        raise SystemExit(f"--repeat must be between 1 and {REPEAT_LIMIT}")
     login = next((s for s in chosen if s.name == "login"), None)
     if login is None:
         return
@@ -755,7 +868,12 @@ def main() -> None:
     ap.add_argument("-c", "--concurrency", type=int, default=8, help="virtual users (default 8)")
     ap.add_argument("--items", type=int, default=ITEM_COUNT, help="items in the scratch bank")
     ap.add_argument("--reseed", action="store_true", help="rebuild the template database")
-    ap.add_argument("--repeat", type=int, default=3, help="times to run each scenario (default 3)")
+    ap.add_argument(
+        "--repeat",
+        type=int,
+        default=3,
+        help=f"times to run each scenario, best kept (1-{REPEAT_LIMIT}, default 3)",
+    )
     ap.add_argument("--threshold", type=float, default=20.0, help="regression percent (default 20)")
     ap.add_argument("--no-pin", action="store_true", help="don't confine the server to one core")
     ap.add_argument("--web-dir", type=Path, help="frontend tree to serve (default: the server's)")
@@ -775,11 +893,22 @@ def main() -> None:
         raise SystemExit("--save records the whole suite; drop --only")
     check_budgets(chosen, args.concurrency, args.repeat)
 
+    cores = os.cpu_count() or 1
+    pin = bool(not args.no_pin and shutil.which("taskset") and cores > 2)
+    procs = driver_processes(args.concurrency, cores, pin)
+    # Everything here changes what the numbers mean, so a run that differs in
+    # any of it is not a comparison. `driver_processes` and `pinned` decide how
+    # much of the machine each side gets; `web` decides what four of the
+    # scenarios transfer, and it moves on its own when someone runs
+    # `npm run build`.
     settings = {
         "concurrency": args.concurrency,
         "repeat": args.repeat,
         "items": args.items,
         "warm_history": WARM_HISTORY,
+        "driver_processes": procs,
+        "pinned": pin,
+        "web": served_tree(args.web_dir).name,
         "requests": {s.name: s.requests for s in SCENARIOS},
     }
     baseline = json.loads(args.baseline.read_text()) if args.baseline.exists() else None
@@ -793,9 +922,6 @@ def main() -> None:
         Path(str(scratch) + suffix).unlink(missing_ok=True)
     shutil.copy(source, scratch)
 
-    cores = os.cpu_count() or 1
-    pin = bool(not args.no_pin and shutil.which("taskset") and cores > 2)
-    procs = max(1, min(4, args.concurrency, cores - 2))
     port = free_port()
     server = start_server(scratch, args.web_dir, port, cpu=SERVER_CPU if pin else None)
     base_url = f"http://127.0.0.1:{port}"
@@ -848,8 +974,7 @@ def main() -> None:
                 print(" [" + ", ".join(f"{r['rps']:.0f}" for r in runs) + " req/s]", flush=True)
                 results[scenario.name] = best
     finally:
-        server.terminate()
-        server.wait(timeout=30)
+        stop_server(server)
 
     # After the server and the pool have been reaped, so their CPU counts as
     # ours rather than as somebody else's.

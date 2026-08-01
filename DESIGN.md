@@ -281,3 +281,13 @@ its migrations at boot and will not run them again.
 Bootstrap, runbooks (bank refresh, restore), and the operational cautions
 live in `deploy/README.md`; everything else about the container is said in
 the Dockerfile, `fly.toml`, and `deploy/entrypoint.sh` where it applies.
+
+## Benchmark (`trainer/bench.py`)
+
+The one thing the tests can't say anything about is speed, so this drives a
+real uvicorn over loopback and compares against a committed baseline. It sits
+outside the pipeline above: it generates its own bank rather than reading one,
+so it never touches the file holding the experimental record. What makes its
+numbers repeatable rather than merely plausible — one core for the server, the
+driver kept off that core's hyperthread, and the arithmetic that exercises the
+rate limiters without exhausting them — is argued in the module.

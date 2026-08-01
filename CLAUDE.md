@@ -41,10 +41,9 @@ still handles.
 - `data/` is gitignored. The item bank (`items.db` items table) is
   rebuildable from the pipeline; the `responses` table is the
   experimental record — never wipe it casually.
-- The test suite says nothing about speed. `uv run python -m trainer.bench`
-  load-tests the API and the static tree against a committed baseline —
-  run it around a change that could cost anything, and re-record with
-  `--save` when a trade-off moves the numbers on purpose.
+- The test suite says nothing about speed; `trainer/bench.py` is what does.
+  Run it around a change that could plausibly cost anything — see README for
+  how, and DESIGN.md for why it is shaped the way it is.
 
 ## The invariant that bites
 

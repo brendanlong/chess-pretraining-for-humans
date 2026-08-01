@@ -11,19 +11,24 @@ import chess
 import pytest
 
 from trainer import bench
+from trainer.rating import difficulty_rating
 
 
-def spend(scenario, users: int, repeats: int):
+def spend(scenario, users: int, repeats: int, accounts=None, addresses=None):
     """Replay a scenario's whole plan, counting what it charges to each key.
 
     The same split `main` uses, so what this counts is what a run would spend.
+    The counters can be passed in, because the limiters a real run meets are
+    shared between scenarios and only a tally across all of them says whether
+    the plan fits.
     """
     counts = bench._split(scenario.requests, users)
-    accounts: Counter[int] = Counter()
-    addresses: Counter[str] = Counter()
+    accounts = Counter() if accounts is None else accounts
+    addresses = Counter() if addresses is None else addresses
+    index = bench.SCENARIOS.index(scenario)
     for repeat in range(repeats):
         for i in range(users):
-            vu = bench.VU(i, users, repeat, "http://x", scenario.address_block, {})
+            vu = bench.VU(i, users, repeat, index, "http://x", scenario.address_block, {})
             for _ in range(scenario.warmup + counts[i]):
                 addresses[vu.headers()[bench.ADDRESS_HEADER]] += 1
                 if scenario.name == "login":
@@ -32,30 +37,60 @@ def spend(scenario, users: int, repeats: int):
     return accounts, addresses
 
 
-def test_the_login_plan_stays_under_the_per_name_limit():
-    """The limiter allows ten guesses at one name per fifteen minutes, and a
-    whole run happens well inside one window — repetitions included."""
+@pytest.mark.parametrize("users", [1, 2, 4, 8, 16, 31])
+@pytest.mark.parametrize("repeats", [1, 3, bench.REPEAT_LIMIT])
+def test_the_login_plan_stays_under_the_per_name_limit(users, repeats):
+    """Ten guesses at one name per fifteen minutes, and a whole run happens
+    inside one window. The account index wraps on `LOGIN_ACCOUNTS`, so running
+    out shows up as two users quietly sharing a name rather than as an error —
+    which is what `check_budgets` is for, and what this checks it caught."""
     login = bench.BY_NAME["login"]
-    accounts, _ = spend(login, login.users(8), repeats=3)
+    seats = login.users(users)
+    try:
+        bench.check_budgets((login,), users, repeats)
+    except SystemExit:
+        return  # refused up front, which is the other correct answer
+    accounts, _ = spend(login, seats, repeats)
     assert accounts, "the login scenario spent nothing"
     assert max(accounts.values()) <= bench.LOGINS_PER_ACCOUNT
-    assert max(accounts) < bench.LOGIN_ACCOUNTS
 
 
-@pytest.mark.parametrize("scenario", bench.SCENARIOS, ids=lambda s: s.name)
 @pytest.mark.parametrize("users", [1, 4, 8, 16])
-def test_no_address_is_charged_past_its_block(scenario, users):
+def test_no_address_is_charged_past_its_block(users):
     """Rotation is what keeps `answer_limiter` (1200 per address per fifteen
-    minutes) and the login counters out of the measurement."""
-    _, addresses = spend(scenario, scenario.users(users), repeats=3)
-    assert max(addresses.values()) <= scenario.address_block
+    minutes) and the login counters out of the measurement.
+
+    Tallied over every scenario at once, against one set of counters, because
+    that is how the server meets them: one run, one fifteen-minute window, one
+    limiter per key. Two scenarios that happened to present the same address
+    would stack into a limit neither of them asked for.
+    """
+    addresses: Counter[str] = Counter()
+    for scenario in bench.SCENARIOS:
+        spend(scenario, scenario.users(users), repeats=3, addresses=addresses)
+    worst = max(addresses.values())
+    assert worst <= max(s.address_block for s in bench.SCENARIOS)
+    for scenario in bench.SCENARIOS:
+        _, own = spend(scenario, scenario.users(users), repeats=3)
+        assert max(own.values()) <= scenario.address_block, scenario.name
 
 
 def test_a_run_that_could_not_fit_is_refused_before_it_starts():
     login = bench.BY_NAME["login"]
     bench.check_budgets((login,), concurrency=8, repeat=3)  # the default, and it fits
-    with pytest.raises(SystemExit, match="accounts"):
+    with pytest.raises(SystemExit, match="between 1 and"):
         bench.check_budgets((login,), concurrency=8, repeat=100)
+
+
+@pytest.mark.parametrize("procs", [1, 2, 3, 4, 8, 16])
+@pytest.mark.parametrize("scenario", bench.SCENARIOS, ids=lambda s: s.name)
+def test_every_request_is_dealt_to_exactly_one_process(scenario, procs):
+    """However the driver is split, the work is the same work."""
+    plans = bench.plan_scenario(scenario, procs, {"concurrency": 8})
+    seats = scenario.users(8)
+    assert sorted(i for p in plans for i in p["vus"]) == list(range(seats))
+    assert sum(sum(p["counts"]) for p in plans) == scenario.requests
+    assert all(p["counts"] for p in plans), "a process with nothing to do"
 
 
 def test_seeded_items_are_positions_the_server_can_serve():
@@ -66,6 +101,10 @@ def test_seeded_items_are_positions_the_server_can_serve():
         best = chess.Move.from_uci(item["best_uci"])
         distractor = chess.Move.from_uci(item["distractor_uci"])
         assert best in board.legal_moves and distractor in board.legal_moves
+        # Difficulty is a pure function of the gap, and `db.connect` re-derives
+        # it on open — a seed that disagreed would make the first repetition
+        # pay for rewriting every row in the bank.
+        assert item["rating"] == difficulty_rating(item["gap_wp"])
         assert best != distractor
         for uci, line in (("best", item["pv_best"]), ("distractor", item["pv_distractor"])):
             replay = chess.Board(item["fen"])
@@ -86,6 +125,14 @@ def test_requests_are_dealt_out_whole():
     assert max(bench._split(1500, 8)) - min(bench._split(1500, 8)) <= 1
 
 
+def test_throughput_spans_every_driver_process():
+    """`rps` is steps over wall time, and the processes neither start nor stop
+    together — so the window has to be the union, or a run reports a rate no
+    part of it ever sustained."""
+    results = [([1.0, 2.0], 100.0, 104.0), ([3.0], 101.0, 106.0)]
+    assert bench.elapsed_across(results) == 6.0  # 106 - 100, not 104 - 100
+
+
 def _result(rps: float, p50: float) -> dict:
     return {"steps": 100, "rps": rps, "p50_ms": p50, "p95_ms": p50, "p99_ms": p50, "mean_ms": p50}
 
@@ -104,9 +151,11 @@ def test_a_busy_machine_is_disclosed(capsys):
     so it has to say which it was."""
     baseline = {"scenarios": {"healthz": _result(1000, 1.0)}}
     bench.report({"healthz": _result(700, 1.4)}, baseline, threshold=20.0, busy=4.0)
-    assert "4.0 cores" in capsys.readouterr().err
+    # Beside the table, not on stderr: it is the line saying the table can't be
+    # trusted, and a log that captured only stdout would keep one without it.
+    assert "4.0 cores" in capsys.readouterr().out
     bench.report({"healthz": _result(700, 1.4)}, baseline, threshold=20.0, busy=0.1)
-    assert "cores" not in capsys.readouterr().err
+    assert "cores" not in capsys.readouterr().out
 
 
 def test_a_subset_run_compares_against_the_same_subset():
