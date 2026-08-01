@@ -74,41 +74,43 @@ _TARGET_OFFSET = 400 * math.log10(1 / TARGET_ACCURACY - 1)
 # A one-ply read adds nothing (log2(1) == 0), so the gap curve above keeps
 # meaning exactly what it was measured to mean, and depth only ever adds.
 #
-# Doublings rather than plies because that is the shape the measurement has.
-# Within a narrow gap bin — the bin is what holds supply fixed, and without it
-# nothing is identified at all, since deep positions simply don't come with big
-# gaps — the upper tail of the strength of the players who made the error rises
-# with `solution_depth`. The rise is positive in all ten gap deciles, almost all
-# of it is the step from one ply to two, and past two the profile is flat to
-# within its own noise. log2 fits that better than a line or a root (rms
-# residual 540 points against 834 and 683), and it front-loads the axis onto the
-# step the data is clearest about, which is also the one the eye agrees with: a
-# refutation you see at once against one you don't.
+# The sign is measured and solid. Inside a narrow gap bin — the bin holds supply
+# fixed, and without it nothing is identified at all, since deep positions
+# simply don't come with big gaps — the upper tail of the strength of the
+# players who made the error rises with `solution_depth`, in all ten gap deciles
+# and at both the 75th and 90th percentiles. Deeper is harder.
 #
-# The magnitude is chosen, not measured, and this is the honest reason. Read
-# against `GAP_SLOPE`, the same tail puts a doubling at 860 points, 95% CI
-# [708, 3038] over 300 bootstrap resamples. But `GAP_SLOPE` is one of two
-# readings of a weak relationship — binning by strength and regressing on gap
-# gives 6096, binning by gap and regressing on strength gives 297, and there is
-# no fact of the matter between them without a model of erring nobody has. A
-# second axis read off the same tail inherits that whole twentyfold ambiguity,
-# so what the data settles is the sign and the shape, not the size.
+# The shape is measured weakly. Most of the rise is the step from one ply to
+# two, and it keeps climbing gently after; fitting the profile, log2 beats a
+# root and a line in every reconstruction tried, but by a few percent of
+# residual, not decisively. It is kept because saturating is the property that
+# matters — it bounds the axis and front-loads it onto the step the data is
+# clearest about, which is also the one the eye agrees with: a refutation you
+# see at once against one you don't.
 #
-# Everything that does bear on the size points the same way, down:
+# The magnitude is chosen, and this is the honest reason. Read against
+# `GAP_SLOPE` the same tail puts a doubling somewhere around 900-1100 points,
+# but that reading inherits `GAP_SLOPE`'s own ambiguity, which is total: binning
+# by strength and regressing on gap gives 6096, binning by gap and regressing on
+# strength gives 297, and there is no fact of the matter between them without a
+# model of erring nobody has. A second axis read off the same tail is multiplied
+# by whichever of those you picked. So the size comes from what the scale has to
+# do, and every part of that points the same way, down. Simulated over the
+# 24,989-item bank:
 #
-#   - Gap is steerable and depth is not. `mine` and `label` both filter on gap,
-#     and nothing anywhere can ask the tree for more deep positions — you get
-#     the mix it has (72% of the bank is solved at one ply). An axis that took
-#     the larger share of the scale would put bands out of reach of the only
-#     tool that can fill them.
-#   - The gap axis is the one with a real measurement behind it, so it should
-#     keep the majority of the scale.
-#   - Bigger values thin the bank rather than extend it. Simulated over the
-#     24,989-item bank: at 200 every band holding 1,000 items without this axis
-#     still does, and the three at the top that were starved (227, 0 and 0 items
-#     within a jitter of where users at 2700-2900 are aimed — the failure SPEC
-#     names) come up to 1102, 686 and 736. At 600 the top of the scale stretches
-#     2,000 points further than the bank can fill and holds ~300 a band.
+#   - At 600 the curve puts 2,971 items — an eighth of the bank — past
+#     RATING_MAX, where they clamp onto one value and stop being orderable.
+#     That is the flat band SPEC forbids outright, not merely a thin one, and
+#     eight further bands fall under a thousand items on the way there.
+#   - At 200 nothing clamps, no band that held a thousand items without this
+#     axis stops holding one, and the two that were starved come up: within a
+#     jitter of where users at 2800 and 2900 are aimed, 213 items and none
+#     become 686 and 736.
+#   - Depth is the axis nothing can steer. `mine` and `label` both filter on
+#     gap, and nothing anywhere can ask the tree for more deep positions — you
+#     get the mix it has, and 72% of the bank is solved at one ply. An axis that
+#     took the larger share of the scale would put bands out of reach of the
+#     only tool that can fill them, which is the trade the 600 row is losing.
 DEPTH_SLOPE = 200.0
 # A one-ply read: the shallowest there is, and so where the depth axis is zero.
 REFERENCE_DEPTH = 1
@@ -119,10 +121,13 @@ def depth_difficulty(solution_depth: int | None) -> float:
 
     None — a row from before this was measured — adds nothing, so such a row
     stays exactly as hard as it was until `trainer.backfill_depth` reaches it.
+    So does 0, which says no depth settles the item at all: that is a row
+    nothing will ever serve, and putting it anywhere in particular on the scale
+    would be inventing a difficulty for a question with no answer.
     """
-    if solution_depth is None:
+    if not solution_depth:
         return 0.0
-    return DEPTH_SLOPE * math.log2(max(solution_depth, REFERENCE_DEPTH) / REFERENCE_DEPTH)
+    return DEPTH_SLOPE * math.log2(solution_depth / REFERENCE_DEPTH)
 
 
 def _gap_for_difficulty(difficulty: float, solution_depth: int | None = REFERENCE_DEPTH) -> float:

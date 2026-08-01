@@ -207,11 +207,19 @@ change first, if it should change.
   reads as "adds nothing", so nothing actually moves until a push carries the
   measured depths over (above). Ratings are deliberately not regraded either
   time: the axis is zero at a one-ply read, so the gap curve still means what it
-  measured, and about three items in four sit there. What does change is that a
-  quarter of the bank becomes harder than it was, and the top of the user scale
-  — which had almost nothing to serve — fills up. Expect accuracy to dip for
-  users whose band gained deep items, and let Elo do the rest; that is the
-  correction, not a fault.
+  measured, and 72% of the bank sits there. What does change is that the
+  other quarter becomes harder than it was, and the top of the scale stops
+  being empty: where users at 2800 and 2900 are aimed held 213 items and none,
+  and holds 686 and 736 after. Still under the thousand `trainer.supply` wants,
+  so it stays the band to watch — but it is now thin rather than absent. Expect
+  accuracy to dip for users whose band gained deep items, and let Elo do the
+  rest; that is the correction, not a fault.
+
+  The push also retires items: a position no search up to the ceiling gets the
+  right way round stops being served. Roughly one row in 27 on a bank labeled
+  before this, because the check it replaces was reading a hash the deep pass
+  had just filled. They stay in the table and their responses stay valid — what
+  changes is that nobody is asked them again.
 - **`VACUUM` breaks replication.** It rewrites every page and invalidates
   Litestream's tracking. `VACUUM INTO` a new file and treat it as a new
   database (stop Litestream, clear `/data/.items.db-litestream`, re-snapshot).

@@ -4,16 +4,18 @@ Difficulty is a function of the gap *and* of how far ahead the position has to
 be read, so a row with no depth measured is being served as though it needed
 none. This runs `label.solution_depth` over those rows and fills it in.
 
-Idempotent: only rows with a NULL `solution_depth` are touched. It can also
-retire one — a position no search up to `label.DEPTH_SHALLOW` gets the right
-way round is unlearnable and stops being served, which is a verdict on the
-item's noise, not on its answer, so responses already given to it stay
-interpretable.
+Idempotent, and NULL is what makes it so: a row the ladder has already answered
+holds a depth or the 0 that says no depth settles it, and neither is NULL. That
+second answer retires the item — it stops being served, which is a verdict on
+the item's noise, not on its answer, so responses already given to it stay
+interpretable. It can retire a row an older, weaker filter had passed, which is
+the point of running this over a bank that predates the measurement.
 
     uv run python -m trainer.backfill_depth [--workers 8]
 
 `items.rating` is not written here: `db.connect` re-derives it from the two
-columns it is a function of, so the next open picks the change up.
+columns it is a function of, and unlike `trainer.push_items` this runs on the
+pipeline's own bank, which no server has open.
 """
 
 import argparse
@@ -58,7 +60,7 @@ def main() -> None:
         for item_id, depth in pool.map(measure, items):
             conn.execute(
                 "UPDATE items SET solution_depth = ?, learnable = ? WHERE id = ?",
-                (depth, int(depth is not None), item_id),
+                (depth or 0, int(depth is not None), item_id),
             )
             conn.commit()  # commit per item: a trainer server may share the db
             done += 1

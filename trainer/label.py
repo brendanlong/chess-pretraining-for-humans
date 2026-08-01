@@ -100,9 +100,11 @@ def winprob_ladder(
     a shallow search that can look up what a deep search already stored is not a
     shallow search. The deep pass in `label_candidate` runs on this same
     position moments earlier, so without this the engine reports a two-ply read
-    of a conclusion it reached at eighteen — which changed the verdict on 8 of
-    100 sampled positions. It costs under a tenth of a millisecond, and it is
-    what makes the number mean the same thing here and in
+    of a conclusion it reached at eighteen. That is not a small correction:
+    measured against the real pipeline, leaving the table warm changes the depth
+    on about a third of positions (49 of 160 sampled) and flips learnable either
+    way on about one in sixteen. It costs under a tenth of a millisecond, and it
+    is what makes the number mean the same thing here and in
     `trainer.backfill_depth`, where no deep pass precedes it.
     """
     engine.configure({"Clear Hash": None})
@@ -130,9 +132,10 @@ def shallowest_settled(best: dict[int, float], distractor: dict[int, float]) -> 
     coincidence. So the walk goes down from the deepest rung, not up from the
     first — which also makes it cheap.
 
-    A depth neither search reported is stepped over rather than ending the walk:
-    a missing rung is no evidence either way, and reading it as disagreement
-    would inflate every depth above it.
+    A depth only one of the two searches reported is stepped over rather than
+    ending the walk: a rung with nothing to compare against is no evidence
+    either way, and reading it as disagreement would inflate every depth above
+    it.
 
     None means no depth settles it, which is the learnability filter: the answer
     isn't reachable from the surface, so the item is noise however correct its
@@ -160,7 +163,10 @@ def solution_depth(
     The ladder is shallow enough that giving up the threads costs nothing, and
     on one thread it is reproducible across engine processes and across the
     order positions are fed in — which is what lets `trainer.backfill_depth`
-    reach the same answer years later on the same position.
+    reach the same answer as this on a position it never saw labeled. It is one
+    Stockfish build that has to agree with itself, not two: a bank labeled
+    across an engine upgrade holds depths from both, which is a reason to
+    re-measure a bank rather than something this can prevent.
 
     Guarded because the swap reallocates the thread pool twice, and the default
     is already one thread, so the common path should not pay for a setting it
@@ -233,7 +239,9 @@ def label_candidate(cand: dict) -> dict | None:
         "gap_wp": gap_wp,
         "pv_best": pv_best,
         "pv_distractor": pv_d,
-        "solution_depth": depth,
+        # 0, not NULL, when no depth settles it: that is a verdict, and a NULL
+        # would file it with the rows nobody has measured yet.
+        "solution_depth": depth or 0,
         "learnable": int(depth is not None),
         "depth_deep": DEPTH_DEEP,
         "depth_shallow": DEPTH_SHALLOW,

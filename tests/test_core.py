@@ -108,9 +108,17 @@ def test_lookahead_is_a_second_axis_and_not_a_tiebreak():
 def test_an_unmeasured_lookahead_leaves_an_item_where_it_was():
     """Rows labeled before depth was measured keep their difficulty until
     `trainer.backfill_depth` reaches them — being served at the wrong difficulty
-    is a smaller wrong than being served as though they were the hardest kind."""
+    is a smaller wrong than being served as though they were the hardest kind.
+
+    0 is the other thing that isn't a depth: the ladder's answer that nothing
+    settles this item. Such a row is never served, so it takes no position on
+    the scale rather than an invented one — and it must not land where a
+    logarithm of zero would put it.
+    """
     for gap in (MIN_GAP_WP, 0.2, MAX_GAP_WP):
-        assert difficulty_rating(gap, None) == difficulty_rating(gap, REFERENCE_DEPTH)
+        at_reference = difficulty_rating(gap, REFERENCE_DEPTH)
+        assert difficulty_rating(gap, None) == at_reference
+        assert difficulty_rating(gap, 0) == at_reference
 
 
 def test_the_hardest_item_the_labeler_admits_is_not_clamped():

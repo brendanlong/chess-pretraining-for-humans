@@ -9,11 +9,34 @@ that a careless width asks for a tenth of what the floor needs.
 
 from tests.conftest import ITEM, add_item
 from trainer.db import connect
-from trainer.rating import _TARGET_OFFSET, difficulty_rating, target_gap
-from trainer.supply import SELECTION_POOL, band, band_width_in_gap, by_gap, pool_drift
+from trainer.rating import (
+    _TARGET_OFFSET,
+    REFERENCE_DEPTH,
+    _gap_for_difficulty,
+    difficulty_rating,
+    target_gap,
+)
+from trainer.supply import (
+    SELECTION_POOL,
+    band,
+    band_lookahead,
+    band_width_in_gap,
+    by_gap,
+    pool_drift,
+)
 
 
-def bank(tmp_path, gaps, learnable=1):
+def bank(tmp_path, gaps, learnable=1, depth=REFERENCE_DEPTH):
+    """A bank at a fixed lookahead, one ply unless a test says otherwise.
+
+    Pinned rather than left at the fixture's default because everything below
+    is about the gap axis — where a band sits, how wide it is in gap, what
+    mining would have to fetch — and a mixed-depth bank would scatter each of
+    those over several bands and test the sum of the two axes instead of the one
+    the assertion names. It has to be *some* depth and not silence: `rating` is
+    a function of both columns, so a row that named a gap and left the depth to
+    chance would be a row `db.connect` rewrites on the way in.
+    """
     conn = connect(tmp_path / "supply.db")
     for i, gap in enumerate(gaps):
         # The fen is never parsed here and unique is all the table asks.
@@ -21,7 +44,8 @@ def bank(tmp_path, gaps, learnable=1):
             conn,
             f"position-{i}",
             gap_wp=gap,
-            rating=difficulty_rating(gap),
+            solution_depth=depth,
+            rating=difficulty_rating(gap, depth),
             learnable=learnable,
         )
     conn.commit()
@@ -38,8 +62,26 @@ def test_a_band_counts_only_what_selection_would_reach_for(tmp_path):
 
 def test_an_unlearnable_item_is_not_supply(tmp_path):
     """It is in the bank and never served, so counting it would overstate."""
-    conn = bank(tmp_path, [0.238] * 5, learnable=0)
+    conn = bank(tmp_path, [0.238] * 5, learnable=0, depth=0)
     assert band(conn, 1400 + _TARGET_OFFSET) == 0
+
+
+def test_a_band_reports_how_much_of_it_needs_more_than_a_glance(tmp_path):
+    """A band deep enough in items can still be all of one kind, and which kind
+    is the thing the count can't say. Reported as a share because one-ply items
+    are most of any bank, so a median would read 1 down almost the whole table
+    however the band was made up."""
+    target = 1400 + _TARGET_OFFSET
+    shallow = _gap_for_difficulty(target, 1)
+    # The same difficulty, reached the other way: a wider gap read four plies in.
+    deep = _gap_for_difficulty(target, 4)
+    assert deep > shallow, "a deeper item should reach this difficulty at a wider gap"
+    conn = bank(tmp_path, [shallow] * 3)
+    add_item(conn, "deep-1", gap_wp=deep, solution_depth=4, rating=difficulty_rating(deep, 4))
+    conn.commit()
+
+    assert band(conn, target) == 4  # all four are in the band
+    assert band_lookahead(conn, target) == 0.25
 
 
 def test_drift_is_what_a_thin_band_costs(tmp_path):

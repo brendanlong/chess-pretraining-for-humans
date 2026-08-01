@@ -88,10 +88,10 @@ def test_migration_drops_the_columns_that_carried_answers_into_difficulty(tmp_pa
 
 def test_migration_re_derives_difficulty_that_drifted_off_the_formula(tmp_path):
     """`items.rating` is a pure function of `gap_wp` and `solution_depth` — a
-    claim about the rows, not just about the code that writes new ones. Three
-    kinds of row disagreed: a rating an older server's Elo had moved, one
-    computed from the full-precision gap before the gap was rounded for storage,
-    and one from before lookahead depth was an axis at all."""
+    claim about the rows, not just about the code that writes new ones. Two
+    kinds of row disagreed: a rating an older server's Elo had moved, and one
+    computed from the full-precision gap before the gap was rounded for
+    storage."""
     path = old_db(tmp_path)
     conn = connect(path)
     add_item(conn, FEN_TMPL.format(FEN_RANKS[0]))
@@ -104,6 +104,53 @@ def test_migration_re_derives_difficulty_that_drifted_off_the_formula(tmp_path):
     assert item["rating"] == difficulty_rating(item["gap_wp"], item["solution_depth"]) != 1234.5
     # And the depth is doing work: it is not the gap-only rating either.
     assert item["rating"] != difficulty_rating(item["gap_wp"])
+
+
+# `items` as it stood before lookahead was an axis: no `solution_depth`, and a
+# `learnable` decided by the old single-depth check. This is the table every
+# real deployment is upgraded from, so the ALTER has to be exercised against it
+# rather than against a schema `connect` just finished creating.
+PRE_LOOKAHEAD_ITEMS = """
+CREATE TABLE items (
+    id INTEGER PRIMARY KEY,
+    fen TEXT NOT NULL UNIQUE,
+    best_uci TEXT NOT NULL,
+    distractor_uci TEXT NOT NULL,
+    distractor_source TEXT NOT NULL,
+    cp_best INTEGER, mate_best INTEGER,
+    cp_distractor INTEGER, mate_distractor INTEGER,
+    wp_best REAL NOT NULL, wp_distractor REAL NOT NULL,
+    gap_wp REAL NOT NULL,
+    pv_best TEXT, pv_distractor TEXT,
+    learnable INTEGER NOT NULL,
+    depth_deep INTEGER NOT NULL, depth_shallow INTEGER NOT NULL,
+    rating REAL NOT NULL,
+    ply INTEGER, game_url TEXT, mover_elo INTEGER, time_control TEXT
+);
+"""
+PRE_LOOKAHEAD_ROW = """
+INSERT INTO items (fen, best_uci, distractor_uci, distractor_source, wp_best,
+                   wp_distractor, gap_wp, learnable, depth_deep, depth_shallow, rating)
+VALUES ('legacy', 'e2e4', 'a2a3', 'game', 0.55, 0.45, 0.2, 1, 18, 8, ?)
+"""
+
+
+def test_a_bank_from_before_lookahead_keeps_its_difficulty_until_it_is_measured(tmp_path):
+    """The column arrives empty, and empty has to mean "adds nothing" — not
+    "needs no lookahead" and not "unlearnable". Otherwise the release that adds
+    the axis re-rates a whole live bank on a measurement nobody has taken."""
+    path = tmp_path / "pre-lookahead.db"
+    legacy = sqlite3.connect(path)
+    legacy.executescript(PRE_LOOKAHEAD_ITEMS)
+    legacy.execute(PRE_LOOKAHEAD_ROW, (difficulty_rating(0.2),))
+    legacy.commit()
+    legacy.close()
+
+    conn = connect(path)
+    item = conn.execute("SELECT solution_depth, learnable, rating FROM items").fetchone()
+    assert item["solution_depth"] is None
+    assert item["learnable"] == 1  # still served, on the old filter's word
+    assert item["rating"] == difficulty_rating(0.2)  # and exactly as hard as before
 
 
 def test_regrade_runs_exactly_once(tmp_path):

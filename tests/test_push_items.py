@@ -84,6 +84,15 @@ def test_merge_adds_new_positions_and_leaves_the_record_alone(tmp_path):
     assert conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 1
 
 
+def unmeasured(path):
+    """A live bank as it stands before any depth has reached it."""
+    conn = connect(path)
+    conn.execute("UPDATE items SET solution_depth = NULL, rating = difficulty_rating(gap_wp, NULL)")
+    conn.commit()
+    conn.close()
+    return path
+
+
 def test_merge_fills_in_a_lookahead_depth_the_live_bank_never_measured(tmp_path):
     """The one thing a held position takes from the incoming bank.
 
@@ -91,31 +100,28 @@ def test_merge_fills_in_a_lookahead_depth_the_live_bank_never_measured(tmp_path)
     bank can't be replaced wholesale — so without this the rows that predate
     the measurement would be served at gap-only difficulty forever.
     """
-    live = live_db(tmp_path)
-    conn = connect(live)
-    conn.execute("UPDATE items SET solution_depth = NULL")
-    conn.commit()
-    conn.close()
+    live = unmeasured(live_db(tmp_path))
     incoming = bank(tmp_path / "fresh.db", ["8", "7P"])
 
     assert merge(live, incoming) == (0, 2, 2)
-    conn = connect(live)
-    rows = conn.execute("SELECT solution_depth, rating FROM items ORDER BY id").fetchall()
+    # Read on a raw connection: `connect` re-derives `rating`, so opening the
+    # file the ordinary way would repair exactly what this is checking. The live
+    # server holds its connections open past a merge and re-derives on neither,
+    # so a difficulty this doesn't write is a difficulty nobody sees.
+    raw = sqlite3.connect(live)
+    raw.row_factory = sqlite3.Row
+    rows = raw.execute("SELECT solution_depth, rating FROM items ORDER BY id").fetchall()
     assert [r["solution_depth"] for r in rows] == [2, 2]
-    # And the difficulty that follows from it: `connect` re-derives on the way in.
     assert rows[0]["rating"] == difficulty_rating(0.10, 2) != difficulty_rating(0.10)
 
 
 def test_merge_retires_a_position_no_search_gets_right(tmp_path):
-    """Unlearnable is a depth verdict too, and it has to travel as one."""
-    live = live_db(tmp_path)
-    conn = connect(live)
-    conn.execute("UPDATE items SET solution_depth = NULL")
-    conn.commit()
-    conn.close()
+    """Unlearnable is a depth verdict too, and it has to travel as one — even
+    onto a live row an older, hash-warm filter had passed as learnable."""
+    live = unmeasured(live_db(tmp_path))
     incoming = bank(tmp_path / "fresh.db", [])
     conn = connect(incoming)
-    add_item(conn, FEN_TMPL.format("8"), solution_depth=None, learnable=0)
+    add_item(conn, FEN_TMPL.format("8"), solution_depth=0, learnable=0)
     conn.commit()
     conn.close()
 
@@ -124,25 +130,67 @@ def test_merge_retires_a_position_no_search_gets_right(tmp_path):
     assert [r["learnable"] for r in served] == [0, 1]
 
 
+def test_merge_re_measures_a_legacy_row_the_old_filter_had_already_rejected(tmp_path):
+    """`learnable = 0` on a live row is the *old* single-depth check's verdict,
+    taken on a hash the deep pass had just filled. It carries no depth, so the
+    ladder has never really run on it, and both fill-in paths have to agree that
+    it still needs to."""
+    live = unmeasured(live_db(tmp_path))
+    conn = connect(live)
+    conn.execute("UPDATE items SET learnable = 0 WHERE id = 1")
+    conn.commit()
+    conn.close()
+    incoming = bank(tmp_path / "fresh.db", ["8"])  # the same position, now measured
+
+    assert merge(live, incoming) == (0, 1, 1)
+    row = connect(live).execute("SELECT solution_depth, learnable FROM items WHERE id = 1")
+    assert tuple(row.fetchone()) == (2, 1)  # back in the bank, on a real measurement
+
+
 def test_merge_leaves_a_depth_already_measured_alone(tmp_path):
-    """Re-measuring one is relabelling, which is what this tool refuses."""
+    """Re-measuring one is relabelling, which is what this tool refuses. That
+    includes the 0 that says no depth settles it: it is an answer, not a gap."""
     live = live_db(tmp_path)
-    incoming = bank(tmp_path / "fresh.db", [])
+    conn = connect(live)
+    conn.execute("UPDATE items SET solution_depth = 0, learnable = 0 WHERE id = 1")
+    conn.commit()
+    conn.close()
+    incoming = bank(tmp_path / "fresh.db", ["8", "7P"])
+
+    assert merge(live, incoming) == (0, 2, 0)
+    rows = connect(live).execute("SELECT solution_depth FROM items ORDER BY id").fetchall()
+    assert [r["solution_depth"] for r in rows] == [0, 2]
+
+
+def test_merge_carries_its_items_across_a_source_that_predates_the_column(tmp_path):
+    """Schema skew is this tool's premise, so the fill-in has to stand down
+    rather than raise — a failure here rolls the inserts back with it, and the
+    operator's push silently delivers nothing."""
+    live = unmeasured(live_db(tmp_path))
+    incoming = bank(tmp_path / "fresh.db", ["6P1"])
     conn = connect(incoming)
-    add_item(conn, FEN_TMPL.format("8"), solution_depth=7)
+    conn.execute("ALTER TABLE items DROP COLUMN solution_depth")
     conn.commit()
     conn.close()
 
-    assert merge(live, incoming) == (0, 1, 0)
-    assert connect(live).execute("SELECT solution_depth FROM items").fetchone()[0] == 2
+    assert merge(live, incoming) == (1, 0, 0)
+    conn = connect(live)
+    assert conn.execute("SELECT COUNT(*) FROM items").fetchone()[0] == 3
+    assert conn.execute("SELECT solution_depth FROM items WHERE id = 1").fetchone()[0] is None
 
 
 def test_merge_dry_run_writes_nothing(tmp_path):
-    live = live_db(tmp_path)
-    incoming = bank(tmp_path / "fresh.db", ["6P1"])
+    """Including the fill-in, which is the half that would otherwise land on a
+    run whose whole point is to be asked about first."""
+    live = unmeasured(live_db(tmp_path))
+    incoming = bank(tmp_path / "fresh.db", ["8", "6P1"])
 
-    assert merge(live, incoming, dry_run=True) == (1, 0, 0)
-    assert connect(live).execute("SELECT COUNT(*) FROM items").fetchone()[0] == 2
+    assert merge(live, incoming, dry_run=True) == (1, 1, 1)
+    conn = connect(live)
+    assert conn.execute("SELECT COUNT(*) FROM items").fetchone()[0] == 2
+    assert (
+        conn.execute("SELECT COUNT(*) FROM items WHERE solution_depth IS NULL").fetchone()[0] == 2
+    )
 
 
 def test_merge_survives_a_source_missing_a_column(tmp_path):

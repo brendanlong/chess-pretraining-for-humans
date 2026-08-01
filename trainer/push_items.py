@@ -30,15 +30,24 @@ from .db import DEFAULT_DB, connect
 # `id` is per-database; everything else about an item is a property of the
 # position, so it travels.
 PER_DATABASE_COLUMNS = {"id"}
-# The pair `merge` will fill in on a position the live bank already holds: how
-# far ahead the comparison has to be read, and — because "no depth sees it" is
-# one of the answers — whether it is learnable at all. They move together or
-# not at all: `learnable` is a reading of `solution_depth`.
-MEASURED_COLUMNS = "solution_depth, learnable"
-# A row nobody has run the depth ladder over yet. Not simply a NULL depth: an
-# unlearnable row has one too, and is the ladder's verdict rather than its
-# absence.
-_UNMEASURED = "{table}.solution_depth IS NULL AND {table}.learnable = 1"
+# What `merge` will fill in on a position the live bank already holds: how far
+# ahead the comparison has to be read, whether it is learnable at all — because
+# "no depth sees it" is one of the ladder's answers — and the difficulty that
+# follows from the first. All three or none: `learnable` is a reading of
+# `solution_depth`, and `rating` is a function of it, so landing one without the
+# others would leave the bank saying three things.
+#
+# `rating` is recomputed here rather than left to `db.connect`'s re-derivation
+# because the merge runs against a database a *server* has open, and that server
+# ran its migrations at boot. Nothing would put the new difficulty in front of a
+# user until the machine restarted, which is not a step this runbook has.
+MEASURED_COLUMNS = ("solution_depth", "learnable")
+# A row nobody has run the ladder over. Just the NULL: 0 is the ladder saying no
+# depth settles it, which is a verdict and not an absence. `learnable` gets no
+# say — on a live row it is the *old* single-depth check's word, taken on a hash
+# the deep pass had just filled, so a row carrying 0 there has still never been
+# measured and `trainer.backfill_depth` would rightly re-measure it.
+_UNMEASURED = "{table}.solution_depth IS NULL"
 
 
 def item_columns(conn: sqlite3.Connection, schema: str = "main") -> list[str]:
@@ -123,13 +132,23 @@ def merge(db: Path, incoming: Path, dry_run: bool = False) -> tuple[int, int, in
         # answers already given to it still mean what they meant. Only blanks:
         # a row that has been measured keeps its verdict, since re-measuring one
         # is relabelling.
-        measured = conn.execute(
-            f"UPDATE main.items SET ({MEASURED_COLUMNS}) = ("
-            f"  SELECT {MEASURED_COLUMNS} FROM inc.items WHERE inc.items.fen = main.items.fen)"
-            f" WHERE {_UNMEASURED.format(table='main.items')}"
-            f"   AND EXISTS (SELECT 1 FROM inc.items WHERE inc.items.fen = main.items.fen"
-            f"               AND NOT ({_UNMEASURED.format(table='inc.items')}))"
-        ).rowcount
+        #
+        # Skipped outright when either side predates the column. Schema skew is
+        # this tool's whole premise, and a bank exported from an older checkout
+        # has to still deliver its items rather than raise on the way past — the
+        # failure would roll the inserts back with it.
+        measured = 0
+        both = set(item_columns(conn, "inc")) & set(item_columns(conn, "main"))
+        if set(MEASURED_COLUMNS) <= both:
+            fill = ", ".join(MEASURED_COLUMNS)
+            measured = conn.execute(
+                f"UPDATE main.items SET ({fill}, rating) = (SELECT {fill},"
+                f"    difficulty_rating(main.items.gap_wp, inc.items.solution_depth)"
+                f"    FROM inc.items WHERE inc.items.fen = main.items.fen)"
+                f" WHERE {_UNMEASURED.format(table='main.items')}"
+                f"   AND EXISTS (SELECT 1 FROM inc.items WHERE inc.items.fen = main.items.fen"
+                f"               AND NOT ({_UNMEASURED.format(table='inc.items')}))"
+            ).rowcount
         if dry_run:
             conn.rollback()
         else:

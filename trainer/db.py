@@ -67,11 +67,16 @@ CREATE TABLE IF NOT EXISTS items (
     pv_best TEXT,        -- space-separated UCI line starting with best_uci
     pv_distractor TEXT,  -- space-separated UCI line starting with distractor_uci
     -- Plies of lookahead the comparison needs: the shallowest search that gets
-    -- the two moves the right way round and is not contradicted deeper. NULL on
-    -- an unlearnable row (no depth does), and on a row labeled before it was
-    -- measured, where difficulty falls back to gap alone.
+    -- the two moves the right way round and is not contradicted deeper.
+    --
+    -- Three states, and keeping them apart is what stops `trainer.push_items`
+    -- and `trainer.backfill_depth` from disagreeing about which rows still need
+    -- the ladder run over them. 1..depth_shallow is a depth; 0 is the ladder's
+    -- other answer, that no depth settles it; NULL is that nobody has asked,
+    -- which is only ever a row labeled before this was measured, and reads as
+    -- "adds nothing" so such a row keeps the difficulty it already had.
     solution_depth INTEGER,
-    learnable INTEGER NOT NULL,       -- some search up to depth_shallow sees the ordering
+    learnable INTEGER NOT NULL,       -- solution_depth != 0, once it is measured
     depth_deep INTEGER NOT NULL,
     depth_shallow INTEGER NOT NULL,
     -- difficulty: rating.difficulty_rating(gap_wp, solution_depth)
@@ -243,11 +248,13 @@ def connect(path: Path = DEFAULT_DB, check_same_thread: bool = True) -> sqlite3.
     if "item_rating_after" in response_cols:
         conn.execute("ALTER TABLE responses DROP COLUMN item_rating_after")
     # Registering the function rather than repeating the formula in SQL keeps
-    # one definition of difficulty.
+    # one definition of difficulty. `push_items` calls it by this name too, from
+    # a merge that has to land a new difficulty without waiting for a restart.
     conn.create_function("difficulty_rating", 2, difficulty_rating, deterministic=True)
     conn.create_function("regraded_user_rating", 1, rating.regraded_user_rating, deterministic=True)
-    # Item difficulty is re-derived, because "a pure function of `gap_wp`" has to
-    # be true of the rows, not just of the code that writes new ones. Users are
+    # Item difficulty is re-derived, because "a pure function of `gap_wp` and
+    # `solution_depth`" has to be true of the rows, not just of the code that
+    # writes new ones. Users are
     # regraded in the same transaction, because the two are one change: a rating
     # means nothing except against the difficulties it selects, so moving the
     # items without moving the users would silently re-aim everyone.
