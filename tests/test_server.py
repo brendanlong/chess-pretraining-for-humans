@@ -158,6 +158,93 @@ def test_first_exposure_filter_is_answered_from_an_index_covering_item_id(db):
     assert "idx_responses_item" in inner[0], inner[0]
 
 
+def test_selection_walks_the_rating_index_instead_of_scanning_the_bank(db):
+    """Serving a trial must not cost a pass over every item row — see
+    `PICK_SQL` in server.py for what the walks replace.
+
+    Asserts the plan, not a duration, because a timing threshold flakes on CI.
+    The losing plan is `SCAN items`, and it is what any edit that stops the
+    partial index applying — dropping the `learnable = 1` term, or ordering
+    the walks by an expression — quietly reverts to. (A temp b-tree does
+    appear: it sorts the merged walks, never more than two pools of rows.)
+    """
+    params = {"target": 1200, "user_id": 1, "k": 3}
+    steps = [row[-1] for row in db.execute("EXPLAIN QUERY PLAN " + server.PICK_SQL, params)]
+    walks = [s for s in steps if "idx_items_learnable_rating" in s]
+    assert len(walks) == 2, steps  # one per direction
+    assert all(s.startswith("SEARCH") for s in walks), steps
+    # "SCAN items" on this SQLite; older ones say "SCAN TABLE items". Matching
+    # both keeps the guard from going quiet under a different interpreter.
+    assert not any(s.startswith("SCAN") and "items" in s for s in steps), steps
+
+
+def test_the_unseen_count_is_answered_without_reading_item_rows(db):
+    """Counting needs ids alone, and the partial rating index carries them for
+    exactly the servable items — so the count must come off the index, not off
+    the wide rows a bank-sized table keeps them in."""
+    steps = [row[-1] for row in db.execute("EXPLAIN QUERY PLAN " + server.UNSEEN_COUNT_SQL, (1,))]
+    items_step = next(s for s in steps if "items" in s)
+    assert "COVERING INDEX idx_items_learnable_rating" in items_step, steps
+
+
+def test_the_index_walks_merge_to_the_pool_the_distance_ordering_chose(db):
+    """The LIMITed walks are only an optimization if every OFFSET of `PICK_SQL`
+    still lands inside the `SELECTION_POOL` nearest unseen items — the set a
+    full `ORDER BY ABS(rating - target)` selects by construction."""
+    from trainer.rating import difficulty_rating
+
+    from .conftest import add_item
+
+    # Distinct difficulties on both sides of the target, more than a pool per
+    # side, with a user who has already seen some of the closest ones.
+    for i in range(90):
+        gap = 0.01 + 0.004 * i
+        add_item(db, f"pool-test-{i}", shallow_gap=gap, rating=difficulty_rating(gap))
+    with db:
+        user = auth.create_guest(db, 850.0, 250.0)
+        db.executemany(
+            """INSERT INTO responses (user_id, item_id, choice_uci, correct)
+               VALUES (?, ?, 'e2e4', 1)""",
+            [(user["id"], item_id) for item_id in range(20, 40)],
+        )
+    target, uid = db.execute("SELECT AVG(rating), ? FROM items", (user["id"],)).fetchone()
+    old = db.execute(
+        """SELECT ABS(rating - ?) AS d FROM items
+           WHERE learnable = 1 AND id NOT IN (SELECT item_id FROM responses WHERE user_id = ?)
+           ORDER BY d LIMIT ?""",
+        (target, uid, server.SELECTION_POOL),
+    ).fetchall()
+    who = {"target": target, "user_id": uid}
+    picked = [
+        db.execute(server.PICK_SQL, {**who, "k": k}).fetchone()
+        for k in range(server.SELECTION_POOL)
+    ]
+    # Distances rather than ids: equal-rated items tie, and any nearest-30 set
+    # is as good as any other — what must match is how near the pool sits.
+    assert sorted(abs(r["rating"] - target) for r in picked) == [r["d"] for r in old]
+
+
+def test_a_pool_smaller_than_the_draw_is_redrawn_not_dropped(db, monkeypatch):
+    """The first OFFSET is drawn as if the pool were full; a bank holding less
+    must redraw over what exists rather than reporting exhaustion early."""
+    monkeypatch.setattr(server, "conn", db)
+
+    draws = []
+
+    class MissFirst:
+        """Always the highest draw, so the first OFFSET overshoots a bank of 2."""
+
+        def randrange(self, n: int) -> int:
+            draws.append(n)
+            return n - 1
+
+    monkeypatch.setattr(server, "rng", MissFirst())
+    item, repeat = server.pick_item(850.0, None)
+    assert item is not None and repeat is False
+    # Missed at pool size, then redrawn over exactly the items that exist.
+    assert draws == [server.SELECTION_POOL, 2]
+
+
 def test_legal_pages_are_served_and_reachable_before_signing_up(client):
     """A guest records responses without ever opening the signup form, so the
     first page it lands on has to link the terms and the policy itself."""

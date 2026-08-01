@@ -6,9 +6,10 @@
 The job is to notice when a change makes a request slower, not to predict what
 production will do. So everything that doesn't have to vary is held still:
 
-* Fixed request *counts*, not a fixed duration. `/api/next` scans the bank
-  minus what the caller has already answered, so its cost grows with the
-  history a run writes. A timed run therefore measures a different mix of
+* Fixed request *counts*, not a fixed duration. `/api/next` skips what the
+  caller has already answered and `/api/stats` counts what they haven't, so
+  both cost more as the history a run writes grows. A timed run therefore
+  measures a different mix of
   database states on a fast machine than on a slow one, and stops being a
   comparison. Counting the requests instead makes every run walk the database
   through the same states in the same order. Repetitions of the writing
@@ -69,12 +70,12 @@ BASELINE = _ROOT / "bench-baseline.json"
 TEMPLATE = _ROOT / "data" / "bench-template.db"
 TEMPLATE_VERSION = 3  # bumped when the seeding below changes what it writes
 
-# What the deployment serves, because `pick_item` and `unseen_count` both scan
-# the bank once per request: their cost is linear in this, and a benchmark
-# against a toy bank would report a fifth of the work the real one does. It is
-# pinned rather than read from anywhere, since a baseline is only a comparison
-# if both runs measured the same amount of work — raise it when the live bank
-# grows enough to matter, and re-record.
+# What the deployment serves, because `unseen_count` still walks an index
+# entry per item once per stats request — the one per-request cost left that
+# is linear in this — and a benchmark against a toy bank would understate it.
+# It is pinned rather than read from anywhere, since a baseline is only a
+# comparison if both runs measured the same amount of work — raise it when
+# the live bank grows enough to matter, and re-record.
 ITEM_COUNT = 34_307
 # Accounts the login scenario spends. Its per-name limit is 10 per 15 minutes,
 # so this is what caps how many logins one run may measure.
@@ -218,8 +219,8 @@ def _items(rng: random.Random, count: int):
                 continue
             seen.add(fen)
             best, distractor = rng.sample(moves, 2)
-            # Spread across the whole difficulty range, so selection has a real
-            # `ORDER BY ABS(rating - target)` to do rather than a tie.
+            # Spread across the whole difficulty range, so selection's index
+            # walks move through a real distribution rather than a tie.
             gap = rng.uniform(0.05, 0.45)
             wp_best = rng.uniform(0.5, 0.95)
             wp_distractor = max(0.01, wp_best - gap)
@@ -295,7 +296,7 @@ def build_template(path: Path, items: int) -> None:
         user = auth.create_account(
             conn, f"bench-warm-{i}", password_hash, None, 1200.0, rating.CALIB_END_STEP - 1
         )
-        # A history is what makes `pick_item`'s NOT IN subquery cost something,
+        # A history is what makes `pick_item`'s seen-item filter cost something,
         # and what a real user's requests are served against. Never longer than
         # the bank: a response names an item, and a `--items` below the usual
         # history would otherwise be answers to rows that don't exist.
