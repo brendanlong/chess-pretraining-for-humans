@@ -56,6 +56,9 @@ MIN_GAP_WP = 0.03  # played move must lose at least this much win prob...
 # one that binds, and the bank reaches to a 0.70 gap because its easy end was
 # mined with this raised on the command line, which is what the flags are for.
 MAX_GAP_WP = 0.35
+# What the two above mean when nobody has overridden them, so a candidate can
+# say whether it came through the full window or a chosen slice of it.
+DEFAULT_MIN_GAP_WP, DEFAULT_MAX_GAP_WP = MIN_GAP_WP, MAX_GAP_WP
 MIN_BASE_TIME_S = 180  # blitz and slower; bullet errors are mostly mouse slips
 MAX_PER_GAME = 2
 MIN_PLY_SPACING = 10  # candidates from one game must be far apart
@@ -158,6 +161,15 @@ def mine_game(game: chess.pgn.Game, seen_fens: set[str]) -> list[dict]:
                 "cp_before_white": cp_before_white,
                 "cp_after_white": cp_after_white,
                 "gap_wp_mined": round(gap_wp, 4),
+                # Whether this run narrowed the window. `rating.GAP_SLOPE` may
+                # only be fitted on candidates that didn't, because narrowing it
+                # is selection on the very quantity the fit regresses — see
+                # CALIBRATION.md. Recorded per candidate because it is a fact
+                # about how the row got here, and the alternative is recovering
+                # it later by diffing against a bank somebody kept.
+                "mined_untargeted": int(
+                    (MIN_GAP_WP, MAX_GAP_WP) == (DEFAULT_MIN_GAP_WP, DEFAULT_MAX_GAP_WP)
+                ),
                 "ply": ply,
                 "game_url": game_url(headers.get("Site", "")),
                 "mover_elo": int(headers.get(elo_key, 0) or 0),

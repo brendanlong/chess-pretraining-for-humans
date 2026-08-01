@@ -95,6 +95,16 @@ CREATE TABLE IF NOT EXISTS items (
     depth_deep INTEGER NOT NULL,
     rating REAL NOT NULL,             -- difficulty: rating.difficulty_rating(shallow_gap)
     ply INTEGER,
+    -- Whether mining took this position through its full gap window or a
+    -- narrowed one. The difficulty fit may only use the former: narrowing is
+    -- selection on the quantity it regresses, and including the rest moves the
+    -- same measurement by a factor of three.
+    --
+    -- Defaults to 0, which is also what a row of unknown provenance deserves —
+    -- "we don't know how this was mined" and "it was aimed at a band" both mean
+    -- don't fit on it. So there is nothing here to backfill and no third state
+    -- to carry.
+    mined_untargeted INTEGER NOT NULL DEFAULT 0,
     game_url TEXT,
     mover_elo INTEGER,
     time_control TEXT
@@ -194,42 +204,22 @@ def open_connection(
     return conn
 
 
-def _regrade_due(conn: sqlite3.Connection) -> bool:
-    """Whether `regrade_users` would do anything — read-only, so a caller can
-    ask before deciding to take a write lock. Held back while a bank still has
-    no measurement on the current scale, which can be indefinitely, so asking
-    only the schema version would relock the file on every open."""
-    if _schema_version(conn) >= SCHEMA_VERSION:
-        return False
-    has_users = conn.execute("SELECT 1 FROM users LIMIT 1").fetchone()
-    measured = conn.execute("SELECT 1 FROM items WHERE shallow_gap IS NOT NULL LIMIT 1").fetchone()
-    return bool(measured or not has_users)
-
-
 def regrade_users(conn: sqlite3.Connection) -> bool:
-    """Move every user onto the current scale, once, if the bank is on it too.
+    """Move every user onto the current scale, once. Returns whether it ran.
 
-    Returns whether it ran. The caller owns the transaction: this is called both
-    from `connect`'s migration and from `trainer.push_items`, which is the step
-    that actually brings a live bank onto the new scale.
+    Items and users move together, in one transaction, because a rating means
+    nothing except against the difficulties it selects — and they can, because
+    a bank arrives already measured and `connect` re-derives every difficulty
+    a few lines above this.
 
-    Users move only once the items have. The two are one change — a rating means
-    nothing except against the difficulties it selects — but they arrive on
-    different days: the release brings the curve, and the bank's measurements
-    come later over the machine boundary, because taking them needs an engine
-    the image doesn't carry. A regrade on the release alone would aim everyone
-    at a scale nothing in the bank was on yet, which for a mid-scale user is
-    eighteen percentile points of extra difficulty until the push lands.
-
-    A database with no users has nothing to move and is stamped current
-    immediately, so a fresh one doesn't carry a pending regrade it will never
-    need. The version gate is re-read here, under whatever lock the caller took,
-    because two servers starting together would otherwise both see the old
-    version and both regrade.
+    The caller owns the transaction. The version gate is re-read here, under
+    whatever lock the caller took, because two servers starting together would
+    otherwise both see the old version and both regrade — and a rating carries
+    no mark of which scale produced it, so a second pass would move someone
+    already correct.
     """
-    if not _regrade_due(conn):
+    if (was := _schema_version(conn)) >= SCHEMA_VERSION:
         return False
-    was = _schema_version(conn)
     conn.execute("UPDATE users SET rating = regraded_user_rating(rating, ?)", (was,))
     conn.execute(
         "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
@@ -298,6 +288,7 @@ def connect(path: Path = DEFAULT_DB, check_same_thread: bool = True) -> sqlite3.
         ("solution_depth", "INTEGER"),
         ("gap_ladder", "TEXT"),
         ("shallow_gap", "REAL"),
+        ("mined_untargeted", "INTEGER NOT NULL DEFAULT 0"),
     ):
         if col not in item_cols:
             conn.execute(f"ALTER TABLE items ADD COLUMN {col} {decl}")
@@ -325,18 +316,6 @@ def connect(path: Path = DEFAULT_DB, check_same_thread: bool = True) -> sqlite3.
     conn.create_function("difficulty_rating", 1, difficulty_rating, deterministic=True)
     conn.create_function("shallow_gap_of", 1, shallow_gap_of, deterministic=True)
     conn.create_function("regraded_user_rating", 2, rating.regraded_user_rating, deterministic=True)
-    # Derived from the ladder rather than re-measured: the search is the
-    # expensive half and it is already in the row, so a bank that has ladders
-    # gains the column the app selects on without going near Stockfish.
-    #
-    # Guarded on the *result*, not on the ladder being non-empty. A ladder too
-    # short to average has no shallow gap, so writing one leaves the row exactly
-    # as it was found — and a guard that didn't notice would match it again on
-    # the next connect, taking a write lock every time the server starts, which
-    # is the thing the read-first rule above exists to prevent.
-    derivable = "shallow_gap IS NULL AND shallow_gap_of(gap_ladder) IS NOT NULL"
-    if conn.execute(f"SELECT 1 FROM items WHERE {derivable} LIMIT 1").fetchone():
-        conn.execute(f"UPDATE items SET shallow_gap = shallow_gap_of(gap_ladder) WHERE {derivable}")
     # Item difficulty is re-derived, because "a pure function of `shallow_gap`"
     # has to be true of the rows, not just of the code that writes new ones.
     # Users are
@@ -351,21 +330,27 @@ def connect(path: Path = DEFAULT_DB, check_same_thread: bool = True) -> sqlite3.
     # `BEGIN IMMEDIATE` because two servers starting together would otherwise
     # both see version 0 and both regrade. The lock is taken only when a read
     # says there is work, so an already-current database still opens without one.
+    # One precondition instead of a guard on every read. Every row a labeler
+    # writes carries a shallow gap, so a NULL means this database predates the
+    # measurement — a restore from far enough back. Saying so once, plainly, is
+    # better than nineteen places quietly serving it at whatever difficulty an
+    # older curve happened to leave behind.
+    if conn.execute("SELECT 1 FROM items WHERE shallow_gap IS NULL LIMIT 1").fetchone():
+        raise RuntimeError(
+            f"{path} has items with no shallow_gap, so their difficulty cannot be "
+            "derived. It predates the measurement; push a labeled bank over it "
+            "(deploy/README.md, 'Refreshing the item bank')."
+        )
     items_stale = conn.execute(
-        "SELECT 1 FROM items"
-        " WHERE shallow_gap IS NOT NULL AND rating != difficulty_rating(shallow_gap) LIMIT 1"
+        "SELECT 1 FROM items WHERE rating != difficulty_rating(shallow_gap) LIMIT 1"
     ).fetchone()
-    if items_stale or _regrade_due(conn):
+    if items_stale or _schema_version(conn) < SCHEMA_VERSION:
         conn.commit()  # release the implicit transaction the ALTERs above opened
         conn.execute("BEGIN IMMEDIATE")
         try:
             conn.execute(
-                # Only where there is a gap to derive from. A row the ladder
-                # has never run over has no difficulty of its own, so it keeps
-                # the one the old curve gave it until a measurement arrives —
-                # being stale is a smaller wrong than being invented.
                 "UPDATE items SET rating = difficulty_rating(shallow_gap)"
-                " WHERE shallow_gap IS NOT NULL AND rating != difficulty_rating(shallow_gap)"
+                " WHERE rating != difficulty_rating(shallow_gap)"
             )
             regrade_users(conn)
             conn.commit()

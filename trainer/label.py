@@ -290,6 +290,7 @@ def label_candidate(cand: dict) -> dict | None:
         "depth_deep": DEPTH_DEEP,
         "rating": difficulty_rating(shallow_gap),
         "ply": cand["ply"],
+        "mined_untargeted": cand.get("mined_untargeted"),
         "game_url": cand["game_url"],
         "mover_elo": cand["mover_elo"],
         "time_control": cand["time_control"],
@@ -340,12 +341,12 @@ def main() -> None:
                     cp_best, mate_best, cp_distractor, mate_distractor,
                     wp_best, wp_distractor, gap_wp, pv_best, pv_distractor,
                     solution_depth, gap_ladder, shallow_gap, learnable, depth_deep, rating,
-                    ply, game_url, mover_elo, time_control)
+                    ply, mined_untargeted, game_url, mover_elo, time_control)
                    VALUES (:fen, :best_uci, :distractor_uci, :distractor_source,
                     :cp_best, :mate_best, :cp_distractor, :mate_distractor,
                     :wp_best, :wp_distractor, :gap_wp, :pv_best, :pv_distractor,
                     :solution_depth, :gap_ladder, :shallow_gap, :learnable, :depth_deep, :rating,
-                    :ply, :game_url, :mover_elo, :time_control)""",
+                    :ply, :mined_untargeted, :game_url, :mover_elo, :time_control)""",
                 item,
             )
             conn.commit()  # commit per item: a trainer server may share the db
