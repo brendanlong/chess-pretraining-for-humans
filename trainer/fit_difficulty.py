@@ -172,13 +172,12 @@ def main() -> None:
         lo, hi = bootstrap(elo, shallow, args.bootstrap)
         print(f"  95% CI [{lo:.0f}, {hi:.0f}] over {args.bootstrap} resamples")
     print(f"  gaps the fit saw: {shallow.min():+.3f}..{shallow.max():+.3f}")
-    # The check that this is the same method that produced the number published
-    # for the deep gap when the deep gap was the axis. If this stops returning
-    # something very near it, the estimator has drifted and the shallow figure
-    # above is not comparable with anything.
+    # A fixed point to check the estimator against: run on the deep gap this
+    # method returns 6096, which is what CALIBRATION.md records for it. If that
+    # drifts, the estimator has changed and the figure above is not comparable
+    # with the published one.
     deep, deep_bands = fit(elo, deep_gap)
-    print(f"\nthe same method against `gap_wp` over {deep_bands} bands: {deep:.0f}")
-    print("  (was published as 6096 when the deep gap was the axis)")
+    print(f"\nagainst `gap_wp` over {deep_bands} bands: {deep:.0f}  (expected ~6096)")
 
 
 if __name__ == "__main__":

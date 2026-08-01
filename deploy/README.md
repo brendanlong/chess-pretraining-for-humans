@@ -116,21 +116,6 @@ relabelled: an item whose best move changed under the answers already given to
 it would make those responses uninterpretable.
 
 
-## When a release changes the difficulty curve
-
-Item difficulties are re-derived and every user regraded together, on the first
-connect after the deploy — one transaction, so nobody is ever aimed at a scale
-the bank isn't on. Displayed ratings move; nobody's trials do.
-
-The one thing to get right is that the bank must already carry the measurement
-the new curve reads. A bank labeled by an older pipeline doesn't, and `connect`
-refuses to open it rather than serve it at whatever an older curve left behind:
-
-    RuntimeError: /data/items.db has items with no shallow_gap …
-
-The fix is a bank refresh (above), which is also the only way a measurement
-crosses the machine boundary — taking one needs an engine the image doesn't
-carry.
 
 ## Restoring
 
@@ -185,62 +170,22 @@ change first, if it should change.
   proxy won't stop below, so the machine stays up instead of idling out while
   someone thinks over a position. It counts only machines in `primary_region`,
   which is fine while that's where the volume forces the machine to live.
-- **Schema migrations run on connect, and one of them drops columns — which
-  makes that release one-way.** The deploy that makes item difficulty static
-  drops `items.attempts`, `items.correct` and `responses.item_rating_after` the
-  first time the new server opens the database. Every response row is kept; what
-  goes is the per-item tally of answers, which nothing recomputes because it
-  counted answers from users who have since deleted their accounts. Copy it out
-  of a Litestream restore *before* deploying if you want it — after, the 30-day
-  backup window is the only place it exists.
+- **Migrations run on connect, and some of them drop columns — which makes
+  those releases one-way.** Rolling back past one means restoring the database
+  too, not just `flyctl releases rollback`: the older server's `INSERT` names
+  columns the newer schema no longer has, so it boots happily and then 500s on
+  every answer. Anything a dropped column held is gone from the live file the
+  first time the new server opens it, so copy it out of a Litestream restore
+  beforehand if you want it.
+- **A database older than the current schema will not open.** Items carry the
+  measurement their difficulty is derived from, and `db.connect` refuses a bank
+  without it rather than serving items at whatever an older curve left behind:
 
-  The sharper half is the rollback: the previous release writes those columns on
-  every answer, and its own migrations won't put them back, so it boots happily
-  and then 500s on `/api/answer` for every user. Rolling back past this release
-  means restoring the database too, not just `flyctl releases rollback`.
+      RuntimeError: /data/items.db has items with no shallow_gap …
 
-  The lookahead release drops one more, `items.depth_shallow`, for a plainer
-  reason: there is no shallow pass any more, so the column named a cutoff that
-  no longer exists. Nothing reads it and nothing can recompute it, which is the
-  point — but the same rollback caution applies, because the older labeler's
-  `INSERT` names it.
-- **The difficulty regrade moves every rating in the database, once.** The
-  release that fits the gap-to-difficulty curve rewrites `items.rating` from
-  `gap_wp` and `users.rating` onto the same scale, the first time the new server
-  opens the file. Nobody's trials change — the regrade preserves the gap each
-  user was being served — but every displayed Elo does, so expect the question.
-  Items are re-derived on every connect and self-correct; the user pass is
-  guarded by `meta.schema_version` because a rating carries no mark of which
-  scale produced it, and running it twice would move people who were already
-  right. **Never clear or lower that key by hand** — a restore brings the whole
-  file, so a pre-regrade backup arrives without it and is regraded correctly on
-  the next open, while clearing it on a database that has already been regraded
-  is precisely the double pass it exists to prevent.
-- **Moving difficulty onto the shallow gap regrades every rating — on the
-  push, not on the deploy.** The release alone changes nothing anyone can see:
-  every live row has a NULL `shallow_gap` at that moment, and a row with no
-  measurement keeps the difficulty the old curve gave it. The users are held
-  back to match, because moving them onto a scale the bank isn't on yet would
-  aim a mid-table user about eighteen percentile points too hard for however
-  long the operator took over the push. So `db.regrade_users` waits for the
-  bank, and `trainer.push_items` — the step that actually brings a live bank
-  onto the new scale — is what releases it, in the same transaction. It says
-  so when it does.
-
-  Then every displayed Elo moves, by about 700 in the middle. Nobody's trials
-  change: the anchors preserve the percentile of the bank each user was being
-  served, which is the only thing the two scales have in common, because they
-  are readings of different searches and share no gap.
-
-  Expect the easy end to be the thin one afterwards. A position a shallow look
-  settles at a glance is one humans rarely got wrong, so few were ever mined,
-  and it is beginners' bands that sit under the floor — the opposite of before.
-  `trainer.supply` names them; the remedy is mining, aimed with `--gaps`.
-
-  **Never clear or lower `meta.schema_version` by hand.** A restore brings the
-  whole file, so a backup from before either regrade arrives stamped with what
-  it was and is chained forward correctly on the next open; clearing it on a
-  database already regraded is precisely the double pass the gate prevents.
+  A restore from far enough back therefore needs a bank pushed over it (above)
+  before the machine will serve. That is the deliberate trade for the app
+  carrying no code to tolerate a half-measured bank.
 - **`VACUUM` breaks replication.** It rewrites every page and invalidates
   Litestream's tracking. `VACUUM INTO` a new file and treat it as a new
   database (stop Litestream, clear `/data/.items.db-litestream`, re-snapshot).

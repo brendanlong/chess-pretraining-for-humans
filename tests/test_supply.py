@@ -46,7 +46,7 @@ def test_a_band_counts_only_what_selection_would_reach_for(tmp_path):
 def test_an_unlearnable_item_is_not_supply(tmp_path):
     """It is in the bank and never served, so counting it would overstate."""
     target = 1400 + _TARGET_OFFSET
-    conn = bank(tmp_path, [_gap_for_difficulty(target)] * 5, learnable=0, solution_depth=0)
+    conn = bank(tmp_path, [_gap_for_difficulty(target)] * 5, learnable=0)
     assert band(conn, target) == 0
 
 

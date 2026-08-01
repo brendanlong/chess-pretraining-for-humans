@@ -9,17 +9,16 @@ For each candidate position:
    from the best move (those are the errors humans actually make); otherwise
    the deep search's second choice ('multipv' provenance).
 3. A second search, restricted to just those two moves and started from an
-   empty hash, ranks the pair at every depth on its way to DEPTH_DEEP. The
-   whole curve is kept (`gap_ladder`); the shallowest depth from which it
-   stays the right way round is how far ahead the position has to be read
-   (`solution_depth`). There is no shallower cutoff and nothing is dropped
-   for being deep: a comparison that only settles at seventeen plies is an
-   extremely hard item, not a rejected one.
+   empty hash, ranks the pair at every depth on its way to DEPTH_DEEP. That
+   whole curve is what gets stored (`gap_ladder`). Nothing is dropped for
+   being deep — a comparison that only settles at seventeen plies is an
+   extremely hard item, not a rejected one — only for never settling, which
+   makes it unlearnable.
 4. The mean of the ladder's shallow end (`shallow_gap`) fixes the item's
    difficulty: a narrow gap early is hard, a negative one — where the surface
    recommends the losing move — is harder still. The deep evals are kept for
-   the reveal, and say what the answer is worth, but no longer say how hard it
-   is. That mapping is all difficulty is: nothing downstream revises it, so an
+   the reveal, and say what the answer is worth rather than how hard it is.
+   That mapping is all difficulty is: nothing downstream revises it, so an
    item means the same thing to every user and on every deployment. The whole
    ladder is stored rather than only its summary, because the search is the
    expensive half and every reading of it is a guess that will be revised.
@@ -51,21 +50,21 @@ from .winprob import score_to_winprob
 DEPTH_DEEP = 18
 PV_PLIES = 8  # how much of each line to keep for the reveal replay
 MIN_GAP_WP = 0.015
-# A bound on the *deep* gap, which is no longer the axis difficulty is measured
-# on — so it no longer bounds difficulty either, and the two are only loosely
-# related (they correlate at 0.79). What it still does is refuse positions so
-# lopsided that nobody would consider the played move. It is also the lever that
-# reaches the easy end of the difficulty scale, because a wide deep gap is the
-# best predictor of a wide shallow one the pipeline can filter on: the bank
-# holds 28 items at this cap, so raising it is what a refill run there does.
+# A bound on the *deep* gap, which is not the axis difficulty is measured on —
+# the two correlate at 0.79 and no better, so this bounds what an item is worth
+# and not how hard it is. What it does is refuse positions so lopsided that
+# nobody would consider the played move. It is also the lever that reaches the
+# easy end of the difficulty scale, because a wide deep gap is the best
+# predictor of a wide shallow one that the pipeline can filter on, so raising it
+# is what a refill run down there does.
 MAX_GAP_WP = 0.70
 # One engine per worker, each on one thread: a laptop-sized default that leaves
 # the machine usable, and the arrangement that goes fastest anyway. Stockfish
 # scales badly across threads compared with running independent searches, so on
 # a bigger box raise `--workers` toward the core count rather than `--threads`
 # (measured on 24 cores: 20x1 labels 1.6x faster than 8x2). One thread is also
-# the only setting `solution_depth` can be measured on, so leaving it here means
-# the measurement costs nothing to protect.
+# the only setting the ladder can be measured on, so leaving it here means the
+# measurement costs nothing to protect.
 ENGINE_WORKERS = 8
 ENGINE_THREADS = 1
 
@@ -150,12 +149,11 @@ def shallowest_settled(ladder: dict[int, tuple[float, float]]) -> int | None:
     here: a rung with nothing to compare against is no evidence either way, and
     reading it as disagreement would inflate every depth above it.
 
-    None means not even DEPTH_DEEP settles it. That is no longer a statement
-    about how hard the item is — the scale has room for the hardest thing the
-    engine can still see — but about the label itself: a search to the depth
-    that picked the best move, restricted to the pair, disagreeing with the pick
-    is an item whose answer the engine does not hold steady, so there is nothing
-    to teach.
+    None means not even DEPTH_DEEP settles it, which is a statement about the
+    label rather than the difficulty: the scale has room for the hardest thing
+    the engine can see, but an item where the search that picked the best move
+    and a search restricted to the pair disagree is one the engine won't hold an
+    answer to, so there is nothing to teach.
     """
     found = None
     for depth in sorted(ladder, reverse=True):
@@ -197,9 +195,8 @@ def measure_lookahead(
     this one *defines* an item, so two runs over the same position have to reach
     the same answer or the bank stops meaning anything. On one thread it is
     reproducible across engine processes, across a preceding deep pass, and
-    across the order positions are fed in — which is what lets
-    `trainer.backfill_depth` reach the same answer as this on a position it
-    never saw labeled. It is one Stockfish build that has to agree with itself,
+    across the order positions are fed in, so two labeling runs over the same
+    position agree. It is one Stockfish build that has to agree with itself,
     not two: a bank labeled across an engine upgrade holds depths from both,
     which is a reason to re-measure a bank rather than something this can
     prevent.
@@ -283,11 +280,9 @@ def label_candidate(cand: dict) -> dict | None:
         "pv_distractor": pv_d,
         # 0, not NULL, when no depth settles it: that is a verdict, and a NULL
         # would file it with the rows nobody has measured yet.
-        "solution_depth": depth or 0,
         "gap_ladder": ladder_text,
         "shallow_gap": shallow_gap,
         "learnable": int(depth is not None),
-        "depth_deep": DEPTH_DEEP,
         "rating": difficulty_rating(shallow_gap),
         "ply": cand["ply"],
         "mined_untargeted": cand.get("mined_untargeted"),
@@ -340,12 +335,12 @@ def main() -> None:
                    (fen, best_uci, distractor_uci, distractor_source,
                     cp_best, mate_best, cp_distractor, mate_distractor,
                     wp_best, wp_distractor, gap_wp, pv_best, pv_distractor,
-                    solution_depth, gap_ladder, shallow_gap, learnable, depth_deep, rating,
+                    gap_ladder, shallow_gap, learnable, rating,
                     ply, mined_untargeted, game_url, mover_elo, time_control)
                    VALUES (:fen, :best_uci, :distractor_uci, :distractor_source,
                     :cp_best, :mate_best, :cp_distractor, :mate_distractor,
                     :wp_best, :wp_distractor, :gap_wp, :pv_best, :pv_distractor,
-                    :solution_depth, :gap_ladder, :shallow_gap, :learnable, :depth_deep, :rating,
+                    :gap_ladder, :shallow_gap, :learnable, :rating,
                     :ply, :mined_untargeted, :game_url, :mover_elo, :time_control)""",
                 item,
             )

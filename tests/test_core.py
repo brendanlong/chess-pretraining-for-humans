@@ -21,7 +21,6 @@ from trainer.rating import (
     calibrate,
     difficulty_rating,
     expected_score,
-    regraded_user_rating,
     shallow_gap_of,
     target_gap,
     target_item_rating,
@@ -126,35 +125,6 @@ def test_difficulty_matches_the_measured_slope_where_it_was_measured():
     lo, hi = CALIBRATED_GAP_LO, CALIBRATED_GAP_HI
     measured = (difficulty_rating(lo) - difficulty_rating(hi)) / (hi - lo)
     assert measured == pytest.approx(GAP_SLOPE)
-
-
-def test_regrade_is_monotone_from_either_scale():
-    """Two users' ratings can't cross, or the regrade reorders them."""
-    for version in (0, 1):
-        out = [regraded_user_rating(r, version) for r in range(400, 2600, 25)]
-        # Non-decreasing everywhere — the ends are held flat on purpose, so a
-        # rating off the end of the anchors lands with its neighbours rather
-        # than being extrapolated somewhere nobody is served.
-        assert all(a <= b for a, b in pairwise(out)), f"from version {version}"
-        assert out[0] < out[-1], f"from version {version}"
-
-
-def test_regrade_chains_the_scales_a_restored_database_may_be_behind():
-    """A backup from far enough back is two scales behind and has to cross both,
-    so the older map has to still exist and has to run first."""
-    once = regraded_user_rating(1500, 1)
-    twice = regraded_user_rating(1500, 0)
-    assert twice != once  # the pre-curve scale is not the deep-gap one
-    # And a database already current is left alone.
-    assert regraded_user_rating(1500, 2) == 1500
-
-
-def test_regrade_stays_on_the_scale_for_any_stored_rating():
-    """A hand-edited row or an `account` fix could hold anything, and a rating
-    outside the bounds would make `calibrate` snap on the first answer."""
-    for version in (0, 1):
-        for old in (-1e9, 0, 400, 2600, 1e9, float("inf")):
-            assert USER_MIN <= regraded_user_rating(old, version) <= USER_MAX
 
 
 def test_every_user_on_the_scale_is_aimed_at_a_gap_an_item_can_have():

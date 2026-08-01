@@ -56,7 +56,7 @@ The direction is the part that is easy to get wrong and worth stating twice:
 this asks *how big an error a player of a given strength still makes*, not *how
 strong the player who made an error of a given size was*. Those are the two
 regressions of one weak relationship and **they differ by a factor of about
-twenty** — 6096 against 297, on the axis that used to carry difficulty. There
+twenty** — 6096 against 297, measured on the deep gap. There
 is no fact of the matter between them without a model of erring that nobody
 has. The project picked one and has to keep picking it, because a constant
 fitted one way is not comparable with one fitted the other. That ambiguity is
@@ -79,8 +79,9 @@ ones a shallow search gets *backwards*, and it rated those among the easiest
 items there are.
 
 **Required lookahead, as a second axis beside the gap.** The shallowest depth
-from which the pair stays correctly ordered (`solution_depth`, still measured
-and still stored). Rejected on two counts. Its magnitude is unidentifiable:
+from which the pair stays correctly ordered — still computed, because it is what
+decides whether an item is learnable, but no longer a difficulty. Rejected on
+two counts. Its magnitude is unidentifiable:
 read against `GAP_SLOPE` it lands anywhere from 700 to 2400 points a doubling
 depending on which of the two regressions above you believe. And it is worth
 less than it looks — scored on the same footing as the alternatives it
@@ -123,7 +124,17 @@ constant that lowered it far enough pushes the easy tail below zero.
   say about one human's attention. Treat a change that improves it a lot with
   suspicion, and compare it against `--everything` before believing it.
 
+**Changing a constant moves every item and no user.** `db.connect` re-derives
+`items.rating` on the next open, so the bank lands on the new curve by itself —
+but nothing moves `users.rating`, and a rating means nothing except against the
+difficulties it selects. So a retune has to carry its own regrade: work out what
+the new scale does to the item distribution, map each user onto the position
+that serves them comparable items, and gate it on a key in `meta` so it cannot
+run twice. There is no standing code for this because the mapping
+is a property of the change, not of the app.
+
 Re-running the fit is `uv run python -m trainer.fit_difficulty`. If it stops
 returning what `rating.GAP_SLOPE`'s comment claims, the estimator has drifted
 and every comparison in this file is void — which is why it also prints the
-same method applied to the old axis, where the published number is known.
+same method applied to the deep gap, which is a fixed point: it returns 6096,
+and if that drifts the estimator has changed rather than the data.
