@@ -550,11 +550,16 @@ def named_item(item_id: int, user_id: int | None) -> dict | None:
     are sequential, so this is the bank's positions readable by counting. The
     answers stay behind `/api/answer`, which is where they were.
     """
+    # `NOT EXISTS` rather than the `NOT IN` selection uses: this asks about one
+    # item, so it can seek `idx_responses_item` at (user, item) instead of
+    # building a list of everything the user has ever answered. Selection has to
+    # walk that list anyway; naming an item doesn't.
     row = conn.execute(
         """SELECT * FROM items
            WHERE id = ? AND learnable = 1
-             AND id NOT IN (SELECT item_id FROM responses WHERE user_id = ?)""",
-        (item_id, user_id or 0),
+             AND NOT EXISTS (SELECT 1 FROM responses
+                             WHERE user_id = ? AND item_id = ?)""",
+        (item_id, user_id or 0, item_id),
     ).fetchone()
     return dict(row) if row else None
 
