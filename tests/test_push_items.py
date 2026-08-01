@@ -72,7 +72,7 @@ def test_merge_adds_new_positions_and_leaves_the_record_alone(tmp_path):
     before = tuple(connect(live).execute("SELECT * FROM items WHERE id = 1").fetchone())
     incoming = bank(tmp_path / "fresh.db", ["8", "7P", "6P1"])  # two overlap, one is new
 
-    assert merge(live, incoming) == (1, 2, 0)
+    assert merge(live, incoming)[:3] == (1, 2, 0)
 
     conn = connect(live)
     assert conn.execute("SELECT COUNT(*) FROM items").fetchone()[0] == 3
@@ -105,7 +105,7 @@ def test_merge_fills_in_a_lookahead_depth_the_live_bank_never_measured(tmp_path)
     live = unmeasured(live_db(tmp_path))
     incoming = bank(tmp_path / "fresh.db", ["8", "7P"])
 
-    assert merge(live, incoming) == (0, 2, 2)
+    assert merge(live, incoming)[:3] == (0, 2, 2)
     # Read on a raw connection: `connect` re-derives `rating`, so opening the
     # file the ordinary way would repair exactly what this is checking. The live
     # server holds its connections open past a merge and re-derives on neither,
@@ -127,7 +127,7 @@ def test_merge_retires_a_position_no_search_gets_right(tmp_path):
     conn.commit()
     conn.close()
 
-    assert merge(live, incoming) == (0, 1, 1)
+    assert merge(live, incoming)[:3] == (0, 1, 1)
     served = connect(live).execute("SELECT learnable FROM items ORDER BY id").fetchall()
     assert [r["learnable"] for r in served] == [0, 1]
 
@@ -144,7 +144,7 @@ def test_merge_re_measures_a_legacy_row_the_old_filter_had_already_rejected(tmp_
     conn.close()
     incoming = bank(tmp_path / "fresh.db", ["8"])  # the same position, now measured
 
-    assert merge(live, incoming) == (0, 1, 1)
+    assert merge(live, incoming)[:3] == (0, 1, 1)
     row = connect(live).execute("SELECT solution_depth, learnable FROM items WHERE id = 1")
     assert tuple(row.fetchone()) == (2, 1)  # back in the bank, on a real measurement
 
@@ -159,7 +159,7 @@ def test_merge_leaves_a_depth_already_measured_alone(tmp_path):
     conn.close()
     incoming = bank(tmp_path / "fresh.db", ["8", "7P"])
 
-    assert merge(live, incoming) == (0, 2, 0)
+    assert merge(live, incoming)[:3] == (0, 2, 0)
     rows = connect(live).execute("SELECT solution_depth FROM items ORDER BY id").fetchall()
     assert [r["solution_depth"] for r in rows] == [0, 2]
 
@@ -175,7 +175,7 @@ def test_merge_carries_its_items_across_a_source_that_predates_the_column(tmp_pa
     conn.commit()
     conn.close()
 
-    assert merge(live, incoming) == (1, 0, 0)
+    assert merge(live, incoming)[:3] == (1, 0, 0)
     conn = connect(live)
     assert conn.execute("SELECT COUNT(*) FROM items").fetchone()[0] == 3
     assert conn.execute("SELECT solution_depth FROM items WHERE id = 1").fetchone()[0] is None
@@ -187,7 +187,7 @@ def test_merge_dry_run_writes_nothing(tmp_path):
     live = unmeasured(live_db(tmp_path))
     incoming = bank(tmp_path / "fresh.db", ["8", "6P1"])
 
-    assert merge(live, incoming, dry_run=True) == (1, 1, 1)
+    assert merge(live, incoming, dry_run=True)[:3] == (1, 1, 1)
     conn = connect(live)
     assert conn.execute("SELECT COUNT(*) FROM items").fetchone()[0] == 2
     assert (
@@ -204,7 +204,7 @@ def test_merge_survives_a_source_missing_a_column(tmp_path):
     conn.commit()
     conn.close()
 
-    assert merge(live, incoming) == (1, 0, 0)
+    assert merge(live, incoming)[:3] == (1, 0, 0)
     added = connect(live).execute("SELECT * FROM items WHERE id = 3").fetchone()
     assert added["mover_elo"] is None
     assert added["fen"] == FEN_TMPL.format("6P1")
@@ -249,4 +249,27 @@ def test_roundtrip(tmp_path):
     """What the refresh actually runs: export here, merge there."""
     out = tmp_path / "export.db"
     export(bank(tmp_path / "fresh.db", ["8", "7P", "6P1"]), out)
-    assert merge(live_db(tmp_path), out) == (1, 2, 0)
+    assert merge(live_db(tmp_path), out)[:3] == (1, 2, 0)
+
+
+def test_merge_carries_a_verdict_that_arrives_without_a_difficulty(tmp_path):
+    """A ladder the engine cut short is measured and unservable both. The
+    verdict still has to travel — the live bank is serving that item — but there
+    is no gap to rate it from, so the difficulty it had stays. Asking
+    `difficulty_rating` for one instead raises inside the UPDATE and takes the
+    whole push down with it, inserts included."""
+    live = unmeasured(live_db(tmp_path))
+    incoming = bank(tmp_path / "fresh.db", [])
+    conn = connect(incoming)
+    add_item(
+        conn, FEN_TMPL.format("8"), solution_depth=0, gap_ladder="", shallow_gap=None, learnable=0
+    )
+    add_item(conn, FEN_TMPL.format("6P1"))  # a normal new position, in the same push
+    conn.commit()
+    conn.close()
+
+    assert merge(live, incoming)[:3] == (1, 1, 1)
+    conn = connect(live)
+    held = conn.execute("SELECT learnable, shallow_gap FROM items WHERE id = 1").fetchone()
+    assert (held["learnable"], held["shallow_gap"]) == (0, None)
+    assert conn.execute("SELECT COUNT(*) FROM items").fetchone()[0] == 3, "the insert survived"

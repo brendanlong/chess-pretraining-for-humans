@@ -219,11 +219,14 @@ function describeMove(mv, tag) {
 // Absent on items labeled before it was measured.
 function lookaheadPhrase(result) {
   const shallow = result.shallow_gap;
-  const plies = result.solution_depth;
   if (shallow === null || shallow === undefined) return "";
-  if (shallow < 0) return `, but a shallow search prefers the other move (${shallow}%)`;
-  if (plies === 1) return `, and ${shallow}% of it is visible at a glance`;
-  return `, of which a shallow search sees ${shallow}%`;
+  // Never "X% of it": the two are readings of different searches, not parts of
+  // one whole, and the shallow gap is the larger of the two on about one item
+  // in eight — where "30% of 4%" would be nonsense on the page.
+  if (shallow < 0) {
+    return `; a shallow search prefers the other move, by ${Math.abs(shallow)}%`;
+  }
+  return `; a shallow search sees ${shallow}% of a difference`;
 }
 
 function buildCopyText() {

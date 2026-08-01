@@ -15,12 +15,14 @@ For each candidate position:
    (`solution_depth`). There is no shallower cutoff and nothing is dropped
    for being deep: a comparison that only settles at seventeen plies is an
    extremely hard item, not a rejected one.
-4. The deep evals are converted to win probability, and the gap together with
-   that depth fixes the item's difficulty (small gap, deep read = hard = high
-   rating). That mapping is all difficulty is: nothing downstream revises it,
-   so an item means the same thing to every user and on every deployment.
-   The ladder is stored rather than only its summary because the search is
-   the expensive half and the summary is a guess that will be revised.
+4. The mean of the ladder's shallow end (`shallow_gap`) fixes the item's
+   difficulty: a narrow gap early is hard, a negative one — where the surface
+   recommends the losing move — is harder still. The deep evals are kept for
+   the reveal, and say what the answer is worth, but no longer say how hard it
+   is. That mapping is all difficulty is: nothing downstream revises it, so an
+   item means the same thing to every user and on every deployment. The whole
+   ladder is stored rather than only its summary, because the search is the
+   expensive half and every reading of it is a guess that will be revised.
 
 Usage:
     uv run python -m trainer.label data/candidates.jsonl [--limit N]
@@ -40,21 +42,22 @@ from .db import DEFAULT_DB, connect
 from .rating import difficulty_rating, shallow_gap_of
 from .winprob import score_to_winprob
 
-# The search that decides which move is better, and — because the lookahead
-# ladder is read off a search to this same depth — the top of the
-# `solution_depth` scale. There is no second, shallower cutoff: an item that
-# only settles at seventeen plies is not thrown away for it, it is rated as the
-# very hard item it is, and the rating is what keeps it away from anyone who
-# couldn't see it. A cap would be the thing this axis exists to replace.
+# The search that decides which move is better, and — because the ladder is read
+# off a search to this same depth — the top of the ladder too. There is no
+# second, shallower cutoff: an item that only settles at seventeen plies is not
+# thrown away for it. Its shallow gap will be narrow or negative, which is what
+# rates it hard and what keeps it away from anyone who couldn't have seen it. A
+# cutoff would be the thing the measurement exists to replace.
 DEPTH_DEEP = 18
 PV_PLIES = 8  # how much of each line to keep for the reveal replay
 MIN_GAP_WP = 0.015
-# The easy end has to reach past where beginners are aimed, not stop short of
-# it. A user at USER_START is targeting a gap around 0.39 and the floor of the
-# user scale around 0.56, so a bank capped much below that serves everyone weak
-# the same sliver of items at the boundary — which is the failure `rating`'s
-# curve exists to prevent, reintroduced through the labeler instead. This is
-# above the widest gap the current bank holds (0.648), so it binds on nothing.
+# A bound on the *deep* gap, which is no longer the axis difficulty is measured
+# on — so it no longer bounds difficulty either, and the two are only loosely
+# related (they correlate at 0.79). What it still does is refuse positions so
+# lopsided that nobody would consider the played move. It is also the lever that
+# reaches the easy end of the difficulty scale, because a wide deep gap is the
+# best predictor of a wide shallow one the pipeline can filter on: the bank
+# holds 28 items at this cap, so raising it is what a refill run there does.
 MAX_GAP_WP = 0.70
 # One engine per worker, each on one thread: a laptop-sized default that leaves
 # the machine usable, and the arrangement that goes fastest anyway. Stockfish

@@ -57,8 +57,10 @@ automatically.
   the mistake costs; this says how much there was to notice, which is the
   thing a human is being asked to do. Measured against the strength of the
   players who really made these errors it predicts about half again as much
-  as the deep gap does, and it subsumes it: once the shallow gap is known,
-  the deep one adds nothing. It is a property of the item alone — fixed when
+  as the deep gap does. It does not quite subsume it — the deep gap still
+  carries a little signal of its own — but what it carries has no consistent
+  direction, flipping sign from band to band, so there is nothing to add it
+  as. It is a property of the item alone — fixed when
   the item is labeled, and never revised by anyone's answers. Still knowingly
   approximate; the correction belongs in offline analysis, which can
   regularise it and isn't the thing choosing which items get served. Online
@@ -94,9 +96,11 @@ automatically.
   the range where that measurement has any power. Outside it, at both ends,
   the curve saturates rather than stopping, so gaps nothing speaks to stay
   ordered and distinct. A wrong ordering is recoverable and no ordering is
-  not. The fit must also be taken on errors nobody selected for: half this
-  bank was mined at deliberately chosen gaps, and including it moves the same
-  measurement by a factor of three.
+  not. The fit must also be taken on the half of the bank nobody aimed at a
+  band: including the half that was, which was mined at deliberately chosen
+  gaps, moves the same measurement by a factor of three. That half is still
+  mined through a gap window — nothing here is a random sample of errors —
+  but a window is not a target.
 - **An item whose answer the engine won't hold still is never served.** Not a
   difficulty judgement — the scale reaches as far as the engine can see, so
   nothing is dropped for being hard. It is that the search which picked the

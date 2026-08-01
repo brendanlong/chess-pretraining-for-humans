@@ -25,7 +25,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
-from .db import DEFAULT_DB, connect
+from .db import DEFAULT_DB, connect, regrade_users
 
 # `id` is per-database; everything else about an item is a property of the
 # position, so it travels.
@@ -105,11 +105,13 @@ def export(db: Path, out: Path) -> int:
     return n
 
 
-def merge(db: Path, incoming: Path, dry_run: bool = False) -> tuple[int, int, int]:
+def merge(db: Path, incoming: Path, dry_run: bool = False) -> tuple[int, int, int, bool]:
     """Insert every position the live bank doesn't have yet.
 
-    Returns (added, skipped, measured) — the last being positions already held
-    whose lookahead depth the incoming bank knows and the live one doesn't.
+    Returns (added, skipped, measured, regraded) — `measured` being positions
+    already held whose ladder the incoming bank knows and the live one doesn't,
+    and `regraded` whether this push was the one that moved the users onto the
+    current scale.
     """
     if not incoming.exists():
         sys.exit(f"{incoming} does not exist")
@@ -142,13 +144,24 @@ def merge(db: Path, incoming: Path, dry_run: bool = False) -> tuple[int, int, in
         if set(MEASURED_COLUMNS) <= both:
             fill = ", ".join(MEASURED_COLUMNS)
             measured = conn.execute(
+                # `rating` only where there is a gap to derive one from. An
+                # incoming row can carry a verdict and no gap — a ladder the
+                # engine cut short is measured and unservable both — and
+                # `difficulty_rating` has no answer for that, so asking it would
+                # raise and take the inserts down with it.
                 f"UPDATE main.items SET ({fill}, rating) = (SELECT {fill},"
-                f"    difficulty_rating(inc.items.shallow_gap)"
+                f"    CASE WHEN inc.items.shallow_gap IS NULL THEN main.items.rating"
+                f"         ELSE difficulty_rating(inc.items.shallow_gap) END"
                 f"    FROM inc.items WHERE inc.items.fen = main.items.fen)"
                 f" WHERE {_UNMEASURED.format(table='main.items')}"
                 f"   AND EXISTS (SELECT 1 FROM inc.items WHERE inc.items.fen = main.items.fen"
                 f"               AND NOT ({_UNMEASURED.format(table='inc.items')}))"
             ).rowcount
+        # The push is what puts a live bank on the current scale, so it is also
+        # where the users move — `db.connect` held them back until the items had
+        # arrived, and the server that is serving them ran its migrations at
+        # boot and will not run them again.
+        regraded = regrade_users(conn)
         if dry_run:
             conn.rollback()
         else:
@@ -156,7 +169,7 @@ def merge(db: Path, incoming: Path, dry_run: bool = False) -> tuple[int, int, in
     finally:
         detach(conn, "inc")
         conn.close()
-    return added, offered - added, measured
+    return added, offered - added, measured, regraded
 
 
 def main() -> None:
@@ -173,12 +186,17 @@ def main() -> None:
     if args.cmd == "export":
         print(f"exported {export(args.db, args.out)} items to {args.out}")
     else:
-        added, skipped, measured = merge(args.db, args.incoming, args.dry_run)
+        added, skipped, measured, regraded = merge(args.db, args.incoming, args.dry_run)
         print(
             f"{'would add' if args.dry_run else 'added'} {added} items"
             f", skipped {skipped} already in the bank"
-            f", filled in lookahead depth on {measured} of them"
+            f", filled in the lookahead ladder on {measured} of them"
         )
+        if regraded:
+            print(
+                "every user rating moved onto the current difficulty scale"
+                f"{' — would have, rather' if args.dry_run else ''}"
+            )
 
 
 if __name__ == "__main__":

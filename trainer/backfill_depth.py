@@ -60,14 +60,25 @@ def main() -> None:
     done = retired = 0
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         for item_id, depth, ladder in pool.map(measure, items):
+            shallow = shallow_gap_of(ladder)
+            # A ladder too short to average is no measurement: it would leave a
+            # row with a depth and no difficulty, which every reader downstream
+            # then has to have an opinion about. Retire it instead — the same
+            # verdict `label` reaches by dropping the candidate outright.
             conn.execute(
                 "UPDATE items SET solution_depth = ?, gap_ladder = ?, shallow_gap = ?,"
                 " learnable = ? WHERE id = ?",
-                (depth or 0, ladder, shallow_gap_of(ladder), int(depth is not None), item_id),
+                (
+                    0 if shallow is None else (depth or 0),
+                    ladder,
+                    shallow,
+                    int(shallow is not None and depth is not None),
+                    item_id,
+                ),
             )
             conn.commit()  # commit per item: a trainer server may share the db
             done += 1
-            retired += depth is None
+            retired += shallow is None
             if done % 500 == 0:
                 print(f"{done}/{len(items)} retired={retired}", file=sys.stderr)
     for engine in _engines:

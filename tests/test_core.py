@@ -4,6 +4,7 @@ from itertools import pairwise
 import pytest
 
 from trainer.rating import (
+    _TARGET_OFFSET,
     CALIB_END_STEP,
     CALIB_START_STEP,
     CALIBRATED_GAP_HI,
@@ -11,12 +12,12 @@ from trainer.rating import (
     GAP_SLOPE,
     HARD_CEILING,
     RATING_MAX,
-    RATING_MIN,
     SHALLOW_PLIES,
     TARGET_ACCURACY,
     USER_MAX,
     USER_MIN,
     USER_START,
+    _gap_for_difficulty,
     calibrate,
     difficulty_rating,
     expected_score,
@@ -76,11 +77,19 @@ def test_difficulty_is_strictly_decreasing_over_every_shallow_gap_there_is():
     assert all(a > b for a, b in pairwise([difficulty_rating(g) for g in gaps]))
 
 
-def test_neither_tail_reaches_its_asymptote_inside_the_bounds():
-    """The tails saturate rather than stop, so the guard rails must not be where
-    the curve actually goes — clamping is what flattens an end of the bank."""
-    assert difficulty_rating(0.8) > RATING_MIN  # easier than the bank holds
-    assert difficulty_rating(-0.5) < HARD_CEILING <= RATING_MAX
+def test_the_range_users_are_aimed_into_is_spread_rather_than_saturated():
+    """Both tails are asymptotic by construction, so "inside the bounds" would be
+    vacuous — and past the evidence they compress hard, which is the price of
+    staying ordered out there. What has to hold is about the part selection can
+    actually aim at: across the whole user scale, one jitter of difficulty is
+    still a real difference in gap, or two neighbouring bands are the same band.
+    """
+    assert HARD_CEILING <= RATING_MAX  # the guard never binds
+    targets = [r + _TARGET_OFFSET for r in range(USER_MIN, USER_MAX + 1, 50)]
+    gaps = [_gap_for_difficulty(t) for t in targets]
+    assert all(a - b > 0.002 for a, b in pairwise(gaps)), "a band is indistinguishable"
+    # And the aimable span is most of the axis, not a sliver of its middle.
+    assert gaps[0] - gaps[-1] > 0.5
 
 
 def test_the_curve_is_smooth_at_both_ends_of_the_evidence():
@@ -100,8 +109,11 @@ def test_the_shallow_gap_is_the_ladder_a_row_actually_stores():
     function of `items.gap_ladder` — so the rounding has to happen before the
     difficulty does, or the stored rating is a function of a number no row keeps.
     """
-    ladder = " ".join(["0.1234"] * SHALLOW_PLIES)
-    assert shallow_gap_of(ladder) == 0.1234
+    # Rungs that do not average to a stored-precision number, so dropping the
+    # rounding is visible: the mean here runs to seventeen places.
+    ladder = " ".join(f"{0.1 + i / 300:.4f}" for i in range(SHALLOW_PLIES))
+    got = shallow_gap_of(ladder)
+    assert got is not None and got == round(got, 4) == 0.1117
     # Short of the window is not a shallow gap at all: a mean over fewer rungs
     # would be a different measure wearing the same name.
     assert shallow_gap_of(" ".join(["0.1"] * (SHALLOW_PLIES - 1))) is None

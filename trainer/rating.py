@@ -29,12 +29,21 @@ RATING_MIN = 0
 # HARD_CEILING, 2980. A guard, not a design feature — see `difficulty_rating`.
 RATING_MAX = 3000
 
-# How much of the ladder difficulty is a function of. Measured, not chosen: of
-# every window 1..k, this is the one whose gap best predicts the strength of the
-# players who got these positions wrong (a 326-point spread in the erring-elo
-# tail, against 288 at one ply alone and 200 for the gap at full depth). Past
-# about ten the window starts averaging in depths no human reaches and the
-# signal falls away again. See `rating.GAP_SLOPE`.
+# How much of the ladder difficulty is a function of. What the data settles is
+# that averaging a *window* beats any single rung and beats the gap at full
+# depth by a wide margin: over the untargeted half, the spread in the erring-elo
+# tail runs 288 at one ply alone and 211 for the deep gap, against 315-344 for
+# every window from k=2 to k=18. Which window inside that range is not settled —
+# 8 scores 329 where the best, k=11, scores 344, and bootstrapping the argmax
+# puts k=11 in front only 44% of the time. Two other readings of the same data
+# disagree with both: the band fit that produces GAP_SLOPE peaks at k=3, and
+# Spearman peaks at k=2.
+#
+# So 8 is a choice inside the noise, not a measurement, and anyone retuning it
+# should expect to find the metric they pick matters more than the value they
+# land on. It is where it is because it is the deepest window that still reads
+# as "what a person might see" rather than as engine analysis, and because the
+# whole ladder is stored — so a better answer costs a refit, not a re-label.
 SHALLOW_PLIES = 8
 
 
@@ -142,8 +151,8 @@ def difficulty_rating(shallow_gap: float) -> float:
     """An item's difficulty, in the same units as a user's rating.
 
     `shallow_gap` is the item's win-probability gap as the shallow end of the
-    engine's own search saw it — `label.SHALLOW_PLIES` rungs of the ladder,
-    averaged — and not the gap at full depth. That is the whole point: the deep
+    engine's own search saw it — `SHALLOW_PLIES` rungs of the ladder, averaged —
+    and not the gap at full depth. That is the whole point: the deep
     gap is what the answer is worth, while this is what there was to see, and
     measured against the strength of the humans who got it wrong the second
     predicts about one and a half times as much as the first. Everything the

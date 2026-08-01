@@ -210,17 +210,21 @@ change first, if it should change.
   file, so a pre-regrade backup arrives without it and is regraded correctly on
   the next open, while clearing it on a database that has already been regraded
   is precisely the double pass it exists to prevent.
-- **Moving difficulty onto the shallow gap regrades every rating, and it
-  lands in two steps.** The release itself changes nothing anyone can see:
+- **Moving difficulty onto the shallow gap regrades every rating — on the
+  push, not on the deploy.** The release alone changes nothing anyone can see:
   every live row has a NULL `shallow_gap` at that moment, and a row with no
-  measurement keeps the difficulty the old curve gave it. What *does* run on
-  first connect is the user regrade, gated on `meta.schema_version` reaching
-  2 — every displayed Elo moves, by about 700 in the middle. Nobody's trials
+  measurement keeps the difficulty the old curve gave it. The users are held
+  back to match, because moving them onto a scale the bank isn't on yet would
+  aim a mid-table user about eighteen percentile points too hard for however
+  long the operator took over the push. So `db.regrade_users` waits for the
+  bank, and `trainer.push_items` — the step that actually brings a live bank
+  onto the new scale — is what releases it, in the same transaction. It says
+  so when it does.
+
+  Then every displayed Elo moves, by about 700 in the middle. Nobody's trials
   change: the anchors preserve the percentile of the bank each user was being
   served, which is the only thing the two scales have in common, because they
-  are readings of different searches and share no gap. The items move when the
-  push carries the ladders over (above), and then everyone is aimed at the same
-  place on a differently-shaped scale.
+  are readings of different searches and share no gap.
 
   Expect the easy end to be the thin one afterwards. A position a shallow look
   settles at a glance is one humans rarely got wrong, so few were ever mined,
