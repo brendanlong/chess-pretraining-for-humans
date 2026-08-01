@@ -195,18 +195,15 @@ uv run python -m trainer.bench --save   # re-record the baseline
 uv run python -m trainer.bench --only static-js,trial-loop
 ```
 
-It builds its own item bank and serves it from a scratch database and a real
-uvicorn, confined to four cores. Nothing it does touches `data/items.db`.
+Two columns decide the verdict. Throughput is what a user would feel and what
+somebody else on the machine ruins; cpu spent per step is what the code's own
+cost moves, and it mostly survives company. So a jump in cpu fails the run
+wherever it was measured, a drop in throughput fails one only on cores the run
+had to itself, and rows it won't stand behind are marked rather than counted.
+Prefer a quiet machine anyway: it gives the sharper answer.
 
-Each scenario is reported twice over: throughput as a user would feel it, and
-cpu the server spent per step. The second is what survives a shared machine —
-under full load the first reads 53-70% low while the second holds within 12% —
-so a jump in cpu per step fails the run wherever it was measured, a drop in
-throughput only fails one that had the cores to itself, and the output says
-which. That means a busy machine gives a usable answer instead of a false
-alarm; it also means a quiet one gives a sharper answer, so prefer it.
-
-`bench-baseline.json` is committed, and only means something against the same
-machine — the run warns when that changed, and refuses to record a new
-baseline from a run that was sharing its cores. Re-record when a deliberate
-trade-off moves the numbers for good.
+`bench-baseline.json` is committed and only means anything against the machine
+that recorded it. The run warns when that has changed, and refuses to record a
+new one from a machine that was busy — a baseline set too low is silent, and
+every run after it inherits the mistake. Re-record when a deliberate trade-off
+moves the numbers for good, or when the bank size it pins does.

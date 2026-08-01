@@ -41,9 +41,9 @@ still handles.
 - `data/` is gitignored. The item bank (`items.db` items table) is
   rebuildable from the pipeline; the `responses` table is the
   experimental record — never wipe it casually.
-- The test suite says nothing about speed; `trainer/bench.py` is what does.
-  Run it around a change that could plausibly cost anything — see README for
-  how, and DESIGN.md for why it is shaped the way it is.
+- `trainer/bench.py` is the only check that looks at speed. Run it around a
+  change that could plausibly cost anything — including one to the `items`
+  columns, since serving a trial scans them all.
 
 ## The invariant that bites
 

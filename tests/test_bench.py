@@ -10,8 +10,8 @@ from collections import Counter
 import chess
 import pytest
 
-from trainer import bench
-from trainer.rating import difficulty_rating
+from trainer import bench, db
+from trainer.rating import difficulty_rating, shallow_gap_of
 
 
 def spend(scenario, users: int, repeats: int, accounts=None, addresses=None):
@@ -93,6 +93,28 @@ def test_every_request_is_dealt_to_exactly_one_process(scenario, procs):
     assert all(p["counts"] for p in plans), "a process with nothing to do"
 
 
+def test_the_seeded_bank_fits_the_schema_it_will_be_written_to(tmp_path):
+    """The seeder spells out the `items` columns, so it is a second copy of a
+    schema that moves. Insert into the real one, then read back what the server
+    would read: a column added or dropped fails here rather than four minutes
+    into a run, and a rating the seeder computed differently from `db.connect`
+    would have the first repetition paying to rewrite the whole bank."""
+    conn = db.connect(tmp_path / "seeded.db")
+    bench.build_template(tmp_path / "seeded.db", items=12)
+    conn = db.connect(tmp_path / "seeded.db")
+    rows = conn.execute("SELECT * FROM items").fetchall()
+    assert len(rows) == 12
+    for row in rows:
+        assert row["learnable"] == 1
+        assert row["rating"] == difficulty_rating(row["shallow_gap"])
+        assert shallow_gap_of(row["gap_ladder"]) == row["shallow_gap"]
+    # Nothing left for `db.connect` to re-derive, which is what would otherwise
+    # rewrite every row the first time the server opened the file.
+    assert not conn.execute(
+        "SELECT 1 FROM items WHERE rating != difficulty_rating(shallow_gap) LIMIT 1"
+    ).fetchone()
+
+
 def test_seeded_items_are_positions_the_server_can_serve():
     """`/api/next` renders both moves as SAN and the reveal replays the whole
     line, so an illegal move in the bank is a 500 in the middle of a run."""
@@ -101,10 +123,6 @@ def test_seeded_items_are_positions_the_server_can_serve():
         best = chess.Move.from_uci(item["best_uci"])
         distractor = chess.Move.from_uci(item["distractor_uci"])
         assert best in board.legal_moves and distractor in board.legal_moves
-        # Difficulty is a pure function of the gap, and `db.connect` re-derives
-        # it on open — a seed that disagreed would make the first repetition
-        # pay for rewriting every row in the bank.
-        assert item["rating"] == difficulty_rating(item["gap_wp"])
         assert best != distractor
         for uci, line in (("best", item["pv_best"]), ("distractor", item["pv_distractor"])):
             replay = chess.Board(item["fen"])

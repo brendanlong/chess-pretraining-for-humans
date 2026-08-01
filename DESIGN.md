@@ -284,11 +284,10 @@ the Dockerfile, `fly.toml`, and `deploy/entrypoint.sh` where it applies.
 
 ## Benchmark (`trainer/bench.py`)
 
-The one thing the tests can't say anything about is speed, so this drives a
-real uvicorn over loopback and compares against a committed baseline. It sits
+Speed is the one thing the test suite says nothing about, so this drives a real
+uvicorn over loopback and compares against a committed baseline. It sits
 outside the pipeline above: it generates its own bank rather than reading one,
-so it never touches the file holding the experimental record. It reports each scenario twice, in wall-clock
-throughput and in cpu the server spent per step, because only the second stays
-meaningful when something else is using the machine. That, the four whole
-physical cores it confines the server to, and the arithmetic that exercises the
-rate limiters without exhausting them, are argued in the module.
+so it never touches the file the experimental record shares. What it takes for
+a timing on a machine other people are using to mean anything — which cores the
+server gets, which of its two numbers may fail a run, and the arithmetic that
+exercises the rate limiters without exhausting them — is argued in the module.

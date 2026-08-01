@@ -67,7 +67,7 @@ BASELINE = _ROOT / "bench-baseline.json"
 # Rebuilt on demand and gitignored with the rest of `data/`. Seeding costs a
 # minute of position generation and argon2 hashing, which is worth paying once.
 TEMPLATE = _ROOT / "data" / "bench-template.db"
-TEMPLATE_VERSION = 2  # bumped when the seeding below changes what it writes
+TEMPLATE_VERSION = 3  # bumped when the seeding below changes what it writes
 
 # What the deployment serves, because `pick_item` and `unseen_count` both scan
 # the bank once per request: their cost is linear in this, and a benchmark
@@ -75,7 +75,7 @@ TEMPLATE_VERSION = 2  # bumped when the seeding below changes what it writes
 # pinned rather than read from anywhere, since a baseline is only a comparison
 # if both runs measured the same amount of work — raise it when the live bank
 # grows enough to matter, and re-record.
-ITEM_COUNT = 24_989
+ITEM_COUNT = 34_307
 # Accounts the login scenario spends. Its per-name limit is 10 per 15 minutes,
 # so this is what caps how many logins one run may measure.
 LOGIN_ACCOUNTS = 192
@@ -178,6 +178,20 @@ def _line(rng: random.Random, board: chess.Board, first: chess.Move) -> str:
     return " ".join(ucis)
 
 
+def _ladder(rng: random.Random, gap: float) -> str:
+    """A plausible gap-by-depth curve: blind at first, then settling on the gap.
+
+    Difficulty is a function of the shallow end of this, so the bank's spread of
+    difficulties comes from here rather than from `gap_wp` — and it has to be at
+    least `rating.SHALLOW_PLIES` rungs long or the item has no difficulty at all.
+    """
+    depth = rng.randint(rating.SHALLOW_PLIES + 2, 20)
+    seen = rng.uniform(-0.5, 1.0)  # how much of the gap the first ply catches
+    return " ".join(
+        f"{gap * min(1.0, seen + ply / rating.SHALLOW_PLIES):.4f}" for ply in range(1, depth + 1)
+    )
+
+
 def _cp(wp: float) -> int:
     """Centipawns that would produce this win probability, near enough. The
     server only formats it, so the inverse being approximate costs nothing."""
@@ -209,6 +223,9 @@ def _items(rng: random.Random, count: int):
             gap = rng.uniform(0.05, 0.45)
             wp_best = rng.uniform(0.5, 0.95)
             wp_distractor = max(0.01, wp_best - gap)
+            ladder = _ladder(rng, gap)
+            shallow = rating.shallow_gap_of(ladder)
+            assert shallow is not None  # `_ladder` always yields enough rungs
             yield {
                 "fen": fen,
                 "best_uci": best.uci(),
@@ -223,11 +240,14 @@ def _items(rng: random.Random, count: int):
                 "gap_wp": gap,
                 "pv_best": _line(rng, board, best),
                 "pv_distractor": _line(rng, board, distractor),
+                "gap_ladder": ladder,
+                "shallow_gap": shallow,
+                # Every seeded item is learnable, so the whole bank is servable
+                # and `pick_item`'s filter has the same work to do on every run.
                 "learnable": 1,
-                "depth_deep": 18,
-                "depth_shallow": 8,
-                "rating": rating.difficulty_rating(gap),
+                "rating": rating.difficulty_rating(shallow),
                 "ply": board.ply(),
+                "mined_untargeted": 1,
                 "game_url": "https://lichess.org/bench",
                 "mover_elo": 1500,
                 "time_control": "300+0",
@@ -246,14 +266,14 @@ def build_template(path: Path, items: int) -> None:
     conn.executemany(
         """INSERT INTO items (fen, best_uci, distractor_uci, distractor_source,
              cp_best, mate_best, cp_distractor, mate_distractor, wp_best,
-             wp_distractor, gap_wp, pv_best, pv_distractor, learnable,
-             depth_deep, depth_shallow, rating, ply, game_url, mover_elo,
-             time_control)
+             wp_distractor, gap_wp, pv_best, pv_distractor, gap_ladder,
+             shallow_gap, learnable, rating, ply, mined_untargeted,
+             game_url, mover_elo, time_control)
            VALUES (:fen, :best_uci, :distractor_uci, :distractor_source,
              :cp_best, :mate_best, :cp_distractor, :mate_distractor, :wp_best,
-             :wp_distractor, :gap_wp, :pv_best, :pv_distractor, :learnable,
-             :depth_deep, :depth_shallow, :rating, :ply, :game_url, :mover_elo,
-             :time_control)""",
+             :wp_distractor, :gap_wp, :pv_best, :pv_distractor, :gap_ladder,
+             :shallow_gap, :learnable, :rating, :ply, :mined_untargeted,
+             :game_url, :mover_elo, :time_control)""",
         _items(rng, items),
     )
     # One hash for every account: they all share a password, and paying argon2
@@ -276,14 +296,17 @@ def build_template(path: Path, items: int) -> None:
             conn, f"bench-warm-{i}", password_hash, None, 1200.0, rating.CALIB_END_STEP - 1
         )
         # A history is what makes `pick_item`'s NOT IN subquery cost something,
-        # and what a real user's requests are served against.
+        # and what a real user's requests are served against. Never longer than
+        # the bank: a response names an item, and a `--items` below the usual
+        # history would otherwise be answers to rows that don't exist.
+        history = min(WARM_HISTORY, items)
         conn.executemany(
             """INSERT INTO responses (user_id, item_id, choice_uci, correct,
                  response_ms, user_rating_before, user_rating_after, item_rating_before)
                VALUES (?, ?, 'e2e4', 1, 3000, 1200, 1200, 1200)""",
-            [(user["id"], item_id) for item_id in range(1, WARM_HISTORY + 1)],
+            [(user["id"], item_id) for item_id in range(1, history + 1)],
         )
-        conn.execute("UPDATE users SET attempts = ? WHERE id = ?", (WARM_HISTORY, user["id"]))
+        conn.execute("UPDATE users SET attempts = ? WHERE id = ?", (history, user["id"]))
     conn.execute(
         "INSERT OR REPLACE INTO meta (key, value) VALUES ('bench_template', ?)",
         (f"{TEMPLATE_VERSION}:{items}",),
