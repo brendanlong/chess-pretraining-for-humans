@@ -132,6 +132,12 @@ SCENARIOS = (
     Scenario("static-png", "73 KB image, unversioned: body throughput", 2000),
     Scenario("next-cold", "trial for a first-time visitor with no history", 2000),
     Scenario("next-warm", f"trial for an account {WARM_HISTORY} answers in", 2000),
+    # The same endpoint and the same account as next-warm, so the pair is the
+    # measurement: what a link costs against what selection costs. Different
+    # work entirely — a primary-key seek and one index probe, against a walk
+    # outward from a rating — and it is reached before any of it, so a slow
+    # named lookup would be a slow `/api/next` for everybody.
+    Scenario("next-named", "trial a share link named, same account", 2000),
     Scenario("stats", "drawer numbers, including the unseen-item count", 2000),
     Scenario("trial-loop", "one step = GET /api/next then POST /api/answer", 1500),
     # Fewer requests than the rest, and exactly as many users as `auth` has
@@ -508,6 +514,45 @@ async def _step_next(vu: VU) -> None:
     await vu.get("/api/next")
 
 
+def named_id(vu: VU) -> int:
+    """The item this user's link names.
+
+    Past the seeded history, because `named_item` refuses an item the caller
+    has already answered — and refusing is silent by design, so a scenario that
+    named one would be measuring `pick_item` under a name that says otherwise.
+    One id per user rather than one for the scenario, so this reads more than a
+    single page; the same one every request, so what varies between runs is the
+    query and not how much of the bank a run happened to warm.
+    """
+    span = vu.ctx["items"] - min(WARM_HISTORY, vu.ctx["items"])
+    if span <= 0:
+        raise RuntimeError(
+            f"a bank of {vu.ctx['items']} items has nothing this account "
+            f"hasn't answered — next-named needs more than {WARM_HISTORY}"
+        )
+    return WARM_HISTORY + 1 + (vu.index % span)
+
+
+async def _setup_named(vu: VU) -> None:
+    """Adopt a warm account, then check the link this user will follow works.
+
+    Once, here, rather than on every step: the point of the scenario is to be
+    the same request as next-warm with a different query, so it must not carry
+    a JSON parse next-warm doesn't. Setup is not measured.
+    """
+    await _setup_warm(vu)
+    served = (await vu.get(f"/api/next?item={named_id(vu)}")).json()
+    if served["item_id"] != named_id(vu):
+        raise RuntimeError(
+            f"the server would not serve item {named_id(vu)} to this account, so "
+            "this scenario would be measuring ordinary selection instead"
+        )
+
+
+async def _step_named(vu: VU) -> None:
+    await vu.get(f"/api/next?item={named_id(vu)}")
+
+
 async def _step_stats(vu: VU) -> None:
     await vu.get("/api/stats")
 
@@ -568,6 +613,7 @@ STEPS = {
     "static-png": (_setup_none, _step_png),
     "next-cold": (_setup_none, _step_next),
     "next-warm": (_setup_warm, _step_next),
+    "next-named": (_setup_named, _step_named),
     "stats": (_setup_warm, _step_stats),
     "trial-loop": (_setup_none, _step_trial),
     "login": (_setup_none, _step_login),
@@ -1207,7 +1253,7 @@ def main() -> None:
         js = re.search(r'src="(app\.js\?v=[0-9a-f]+)"', index)
         if not js:
             raise SystemExit("couldn't find the versioned bundle in the served index page")
-        ctx = {"js": "/" + js.group(1), "png": "/social-preview.png"}
+        ctx = {"js": "/" + js.group(1), "png": "/social-preview.png", "items": args.items}
         # Sessions minted directly, which is what lets the read scenarios browse
         # as an account without spending the login limiter to get in.
         conn = db.connect(scratch)
