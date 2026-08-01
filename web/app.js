@@ -202,15 +202,27 @@ function resetLine() {
 
 // --- sharing ------------------------------------------------------------
 
-// The URL names the trial on screen, always — so the address bar is already a
-// share link and the Share button only saves reaching for it, which on a phone
-// is most of the work. Only the item id goes in: which move is better isn't the
-// client's to know before it answers, let alone to put in a URL.
+// Naming the position in the address bar is what makes it a share link — the
+// Share button only saves reaching for it, which on a phone is most of the
+// work. Only the item id goes in: which move is better isn't the client's to
+// know before it answers, let alone to put in a URL.
+//
+// It goes in when the trial is *answered*, and comes out again when the next
+// one loads, so the URL only ever names a position this user is done with.
+// Naming it on arrival instead would mean a reload before answering asked the
+// server for the trial already on screen — which it would serve, and mark as
+// one nobody aimed, on a trial selection had aimed. That mark is what the
+// research record holds out and what excuses the answer from the calibration
+// staircase, so it has to stay rare and true.
 //
 // `replaceState`, so the back button still leaves the app rather than walking
 // back through a session's worth of positions.
 function nameTrialInUrl() {
   history.replaceState(null, "", `?item=${trial.item_id}`);
+}
+
+function unnameTrialInUrl() {
+  if (location.search) history.replaceState(null, "", location.pathname);
 }
 
 // --- copy-for-Claude ----------------------------------------------------
@@ -301,6 +313,7 @@ async function api(path, body) {
 
 async function loadTrial(itemId) {
   phase = "loading";
+  unnameTrialInUrl(); // whatever it named, we are leaving it
   stopAutoplay();
   lines = [];
   stepIdx = -1;
@@ -321,11 +334,13 @@ async function loadTrial(itemId) {
   el("stat-rating").textContent = ratingLabel(trial.user_rating, trial.calibrating);
   el("stat-trial").textContent = trial.trial_number;
   if (trial.repeat) el("repeat-note").hidden = false;
-  // Only the disappointing case is worth a word: we asked for a position by id
-  // and the server had none, so this is a different one from the one the link
-  // named. Being handed the position you asked for needs no announcement.
-  if (itemId && !trial.shared) el("stale-link-note").hidden = false;
-  nameTrialInUrl();
+  // Only the disappointing case is worth a word, and it is exactly "we asked
+  // for a position and this isn't it" — which also keeps the note off the
+  // exhausted-bank case, where the fallback can legitimately hand back the very
+  // item that was asked for, as a rerun. Being handed what you asked for needs
+  // no announcement.
+  if (itemId && String(trial.item_id) !== String(itemId))
+    el("stale-link-note").hidden = false;
   phase = "choosing";
   shownAt = performance.now();
 }
@@ -394,6 +409,9 @@ async function choose(i) {
       Math.round((100 * accWindow.reduce((a, b) => a + b, 0)) / accWindow.length) + "%";
 
   lastResult = result;
+  // Answered, so the position is now something to send on rather than
+  // something to be served: the address bar becomes the link to it.
+  nameTrialInUrl();
 
   // Replay lines: your pick first (it auto-plays), the other switchable.
   const mkLine = (mv, isBest, tag) => ({

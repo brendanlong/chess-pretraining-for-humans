@@ -175,7 +175,6 @@ def test_a_share_link_serves_the_item_it_names(client, db):
     for _ in range(5):
         trial = shared_trial(client, wanted)
         assert trial["item_id"] == wanted
-        assert trial["shared"] is True
         # Still a trial like any other: nothing about which move is better.
         assert not set(NEVER_BEFORE_ANSWERING) & set(trial)
 
@@ -183,22 +182,27 @@ def test_a_share_link_serves_the_item_it_names(client, db):
 def test_an_answer_from_a_share_link_counts_like_any_other_and_is_marked(client, db):
     """The mark is the whole of what sharing costs: the answer is a real first
     exposure, so it rates and it counts, and what the analysis needs is to be
-    able to hold out the rows nobody aimed."""
+    able to hold out the rows nobody aimed.
+
+    Answered *wrongly*, because that is what tells the two designs apart: an
+    answer held out of the rating and the accuracy leaves both exactly where
+    they were, and a rating that only ever moves up would agree with either.
+    """
     first = next_trial(client)
     answer(client, first, choice_index_of(first, ITEM["best_uci"]))
     before = user_row(db, client)["rating"]
     shared = shared_trial(client, other_item(db, first))
 
-    result = answer(client, shared, choice_index_of(shared, ITEM["best_uci"]))
-    assert "correct" in result and "best" in result  # feedback, like any trial
-    assert user_row(db, client)["rating"] > before  # and a rating that moved
-    assert result["rating_delta"] > 0
+    result = answer(client, shared, choice_index_of(shared, ITEM["distractor_uci"]))
+    assert result["correct"] is False
+    assert "best" in result  # feedback, like any trial
+    assert user_row(db, client)["rating"] < before  # and a rating that moved
     row = db.execute("SELECT * FROM responses ORDER BY id DESC LIMIT 1").fetchone()
     assert (row["item_id"], row["shared"]) == (shared["item_id"], 1)
     # Counted where every other first exposure is, too.
     stats = client.get("/api/stats").json()
     assert stats["attempts"] == 2
-    assert stats["accuracy_last_50"] == 1.0
+    assert stats["accuracy_last_50"] == 0.5  # one right, one wrong — both counted
     assert stats["items_remaining"] == 0  # gone from the unseen pile as well
 
 
@@ -235,22 +239,39 @@ def test_a_url_naming_an_item_you_have_answered_is_not_honoured(client, db):
 
     again = shared_trial(client, first["item_id"])
     assert again["item_id"] != first["item_id"]
-    assert (again["repeat"], again["shared"]) == (False, False)
+    assert again["repeat"] is False
     answer(client, again)
     # Two answers, two items — no second row for the one the URL named.
     assert db.execute("SELECT COUNT(DISTINCT item_id) FROM responses").fetchone()[0] == 2
 
 
-@pytest.mark.parametrize("named", ["99999", "0", "-1", "not-an-id", "12)", "", "1e3"])
-def test_a_url_the_bank_cannot_honour_still_opens_the_app(client, named):
+@pytest.mark.parametrize(
+    "named",
+    [
+        "99999",  # an id from a bank this one isn't
+        "0",
+        "-1",
+        "not-an-id",
+        "12)",  # a link that went through a chat client
+        "",
+        "1e3",
+        "١٢٣",  # digits `isdigit` accepts and `int` parses
+        "1" * 20,  # past what SQLite can bind
+        "9" * 5000,  # past what Python will parse
+    ],
+)
+def test_a_url_the_bank_cannot_honour_still_opens_the_app(client, db, named):
     """A link outlives the bank it was made from, and travels through chat
     clients that hand it back with a bracket on the end. Every way of naming
-    nothing lands on an ordinary trial, because the alternative in front of
-    somebody who just followed a link is a validation error."""
+    nothing lands on an ordinary trial, because what is in front of somebody
+    who just followed a link should never be a stack trace or a validation
+    error — and this endpoint is reachable by anyone, unmetered."""
     r = client.get(f"/api/next?item={named}")
     assert r.status_code == 200, r.text
-    assert r.json()["shared"] is False  # which is what puts the note on the page
-    assert r.json()["item_id"] > 0
+    # Served something real, and not the thing that was asked for — which is
+    # how the page knows to say the link couldn't be opened.
+    assert r.json()["item_id"] != named
+    assert db.execute("SELECT 1 FROM items WHERE id = ?", (r.json()["item_id"],)).fetchone()
 
 
 @pytest.mark.parametrize("item_count", [1])
@@ -261,9 +282,7 @@ def test_a_link_to_an_unlearnable_item_is_not_honoured(client, db, item_count):
     db.commit()
     unlearnable = db.execute("SELECT id FROM items WHERE learnable = 0").fetchone()[0]
 
-    trial = shared_trial(client, unlearnable)
-    assert trial["shared"] is False
-    assert trial["item_id"] != unlearnable
+    assert shared_trial(client, unlearnable)["item_id"] != unlearnable
 
 
 def test_first_exposure_filter_is_answered_from_an_index_covering_item_id(db):
@@ -786,6 +805,13 @@ def test_the_counted_path_is_a_constant_and_never_the_url(client):
     referrer_fn = COUNT_JS_CODE.split("function crossOriginReferrer()")[1].split("\n}")[0]
     assert "document.referrer" not in COUNT_JS_CODE.replace(referrer_fn, "")
     assert "url.origin" in referrer_fn
+    # What it *returns*, not what it mentions: the substrings above still allow
+    # `... ? null : document.referrer`, which is the whole leak in one line.
+    returned = re.findall(r"return ([^;]+);", referrer_fn)
+    assert returned, "the referrer function no longer returns in a form this can read"
+    for expression in returned:
+        assert "document.referrer" not in expression, f"reported verbatim: {expression}"
+        assert "url" not in expression or "url.origin" in expression, expression
     for whole_url in (".href", ".toString()", ".pathname", ".search", "`${"):
         assert whole_url not in referrer_fn, f"{whole_url}: the referrer is more than an origin"
     sent = set(re.findall(r'params\.set\("(\w+)"', COUNT_JS_CODE)) | set(

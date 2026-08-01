@@ -37,8 +37,8 @@ boundaries wrong: answering your last unseen item drops the count to zero and
 makes that token replayable, and a bank refilled mid-trial makes a
 legitimately-served repeat unanswerable. And a share is a claim about the
 request that fetched the trial, which the request that answers it can't see;
-taking the client's word for it would let anyone mark their answers unrated,
-or a friend's link go unmarked in the research record.
+taking the client's word for it would buy a caller the calibration staircase's
+exemption on demand, and leave a friend's link unmarked in the research record.
 
 Changing the payload's shape invalidates the tokens in flight, exactly as
 rotating the key does: they stop verifying, the client is told 409, and it

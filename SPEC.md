@@ -158,14 +158,15 @@ automatically.
   third party's script off an origin that holds a session cookie: what the
   privacy policy says about the counter is then enforced by code that ships
   with the app rather than trusted to code that doesn't.
-- **A shared position is an ordinary trial that says it was shared.** The URL
-  names the position on screen, so sending one to a friend is copying an
-  address bar, and what arrives is the same symmetric trial everyone else
-  gets — carrying an item id and never an answer. A URL buys no more second
-  exposures than selection does: it is a durable thing that gets reopened, and
-  a tab reloading the position whose answer is on the screen it came from is
-  the ordinary case, not the exotic one, so a URL naming an item this user has
-  answered is not honoured at all. The
+- **A shared position is an ordinary trial that says it was shared.** Once you
+  have answered one, the address bar names it, so sending it to a friend is
+  copying a URL, and what arrives is the same symmetric trial everyone else
+  gets — carrying an item id and never an answer. It names it only *after* the
+  answer, because a URL that named the trial in progress would be asking the
+  server for it on every reload, and marking a position the app itself chose
+  as one nobody aimed. A URL also buys no second exposures — it is a durable
+  thing that gets reopened, so one naming an item this user has answered is
+  not honoured at all. The
   answer counts: it rates and it is counted in accuracy, because it is a real
   first exposure against an item of measured difficulty, and Elo is a
   statement about the item and not about who chose it. What it carries is a

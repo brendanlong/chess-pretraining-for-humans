@@ -189,12 +189,15 @@ per-ply FENs so the client only renders. Candidate moves are drawn as arrows;
 answers by tap or keyboard; the reveal shows evals in centipawns and win
 probability, auto-plays the chosen move's engine line (switchable to the other,
 steppable, speed configurable), and can copy the position + both lines as plain
-text for pasting into an assistant. The URL names the trial on screen
-throughout (`?item=`, by `replaceState`, so the back button still leaves the
-app), which makes the address bar the share link and the Share button a way of
-reaching it without one. Only the disappointing case is announced: a URL whose
-item the server won't serve gets an ordinary trial and a line saying so, which
-is also what a reload after answering looks like.
+text for pasting into an assistant. Answering a trial names it in the URL
+(`?item=`, by `replaceState`, so the back button still leaves the app) and
+loading the next one takes the name back out, which makes the address bar the
+share link and the Share button a way of reaching it without one. Why it goes
+in on the answer rather than on arrival is at `nameTrialInUrl`. Only the
+disappointing case is announced: a URL whose item the server won't serve —
+stale, already answered, or not an id at all — gets an ordinary trial and a
+line saying so, which the page recognises by not being handed what it asked
+for.
 
 `count.js` is the page counter, on every page and reporting only a path looked
 up in a table of the pages that exist — GoatCounter's own script reports the

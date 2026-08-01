@@ -569,20 +569,26 @@ def next_item(item: str | None = None, user_id: int | None = OptionalUserId):
     """Serve a trial. Writes nothing — a first-time visitor has no row yet, and
     getting one is what answering earns.
 
-    `item` names a position rather than asking for one: a link somebody sent,
-    or the page reloading a URL that already named the trial on screen. It is
-    served instead of what selection would have picked, and the answer to it
-    says so — or, if `named_item` won't have it, selection picks after all and
-    `shared` is how the page knows which of the two it got.
+    `item` names a position rather than asking for one, which is what following
+    somebody's link does. It is served instead of what selection would have
+    picked, and the answer to it is marked — or, if `named_item` won't have it,
+    selection picks after all and the caller can see it didn't get what it
+    asked for, which is all the page needs to say so.
     """
     u = auth.get_user(conn, user_id) if user_id is not None else None
     # Text, parsed here, rather than declared an integer: a link travels through
     # chat clients and Markdown and comes back with a bracket on the end, and a
     # framework's validation error is not what somebody who followed one should
     # be looking at. So anything that isn't an id reads as no id, which is the
-    # same fallback an id the bank can't serve gets. `isascii` because
-    # `isdigit` alone accepts other scripts' digits, which `int` then parses.
-    wanted = int(item) if item and item.isascii() and item.isdigit() else None
+    # same fallback an id the bank can't serve gets.
+    #
+    # All three conditions earn their place. `isascii`, because `isdigit` alone
+    # accepts other scripts' digits, which `int` then parses. And a length, on
+    # both sides of `int`: past 18 digits SQLite can't bind the value, and past
+    # 4300 Python won't parse the string at all — either one is a 500 on an
+    # endpoint anyone can reach, which is a worse answer than the 422 this is
+    # here to avoid.
+    wanted = int(item) if item and item.isascii() and item.isdigit() and len(item) < 19 else None
     named = named_item(wanted, user_id) if wanted is not None else None
     is_repeat = False
     row = named
@@ -602,9 +608,6 @@ def next_item(item: str | None = None, user_id: int | None = OptionalUserId):
         "side_to_move": "white" if chess.Board(row["fen"]).turn else "black",
         "moves": [{"uci": m, "san": san(row["fen"], m)} for m in moves],
         "repeat": is_repeat,
-        # Whether a URL that named an item got it, so one that didn't gets a
-        # line saying so rather than a position it never named.
-        "shared": served.shared,
         # No fresh-item count: it costs a pass over the bank, and the drawer
         # counter that reads it is seeded from /api/stats and counted down there.
         "trial_number": (u["attempts"] if u else 0) + 1,
