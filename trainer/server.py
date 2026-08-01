@@ -448,25 +448,43 @@ def line_steps(fen: str, pv: str | None, fallback_uci: str) -> list[dict]:
 # A caller who has answered nothing has no row to read a rating or a history
 # from, so both are the defaults a first trial would have used anyway: beginner
 # rating, nothing seen yet. `user_id is None` is that caller throughout.
+UNSEEN_COUNT_SQL = """SELECT COUNT(*) FROM items
+    WHERE learnable = 1
+      AND id NOT IN (SELECT item_id FROM responses WHERE user_id = ?)"""
+
+
 def unseen_count(user_id: int | None) -> int:
-    return conn.execute(
-        """SELECT COUNT(*) FROM items
-           WHERE learnable = 1
-             AND id NOT IN (SELECT item_id FROM responses WHERE user_id = ?)""",
-        (user_id or 0,),  # no row means no responses, so nothing is excluded
-    ).fetchone()[0]
+    # no row means no responses, so nothing is excluded
+    return conn.execute(UNSEEN_COUNT_SQL, (user_id or 0,)).fetchone()[0]
+
+
+# The pool one trial is drawn from (`trainer.supply` reports against it too).
+SELECTION_POOL = 30
+
+# The nearest unseen items on one side of the target. Two of these instead of
+# one ORDER BY ABS(rating - ?) over the bank: the ABS ordering is one no index
+# can provide, so it cost a scan of every item row plus a sort per trial —
+# linear in the bank, and the dominant cost of serving. Each of these walks
+# `idx_items_learnable_rating` away from the target until it has a pool's
+# worth, so together they read about two pools of index entries (plus any the
+# seen-item filter skips, checked on the index's rowid alone) however big the bank
+# grows, and their union necessarily contains the pool nearest overall.
+NEAREST_SQL = """SELECT * FROM items
+    WHERE learnable = 1 AND rating {} ?
+      AND id NOT IN (SELECT item_id FROM responses WHERE user_id = ?)
+    ORDER BY rating {} LIMIT {}"""
+NEAREST_BELOW_SQL = NEAREST_SQL.format("<=", "DESC", SELECTION_POOL)
+NEAREST_ABOVE_SQL = NEAREST_SQL.format(">", "ASC", SELECTION_POOL)
 
 
 def pick_item(user_rating: float, user_id: int | None) -> tuple[dict | None, bool]:
     """An unseen item near the target difficulty; (item, is_repeat)."""
     target = rating.target_item_rating(user_rating)
-    rows = conn.execute(
-        """SELECT * FROM items
-           WHERE learnable = 1
-             AND id NOT IN (SELECT item_id FROM responses WHERE user_id = ?)
-           ORDER BY ABS(rating - ?) LIMIT 30""",
-        (user_id or 0, target),
-    ).fetchall()
+    rows = sorted(
+        conn.execute(NEAREST_BELOW_SQL, (target, user_id or 0)).fetchall()
+        + conn.execute(NEAREST_ABOVE_SQL, (target, user_id or 0)).fetchall(),
+        key=lambda row: abs(row["rating"] - target),
+    )[:SELECTION_POOL]
     if rows:
         return dict(rng.choice(rows)), False
     # Bank exhausted. Serve the least-recently-answered item so the app stays

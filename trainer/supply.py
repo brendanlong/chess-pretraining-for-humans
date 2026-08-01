@@ -37,7 +37,9 @@ from .rating import (
     target_gap,
 )
 
-# `pick_item`'s LIMIT: the pool one trial is drawn from.
+# Mirrors `server.SELECTION_POOL`, the pool one trial is drawn from — a copy
+# rather than an import, because importing the server opens its database
+# connection as a side effect.
 SELECTION_POOL = 30
 
 

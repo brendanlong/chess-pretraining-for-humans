@@ -127,7 +127,12 @@ CREATE TABLE IF NOT EXISTS meta (
     value TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_items_rating ON items(rating);
+-- Selection walks ratings outward from a target (`server.pick_item`), and the
+-- unseen count only needs ids (`server.unseen_count`) — both over servable
+-- items only, which is why the index is partial: it keeps every walk free of
+-- entries the WHERE would discard, and it answers the count without touching
+-- the wide item rows at all.
+CREATE INDEX IF NOT EXISTS idx_items_learnable_rating ON items(rating) WHERE learnable = 1;
 CREATE INDEX IF NOT EXISTS idx_responses_user ON responses(user_id, id);
 -- Both response indexes earn their keep. The one above serves "this user's
 -- answers, in order"; this one serves "has this user answered this item" — the
@@ -251,6 +256,12 @@ def connect(path: Path = DEFAULT_DB, check_same_thread: bool = True) -> sqlite3.
     response_cols = {row[1] for row in conn.execute("PRAGMA table_info(responses)")}
     if "item_rating_after" in response_cols:
         conn.execute("ALTER TABLE responses DROP COLUMN item_rating_after")
+    # The full rating index is subsumed by the partial one above: every query
+    # that ranges or orders on rating also asks for learnable = 1, so all the
+    # unfiltered index bought was a second copy of the column to keep current
+    # on every bank push. Guarded by a read, like the other migrations.
+    if any(row[1] == "idx_items_rating" for row in conn.execute("PRAGMA index_list(items)")):
+        conn.execute("DROP INDEX idx_items_rating")
     # Registering the function rather than repeating the formula in SQL keeps
     # one definition of difficulty. `push_items` calls it by this name too, from
     # a merge that has to land a new difficulty without waiting for a restart.

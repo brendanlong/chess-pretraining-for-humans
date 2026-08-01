@@ -158,6 +158,68 @@ def test_first_exposure_filter_is_answered_from_an_index_covering_item_id(db):
     assert "idx_responses_item" in inner[0], inner[0]
 
 
+def test_selection_walks_the_rating_index_instead_of_scanning_the_bank(db):
+    """Serving a trial must not cost a pass over every item row — see
+    `NEAREST_SQL` in server.py for what the two walks replace.
+
+    Asserts the plan, not a duration, because a timing threshold flakes on CI.
+    The losing plan is `SCAN items` plus a sort, and it is what any edit that
+    stops the partial index applying — dropping the `learnable = 1` term, or
+    ordering by an expression again — quietly reverts to.
+    """
+    for sql in (server.NEAREST_BELOW_SQL, server.NEAREST_ABOVE_SQL):
+        steps = [row[-1] for row in db.execute("EXPLAIN QUERY PLAN " + sql, (1200, 1))]
+        assert any("idx_items_learnable_rating" in s for s in steps), steps
+        assert not any("SCAN items" in s for s in steps), steps
+        assert not any("TEMP B-TREE" in s for s in steps), steps
+
+
+def test_the_unseen_count_is_answered_without_reading_item_rows(db):
+    """Counting needs ids alone, and the partial rating index carries them for
+    exactly the servable items — so the count must come off the index, not off
+    the wide rows a bank-sized table keeps them in."""
+    steps = [row[-1] for row in db.execute("EXPLAIN QUERY PLAN " + server.UNSEEN_COUNT_SQL, (1,))]
+    items_step = next(s for s in steps if "items" in s)
+    assert "COVERING INDEX idx_items_learnable_rating" in items_step, steps
+
+
+def test_the_index_walks_merge_to_the_pool_the_distance_ordering_chose(db):
+    """The two LIMITed walks are only an optimization if their union still
+    contains the `SELECTION_POOL` nearest unseen items — the set the old
+    `ORDER BY ABS(rating - target)` selected by construction."""
+    from trainer.rating import difficulty_rating
+
+    from .conftest import add_item
+
+    # Distinct difficulties on both sides of the target, more than a pool per
+    # side, with a user who has already seen some of the closest ones.
+    for i in range(90):
+        gap = 0.01 + 0.004 * i
+        add_item(db, f"pool-test-{i}", shallow_gap=gap, rating=difficulty_rating(gap))
+    with db:
+        user = auth.create_guest(db, 850.0, 250.0)
+        db.executemany(
+            """INSERT INTO responses (user_id, item_id, choice_uci, correct)
+               VALUES (?, ?, 'e2e4', 1)""",
+            [(user["id"], item_id) for item_id in range(20, 40)],
+        )
+    target, uid = db.execute("SELECT AVG(rating), ? FROM items", (user["id"],)).fetchone()
+    old = db.execute(
+        """SELECT ABS(rating - ?) AS d FROM items
+           WHERE learnable = 1 AND id NOT IN (SELECT item_id FROM responses WHERE user_id = ?)
+           ORDER BY d LIMIT ?""",
+        (target, uid, server.SELECTION_POOL),
+    ).fetchall()
+    walked = (
+        db.execute(server.NEAREST_BELOW_SQL, (target, uid)).fetchall()
+        + db.execute(server.NEAREST_ABOVE_SQL, (target, uid)).fetchall()
+    )
+    merged = sorted(abs(r["rating"] - target) for r in walked)[: server.SELECTION_POOL]
+    # Distances rather than ids: equal-rated items tie, and any nearest-30 set
+    # is as good as any other — what must match is how near the pool sits.
+    assert merged == [r["d"] for r in old]
+
+
 def test_legal_pages_are_served_and_reachable_before_signing_up(client):
     """A guest records responses without ever opening the signup form, so the
     first page it lands on has to link the terms and the policy itself."""
