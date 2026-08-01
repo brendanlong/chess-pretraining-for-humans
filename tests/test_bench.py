@@ -92,10 +92,21 @@ def _result(rps: float, p50: float) -> dict:
 
 def test_a_slower_run_is_reported_as_one():
     baseline = {"scenarios": {"healthz": _result(1000, 1.0)}}
-    assert bench.report({"healthz": _result(700, 1.4)}, baseline, threshold=20.0)
-    assert not bench.report({"healthz": _result(950, 1.05)}, baseline, threshold=20.0)
+    slower = {"healthz": _result(700, 1.4)}
+    assert bench.report(slower, baseline, threshold=20.0, busy=0.0)
+    assert not bench.report({"healthz": _result(950, 1.05)}, baseline, threshold=20.0, busy=0.0)
     # Nothing to compare against is not a regression.
-    assert not bench.report({"healthz": _result(1, 1000.0)}, None, threshold=20.0)
+    assert not bench.report({"healthz": _result(1, 1000.0)}, None, threshold=20.0, busy=0.0)
+
+
+def test_a_busy_machine_is_disclosed(capsys):
+    """A run that shared the machine reports a regression it can't stand behind,
+    so it has to say which it was."""
+    baseline = {"scenarios": {"healthz": _result(1000, 1.0)}}
+    bench.report({"healthz": _result(700, 1.4)}, baseline, threshold=20.0, busy=4.0)
+    assert "4.0 cores" in capsys.readouterr().err
+    bench.report({"healthz": _result(700, 1.4)}, baseline, threshold=20.0, busy=0.1)
+    assert "cores" not in capsys.readouterr().err
 
 
 def test_a_subset_run_compares_against_the_same_subset():

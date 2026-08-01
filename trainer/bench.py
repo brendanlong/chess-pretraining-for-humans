@@ -41,6 +41,7 @@ import time
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
+from resource import RUSAGE_CHILDREN, RUSAGE_SELF, getrusage
 
 import chess
 import httpx
@@ -609,7 +610,50 @@ def _delta(now: float, before: float) -> float:
     return (now - before) / before * 100 if before else 0.0
 
 
-def report(results: dict, baseline: dict | None, threshold: float) -> bool:
+def _machine_cpu_seconds() -> float | None:
+    """CPU seconds this machine has spent on anything but idling, all cores."""
+    stat = Path("/proc/stat")
+    if not stat.exists():
+        return None
+    ticks = [int(t) for t in stat.read_text().split("\n", 1)[0].split()[1:]]
+    idle = ticks[3] + ticks[4]  # idle, iowait
+    return (sum(ticks) - idle) / os.sysconf("SC_CLK_TCK")
+
+
+class Contention:
+    """How much of the machine somebody else was using while we measured.
+
+    Without this the tool cannot tell a slower app from a busier box, and the
+    two look identical in the table — a run sharing the machine with a build
+    reports a regression that isn't there. Our own cost is subtracted through
+    `rusage`, so what's left is other people's work, in cores.
+    """
+
+    def __init__(self):
+        self.machine = _machine_cpu_seconds()
+        self.started = time.monotonic()
+
+    def cores(self) -> float | None:
+        """Only meaningful once the server and the driver pool have been
+        reaped: `RUSAGE_CHILDREN` counts a child from the moment it's waited
+        for, not while it runs."""
+        machine = _machine_cpu_seconds()
+        if machine is None or self.machine is None:
+            return None
+        ours = sum(
+            getrusage(who).ru_utime + getrusage(who).ru_stime
+            for who in (RUSAGE_SELF, RUSAGE_CHILDREN)
+        )
+        return max(0.0, (machine - self.machine) - ours) / (time.monotonic() - self.started)
+
+
+# Other work worth naming in the output. Below this the machine is idle
+# enough that the repetitions absorb it; above it, a "regression" is as likely
+# to be the neighbour as the code.
+BUSY_CORES = 0.5
+
+
+def report(results: dict, baseline: dict | None, threshold: float, busy: float | None) -> bool:
     """Print the table; return True if anything regressed past the threshold."""
     old = (baseline or {}).get("scenarios", {})
     header = f"{'scenario':<13} {'req/s':>9} {'p50 ms':>9} {'p95 ms':>9} {'p99 ms':>9}"
@@ -636,6 +680,13 @@ def report(results: dict, baseline: dict | None, threshold: float) -> bool:
         print(f"\nno scenario regressed by more than {threshold:.0f}%.")
     elif regressed:
         print(f"\nregressed by more than {threshold:.0f}%: {', '.join(regressed)}")
+    if busy is not None and busy >= BUSY_CORES:
+        print(
+            f"\nwarning: something else on this machine used {busy:.1f} cores "
+            "while this ran, so every number above is a lower bound. Re-run on "
+            "an idle machine before believing a regression.",
+            file=sys.stderr,
+        )
     return bool(regressed)
 
 
@@ -735,6 +786,7 @@ def main() -> None:
     if baseline and not args.save:
         compare_settings(baseline, settings, chosen)
 
+    contention = Contention()
     source = template(args.items, args.reseed)
     scratch = _ROOT / "data" / "bench-run.db"
     for suffix in ("", "-wal", "-shm"):
@@ -799,7 +851,9 @@ def main() -> None:
         server.terminate()
         server.wait(timeout=30)
 
-    regressed = report(results, None if args.save else baseline, args.threshold)
+    # After the server and the pool have been reaped, so their CPU counts as
+    # ours rather than as somebody else's.
+    regressed = report(results, None if args.save else baseline, args.threshold, contention.cores())
     if args.save:
         args.baseline.write_text(
             json.dumps(

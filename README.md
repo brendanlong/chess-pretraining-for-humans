@@ -199,8 +199,10 @@ It builds its own item bank, serves it from a scratch database and a real
 uvicorn on a loopback port, and exits non-zero if any scenario lost more than
 20% of its throughput. Nothing it does touches `data/items.db`.
 
-Timings only mean something against a baseline recorded on the same machine —
-`bench-baseline.json` is committed so a regression shows up as a number rather
-than a feeling, and the run warns when the machine underneath has changed. Run
-it before and after a change that could plausibly cost anything, and re-record
-when a deliberate trade-off moves the numbers for good.
+Timings only mean something against a baseline recorded on the same idle
+machine — `bench-baseline.json` is committed so a regression shows up as a
+number rather than a feeling. The run warns when the machine underneath has
+changed, and again when something else was using it at the time, because a
+busy box and a slower app look identical in the table otherwise. Run it before
+and after a change that could plausibly cost anything, and re-record when a
+deliberate trade-off moves the numbers for good.
