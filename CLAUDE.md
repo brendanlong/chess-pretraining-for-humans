@@ -43,7 +43,7 @@ still handles.
   experimental record — never wipe it casually.
 - `trainer/bench.py` is the only check that looks at speed. Run it around a
   change that could plausibly cost anything — including one to the `items`
-  columns, since serving a trial scans them all.
+  columns or indexes, which selection and the stats count lean on.
 
 ## The invariant that bites
 

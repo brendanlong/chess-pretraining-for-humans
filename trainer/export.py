@@ -8,9 +8,10 @@ second is to be useful — a column per fact, openable in a spreadsheet — whic
 is CSV, and CSV is one table, so it is the answers alone.
 
 The set exported here is deliberately the same set `auth.delete_user` erases,
-so "download it" and "delete it" are the same promise read two ways. Only the
-password hash is withheld, which is not the user's data to have back: it exists
-so that nobody, us included, holds the password.
+so "download it" and "delete it" are the same promise read two ways. Withheld
+are only the password hash — not the user's data to have back: it exists so
+that nobody, us included, holds the password — and internal bookkeeping like
+row ids, which say nothing about them.
 
 An answer's own row means little on its own — an item id and a UCI move — so
 each one is joined to the position it was about. That is only ever an item this

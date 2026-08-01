@@ -10,7 +10,8 @@ frontend. Data flows one way:
 - **Mining** (`trainer/mine.py`) streams the head of a monthly Lichess PGN
   dump — no full download — keeps server-analyzed blitz-and-slower games,
   and emits decision points where the played move lost a calibrated slice
-  of win probability.
+  of win probability. (Evals become win probabilities through
+  `trainer/winprob.py`, the one conversion mining and labeling share.)
 - **Labeling** (`trainer/label.py`) runs local Stockfish per candidate:
   a deep multipv search provides ground truth (best move, both evals,
   8-ply lines for both moves); then one more search, restricted to those two
@@ -32,7 +33,7 @@ frontend. Data flows one way:
 - **Supply** (`trainer/supply.py`) reports what the bank can serve at each
   user rating, and — because mining aims at the deep gap while difficulty is
   made of the shallow one — where each deep-gap bin's items actually landed,
-  rather than an order in items it can no longer honestly state. Why a thin
+  rather than an order in items it cannot honestly state. Why a thin
   band is otherwise invisible is in the module.
 
 ## Server (`trainer/server.py`)
@@ -47,22 +48,14 @@ SQLite to serialize the writers. Endpoints that write take one explicitly and up
 (`writing()`), because a rating is read, computed in Python, and written
 back — two overlapping answers that both read first would lose one. How much
 of that is scaling headroom is a question of how many cores the machine has,
-which is the point: it is now a setting rather than a rewrite.
+which is the point: it is a setting rather than a rewrite.
 
-`writing()` hands out a handle with no commit on it — the same shape as an
-ORM's interactive transaction, and for the same reason: the block's outcome is
-then the only thing that can end it. Storage helpers take that handle
-(`db.Queryable`), so one that wanted to commit could not name the method.
-
-Both objects expose `execute` and nothing else, which is most of what makes
-this hold. Neither has a commit to call — outside a transaction a statement
-commits itself, and inside one the block owns the ending — so the stray
-`commit()` that was harmless in one caller and silently un-atomicked another
-can't be written at all, and neither can the `cursor()` that would have got
-back to the raw connection. The one thing left to catch at runtime is the case
-that looks like it works: running a statement on the ambient connection while a
-transaction is open, which is how a block quietly stops being one. That, and
-nesting, raise — SQLite has no nested transaction to make either safe.
+`writing()` hands out a handle with no commit on it, and both it and the
+ambient connection expose `execute` and nothing else — so the stray `commit()`
+and the escape-hatch `cursor()` can't be written at all, and the two cases
+that look like they work (a statement on the ambient connection while a
+transaction is open, and nesting) raise. The full reasoning sits on
+`AmbientConnection`, `Transaction`, and `writing()` in `trainer/server.py`.
 
 Trial endpoints: next trial, answer, stats. Selection picks an
 unseen learnable item near the rating where the user's expected score is
@@ -95,10 +88,8 @@ that would otherwise notice the replay. The threat model — who a replayed
 token serves, what a pre-commit peek is worth, and why enforcement stops
 where it does — is spelled out in `trainer/trials.py`'s docstring.
 
-The signing key comes from `TRIAL_TOKEN_SECRET` (a Fly secret). Rotating it
-costs nothing but the trials in flight; unset, the server logs that it made
-an ephemeral one, which on a restarting machine means one refused answer per
-open tab.
+The signing key comes from `TRIAL_TOKEN_SECRET` (a Fly secret); what rotating
+or leaving it unset costs is in `deploy/README.md`.
 
 ## Identity (`trainer/auth.py`)
 
@@ -286,8 +277,8 @@ One SQLite database: `items` (positions, moves, evals, lines, difficulty),
 `users` (rating, calibration state, optional credentials), `sessions`
 (hashed cookie tokens), `responses` (every answer, timed, with rating
 snapshots and whether the trial was asked for by item id rather than chosen by
-selection), `meta` (schema version, for the migrations that can't tell from
-the data whether they already ran — everything else is guarded by a read).
+selection), `meta` (facts about the record that aren't derivable from it —
+the comment on the table in `trainer/db.py` says what it holds).
 The item bank is disposable and rebuildable from the pipeline —
 literally so, since nothing the app does writes to it; responses are the
 experimental record.

@@ -30,6 +30,16 @@ updates:
       eslint:
         patterns: ["*"]
 
+  # The Litestream base image is pinned to an exact version in the Dockerfile,
+  # so without this entry nothing would ever propose updating the one component
+  # guarding the off-machine copy of `responses`.
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:

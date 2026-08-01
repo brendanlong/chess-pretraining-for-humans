@@ -206,7 +206,7 @@ def connect(path: Path = DEFAULT_DB, check_same_thread: bool = True) -> sqlite3.
     # labeler holds a transaction fails instead of just working.
     if conn.execute("SELECT 1 FROM users WHERE created_at IS NULL LIMIT 1").fetchone():
         # Rows from before accounts have no signup date; give them one so the
-        # column means the same thing everywhere (the guest sweep reads it).
+        # column means the same thing everywhere.
         conn.execute("UPDATE users SET created_at = datetime('now') WHERE created_at IS NULL")
     # Usernames are compared case-insensitively, so the constraint has to be
     # too — otherwise 'Bob' and 'bob' both fit and lookups pick one at random.

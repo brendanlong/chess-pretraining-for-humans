@@ -105,8 +105,8 @@ def by_gap(conn, step: float) -> list[dict]:
     """What each *deep*-gap bin holds, and where on the scale its items land.
 
     Mining and labeling filter on the deep gap (`--min-gap-wp`/`--max-gap-wp` on
-    both) and difficulty is a function of the shallow one, so a bin no longer
-    maps to a band. The two correlate but they are readings of different
+    both) and difficulty is a function of the shallow one, so a bin does not
+    map to a band. The two correlate but they are readings of different
     searches, and a bin's items scatter across the scale — which is why this
     reports where they scattered to instead of an order in items. To deepen a
     thin band, find the bin whose quartiles straddle it and mine there; the

@@ -121,7 +121,7 @@ automatically.
   produces no error and no signal, only users quietly held at the wrong
   accuracy. Every rating a user can occupy has to have enough items near
   it to spend a session inside, which is a thing to measure rather than
-  assume. Where it can't be met it is named, and it is now the *easy* end
+  assume. Where it can't be met it is named, and it is the *easy* end
   that can't be: a position a shallow look settles at a glance is one a
   human rarely got wrong, so few of them were ever mined, and the bands a
   beginner is aimed at are the thin ones. The remedy has to stay a real one
@@ -182,8 +182,9 @@ automatically.
   that *is* the record cannot, so the honest answer to "what do you have on
   me" is a copy rather than a paragraph about one. Tying it to the deletion
   promise is the point — if the two ever name different sets, one of them is
-  lying. The one exception is the password hash, which exists so that nobody
-  holds the password and so is not the user's to have back. Being signed in
+  lying. The exceptions are the password hash — which exists so that nobody
+  holds the password, and so is not the user's to have back — and internal
+  bookkeeping, like row ids, that says nothing about the user. Being signed in
   is the whole authorization, because it is already the whole authorization
   for reading the same record inside the app: asking for a password would put
   a wall in front of a guest, who has none, and whose copy is the only thing
@@ -213,6 +214,9 @@ automatically.
 - Automatic LLM narration of the engine lines.
 - Password reset (the optional email is stored for it but nothing sends
   mail yet).
+- Lichess account linking; what it would add to the published record — a
+  rating band, never a number — is already committed to above and in the
+  privacy policy.
 - Transfer measurement: in-app accuracy shares the item generator's
   biases; the real test is external (rated games, or items from a
   deliberately different distribution).

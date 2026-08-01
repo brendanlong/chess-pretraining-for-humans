@@ -9,8 +9,7 @@
 // the version is package.json.
 //
 // Runs from `postinstall`, so a fresh clone has a working web/ after `npm ci`
-// and no separate step to forget. web/vendor/ is gitignored for the same
-// reason it used to be committed by hand and shouldn't be: it is output.
+// and no separate step to forget. web/vendor/ is gitignored: it is output.
 
 import { copyFile, mkdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
