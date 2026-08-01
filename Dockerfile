@@ -5,7 +5,7 @@ FROM litestream/litestream:0.5.15 AS litestream
 
 # Bundles and minifies web/ into web-dist/. Node lives only in this stage: the
 # runtime serves the output and has no idea it was built.
-FROM node:22-slim AS web
+FROM node:25-slim AS web
 WORKDIR /app
 COPY package.json package-lock.json ./
 COPY scripts/ scripts/
