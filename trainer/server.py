@@ -649,7 +649,11 @@ def answer(a: Answer, request: Request):
         # what the answer is worth at full depth, `shallow_gap` is what there
         # was to see. Safe here and nowhere earlier — both are hints about where
         # to look, so they belong to the reveal and not to the trial.
-        "solution_depth": item["solution_depth"],
+        #
+        # `solution_depth` is deliberately not here. It is measured and stored,
+        # and it is what decides whether an item is served at all, but nothing
+        # reads it on the page — so shipping it would be answer-adjacent data
+        # sent for no reason.
         "shallow_gap": (
             None if item["shallow_gap"] is None else round(item["shallow_gap"] * 100, 1)
         ),

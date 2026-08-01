@@ -273,3 +273,15 @@ def test_merge_carries_a_verdict_that_arrives_without_a_difficulty(tmp_path):
     held = conn.execute("SELECT learnable, shallow_gap FROM items WHERE id = 1").fetchone()
     assert (held["learnable"], held["shallow_gap"]) == (0, None)
     assert conn.execute("SELECT COUNT(*) FROM items").fetchone()[0] == 3, "the insert survived"
+
+
+def test_merge_reports_positions_the_incoming_bank_never_had(tmp_path):
+    """A live position the push doesn't contain keeps an older curve's
+    difficulty with nothing to re-derive it from — the bank is then on two
+    scales at once, and nothing else would say so."""
+    live = unmeasured(live_db(tmp_path))
+    incoming = bank(tmp_path / "fresh.db", ["8"])  # holds one of the live pair
+
+    added, skipped, measured, _, stranded = merge(live, incoming)
+    assert (added, skipped, measured) == (0, 1, 1)
+    assert stranded == 1, "the live position this push never saw"

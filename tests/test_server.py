@@ -108,7 +108,7 @@ def test_no_repeats_until_exhausted_then_flagged(client, db):
 NEVER_BEFORE_ANSWERING = ("shallow_gap", "solution_depth", "gap_ladder", "gap_wp", "item_rating")
 # The subset the reveal does say. Asserted too, so that deleting a field from
 # the reveal can't quietly turn the guard above into a test of nothing.
-SAID_BY_THE_REVEAL = ("shallow_gap", "solution_depth", "gap_wp", "item_rating")
+SAID_BY_THE_REVEAL = ("shallow_gap", "gap_wp", "item_rating")
 
 
 def test_what_the_reveal_says_about_difficulty_never_reaches_the_trial(client):
@@ -121,8 +121,10 @@ def test_what_the_reveal_says_about_difficulty_never_reaches_the_trial(client):
     revealed = answer(client, next_trial(client))
     for field in SAID_BY_THE_REVEAL:
         assert field in revealed, f"{field} is not in the reveal, so this guards nothing"
-    assert revealed["solution_depth"] == ITEM["solution_depth"]
     assert revealed["shallow_gap"] == round(ITEM["shallow_gap"] * 100, 1)
+    # Measured and stored, and it decides whether the item is served at all —
+    # but nothing on the page reads it, so it is not sent.
+    assert "solution_depth" not in revealed
 
 
 def test_first_exposure_accuracy_excludes_repeats(client):

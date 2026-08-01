@@ -105,13 +105,14 @@ def export(db: Path, out: Path) -> int:
     return n
 
 
-def merge(db: Path, incoming: Path, dry_run: bool = False) -> tuple[int, int, int, bool]:
+def merge(db: Path, incoming: Path, dry_run: bool = False) -> tuple[int, int, int, bool, int]:
     """Insert every position the live bank doesn't have yet.
 
-    Returns (added, skipped, measured, regraded) — `measured` being positions
-    already held whose ladder the incoming bank knows and the live one doesn't,
-    and `regraded` whether this push was the one that moved the users onto the
-    current scale.
+    Returns (added, skipped, measured, regraded, stranded) — `measured` being
+    positions already held whose ladder the incoming bank knows and the live one
+    doesn't, `regraded` whether this push was the one that moved the users onto
+    the current scale, and `stranded` how many live positions are left with no
+    measurement at all afterwards.
     """
     if not incoming.exists():
         sys.exit(f"{incoming} does not exist")
@@ -161,6 +162,14 @@ def merge(db: Path, incoming: Path, dry_run: bool = False) -> tuple[int, int, in
         # where the users move — `db.connect` held them back until the items had
         # arrived, and the server that is serving them ran its migrations at
         # boot and will not run them again.
+        # Positions the live bank holds and the incoming one doesn't keep the
+        # rating an older curve gave them, with nothing to re-derive from —
+        # a bank quietly on two scales at once. It can only happen if the live
+        # side has items this push has never seen, so counting it is the check
+        # that the local bank is a superset, which is what the runbook assumes.
+        stranded = conn.execute(
+            "SELECT COUNT(*) FROM main.items WHERE shallow_gap IS NULL"
+        ).fetchone()[0]
         regraded = regrade_users(conn)
         if dry_run:
             conn.rollback()
@@ -169,7 +178,7 @@ def merge(db: Path, incoming: Path, dry_run: bool = False) -> tuple[int, int, in
     finally:
         detach(conn, "inc")
         conn.close()
-    return added, offered - added, measured, regraded
+    return added, offered - added, measured, regraded, stranded
 
 
 def main() -> None:
@@ -186,12 +195,17 @@ def main() -> None:
     if args.cmd == "export":
         print(f"exported {export(args.db, args.out)} items to {args.out}")
     else:
-        added, skipped, measured, regraded = merge(args.db, args.incoming, args.dry_run)
+        added, skipped, measured, regraded, stranded = merge(args.db, args.incoming, args.dry_run)
         print(
             f"{'would add' if args.dry_run else 'added'} {added} items"
             f", skipped {skipped} already in the bank"
             f", filled in the lookahead ladder on {measured} of them"
         )
+        if stranded:
+            print(
+                f"WARNING: {stranded} positions in {args.db} are still unmeasured — this bank"
+                " does not contain them, so they keep an older curve's difficulty"
+            )
         if regraded:
             print(
                 "every user rating moved onto the current difficulty scale"

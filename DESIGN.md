@@ -20,7 +20,8 @@ frontend. Data flows one way:
   through the curve on `rating.difficulty_rating` — whose slope is measured
   from the strength of the humans whose errors the items are, on the half of
   the bank that was mined without aiming at particular gaps, and whose
-  reasoning sits beside the constants. Nothing is dropped for being hard;
+  reasoning sits beside the constants — and what was tried instead, in
+  CALIBRATION.md. Nothing is dropped for being hard;
   only for the two searches disagreeing at full depth, which has nothing to
   teach. Gap-range flags steer mining, but only at the *deep* gap, so an
   order lands across a spread of difficulties rather than in a band.

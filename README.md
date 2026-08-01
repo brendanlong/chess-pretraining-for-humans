@@ -7,6 +7,8 @@ you near 80% accuracy.
 
 - **[SPEC.md](SPEC.md)** — what this is trying to do, and the invariants.
 - **[DESIGN.md](DESIGN.md)** — how the app is put together.
+- **[CALIBRATION.md](CALIBRATION.md)** — where the difficulty numbers came
+  from, and what to re-run before changing them.
 
 ## Running it
 
