@@ -212,6 +212,16 @@ function describeMove(mv, tag) {
 
 // Just the facts (position, moves, evals, lines) with no question attached,
 // so the user can ask their own — "I thought Bd3 was better because…".
+// How far ahead the engine had to search before it preferred the right move —
+// the half of an item's difficulty the gap doesn't show, and the reason a pair
+// that looks miles apart can still be rated hard. Absent on items labeled
+// before it was measured.
+function lookaheadPhrase(result) {
+  const plies = result.solution_depth;
+  if (!plies) return "";
+  return plies === 1 ? ", seen at a glance" : `, seen only ${plies} plies deep`;
+}
+
 function buildCopyText() {
   const r = lastResult;
   return [
@@ -223,7 +233,7 @@ function buildCopyText() {
     describeMove(r.best, ` (the engine's best move)`),
     describeMove(r.distractor, ``),
     ``,
-    `The gap between the moves is ${r.gap_wp}% win probability.`,
+    `The gap between the moves is ${r.gap_wp}% win probability${lookaheadPhrase(r)}.`,
     ``,
   ].join("\n");
 }
@@ -393,7 +403,9 @@ async function choose(i) {
   // — the one string here that didn't originate in this codebase — and
   // interpolating it into innerHTML would make a hostile PGN a stored XSS.
   const detail = el("detail");
-  detail.replaceChildren(`Gap: ${result.gap_wp}% win probability. The alternative was `);
+  detail.replaceChildren(
+    `Gap: ${result.gap_wp}% win probability${lookaheadPhrase(result)}. The alternative was `,
+  );
   if (result.distractor_source === "game") {
     detail.append("the move actually played in ");
     detail.append(gameLink(result.game_url));

@@ -87,10 +87,11 @@ def test_migration_drops_the_columns_that_carried_answers_into_difficulty(tmp_pa
 
 
 def test_migration_re_derives_difficulty_that_drifted_off_the_formula(tmp_path):
-    """`items.rating` is a pure function of `gap_wp` — a claim about the rows,
-    not just about the code that writes new ones. Two kinds of row disagreed: a
-    rating an older server's Elo had moved, and one computed from the
-    full-precision gap before the gap was rounded for storage."""
+    """`items.rating` is a pure function of `gap_wp` and `solution_depth` — a
+    claim about the rows, not just about the code that writes new ones. Three
+    kinds of row disagreed: a rating an older server's Elo had moved, one
+    computed from the full-precision gap before the gap was rounded for storage,
+    and one from before lookahead depth was an axis at all."""
     path = old_db(tmp_path)
     conn = connect(path)
     add_item(conn, FEN_TMPL.format(FEN_RANKS[0]))
@@ -99,8 +100,10 @@ def test_migration_re_derives_difficulty_that_drifted_off_the_formula(tmp_path):
     conn.close()
 
     conn = connect(path)
-    item = conn.execute("SELECT gap_wp, rating FROM items").fetchone()
-    assert item["rating"] == difficulty_rating(item["gap_wp"]) != 1234.5
+    item = conn.execute("SELECT gap_wp, solution_depth, rating FROM items").fetchone()
+    assert item["rating"] == difficulty_rating(item["gap_wp"], item["solution_depth"]) != 1234.5
+    # And the depth is doing work: it is not the gap-only rating either.
+    assert item["rating"] != difficulty_rating(item["gap_wp"])
 
 
 def test_regrade_runs_exactly_once(tmp_path):

@@ -18,12 +18,16 @@ ITEM = {
     "wp_best": 0.55,
     "wp_distractor": 0.45,
     "gap_wp": 0.10,
+    # Not 1, so that a fixture item exercises both halves of the difficulty
+    # surface rather than the half that adds nothing.
+    "solution_depth": 2,
     "learnable": 1,
     "depth_deep": 18,
     "depth_shallow": 8,
-    # Derived, not chosen: `db.connect` re-derives `rating` from `gap_wp`, so a
-    # fixture that picked its own would be rewritten out from under the test.
-    "rating": difficulty_rating(0.10),
+    # Derived, not chosen: `db.connect` re-derives `rating` from the two columns
+    # it is a function of, so a fixture that picked its own would be rewritten
+    # out from under the test.
+    "rating": difficulty_rating(0.10, 2),
     "ply": 20,
     "game_url": "",
     "mover_elo": 1500,
@@ -40,12 +44,12 @@ def add_item(conn, fen: str, **overrides) -> None:
     conn.execute(
         """INSERT INTO items (fen, best_uci, distractor_uci, distractor_source,
              cp_best, mate_best, cp_distractor, mate_distractor, wp_best,
-             wp_distractor, gap_wp, learnable, depth_deep, depth_shallow,
-             rating, ply, game_url, mover_elo, time_control)
+             wp_distractor, gap_wp, solution_depth, learnable, depth_deep,
+             depth_shallow, rating, ply, game_url, mover_elo, time_control)
            VALUES (:fen, :best_uci, :distractor_uci, :distractor_source,
              :cp_best, :mate_best, :cp_distractor, :mate_distractor, :wp_best,
-             :wp_distractor, :gap_wp, :learnable, :depth_deep, :depth_shallow,
-             :rating, :ply, :game_url, :mover_elo, :time_control)""",
+             :wp_distractor, :gap_wp, :solution_depth, :learnable, :depth_deep,
+             :depth_shallow, :rating, :ply, :game_url, :mover_elo, :time_control)""",
         {**ITEM, "fen": fen, **overrides},
     )
 

@@ -6,21 +6,25 @@ almost nothing near it is quietly served items from outside the band, and
 nothing in the app says so. This is the thing that says so.
 
 Each row is a user rating: the item rating that targets 80% expected score, the
-win-probability gap that rating means, how many learnable items sit within one
-jitter of it, and how far from target the 30 items selection would draw from
-actually sit. Both last columns are read on an untouched bank, so both flatter
-it — `pick_item` skips what a user has already answered, so a thin band erodes
-into a wide one as they work through it, which is why the count matters where
-the drift still looks small.
+win-probability gap that rating means for a move whose refutation is visible at
+once, how many learnable items sit within one jitter of it, how much of that is
+the other kind of item — one whose answer takes more than a ply to see — and how
+far from target the 30 items selection would draw from actually sit. The count
+and the drift are read on an
+untouched bank, so both flatter it — `pick_item` skips what a user has already
+answered, so a thin band erodes into a wide one as they work through it, which
+is why the count matters where the drift still looks small.
 
     uv run python -m trainer.supply [--db data/items.db] [--floor 1000]
 
 `--gaps` prints supply against gap instead, next to what the floor would need
 there. That is the form a plan to fill a hole has to be written in, because gap
-is what mining and labeling can steer with (`--min-gap-wp` / `--max-gap-wp` on
-both), and it is bounded by what the labeler will admit rather than by what the
-bank happens to hold: a band nothing has ever been mined for has to appear as a
-row, or the report hides exactly the hole it exists to show.
+is the *only* thing mining and labeling can steer with (`--min-gap-wp` /
+`--max-gap-wp` on both) — lookahead depth is the other half of difficulty and
+nothing can ask the tree for more of it — and it is bounded by what the labeler
+will admit rather than by what the bank happens to hold: a band nothing has ever
+been mined for has to appear as a row, or the report hides exactly the hole it
+exists to show.
 """
 
 import argparse
@@ -30,6 +34,7 @@ from . import label
 from .db import DEFAULT_DB, connect
 from .rating import (
     _TARGET_OFFSET,
+    REFERENCE_DEPTH,
     SELECTION_JITTER,
     USER_MAX,
     USER_MIN,
@@ -65,6 +70,24 @@ def pool_drift(conn, target: float) -> float:
     return sum(row["d"] for row in rows) / len(rows) if rows else float("nan")
 
 
+def band_lookahead(conn, target: float) -> float:
+    """Share of the band whose answer isn't visible on the first ply.
+
+    The band's other half. Two items sit at one difficulty by different routes —
+    a wide gap read four plies deep, a narrow one seen at once — so a band deep
+    enough in items can still be all of one kind, and this says which. A share
+    rather than a median because three items in four are one-ply items and a
+    median would read 1 down almost the whole table; what changes across it, and
+    what this column exists to show, is how much of the band is the other thing.
+    """
+    rows = conn.execute(
+        "SELECT COUNT(*), SUM(solution_depth > 1) FROM items"
+        " WHERE learnable = 1 AND solution_depth IS NOT NULL AND ABS(rating - ?) <= ?",
+        (target, SELECTION_JITTER),
+    ).fetchone()
+    return rows[1] / rows[0] if rows[0] else float("nan")
+
+
 def by_user_rating(conn) -> list[dict]:
     """One row per user rating: what the bank holds where that user is aimed."""
     rows = []
@@ -76,6 +99,7 @@ def by_user_rating(conn) -> list[dict]:
                 "target": target,
                 "gap": target_gap(user),
                 "in_band": band(conn, target),
+                "lookahead": band_lookahead(conn, target),
                 "drift": pool_drift(conn, target),
             }
         )
@@ -88,7 +112,13 @@ def band_width_in_gap(gap: float) -> float:
     A band is ±`SELECTION_JITTER` rating points wide however hard the items in
     it are, but the gap-to-rating curve flattens past its knee, so one band at
     the easy end covers several times the gap a band in the middle does and
-    needs proportionally fewer items to reach the same depth.
+    needs proportionally fewer items to fill.
+
+    Read at the reference one-ply depth, which is where the width is narrowest
+    and so where the order is largest. Lookahead shifts a gap onto a harder
+    band without changing what a band is worth in gap — the depth term is a
+    constant offset, so the curve's slope, which is all this reads, is the same
+    at every depth.
 
     Past the knee it flattens without limit — a band centred below
     `SELECTION_JITTER` reaches a gap of 3, which no position has and the
@@ -97,7 +127,7 @@ def band_width_in_gap(gap: float) -> float:
     part of a band cannot be filled, so the part that can needs proportionally
     more items.
     """
-    difficulty = difficulty_rating(gap)
+    difficulty = difficulty_rating(gap, REFERENCE_DEPTH)
     lo = max(_gap_for_difficulty(difficulty + SELECTION_JITTER), label.MIN_GAP_WP)
     hi = min(_gap_for_difficulty(max(difficulty - SELECTION_JITTER, 1e-9)), label.MAX_GAP_WP)
     return max(hi - lo, 1e-9)
@@ -114,6 +144,11 @@ def by_gap(conn, step: float, floor: int) -> list[dict]:
 
     Bins run over what the labeler will admit, not over what the bank holds:
     a gap range nobody has mined yet is the emptiest band there is.
+
+    `items` counts a bin's whole stock, which its lookahead depths then scatter
+    across about four bands. So the column flatters a bin in the same measure
+    that the total over-orders, and for the same reason: neither can be fixed
+    without steering something the pipeline has no handle on.
     """
     rows = []
     lo = 0.0
@@ -176,13 +211,21 @@ def main() -> None:
         rows = by_user_rating(conn)
         print(
             table(
-                ["user rating", "target item", "target gap", "in band", "pool drift"],
+                [
+                    "user rating",
+                    "target item",
+                    "gap at 1 ply",
+                    "in band",
+                    "past 1 ply",
+                    "pool drift",
+                ],
                 [
                     [
                         f"{r['user']}",
                         f"{r['target']:.0f}",
                         f"{r['gap']:.3f}",
                         f"{r['in_band']}{'*' if r['in_band'] < args.floor else ''}",
+                        f"{r['lookahead']:.0%}",
                         f"{r['drift']:.0f}",
                     ]
                     for r in rows

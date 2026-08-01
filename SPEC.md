@@ -50,26 +50,44 @@ automatically.
 - **The distractor is the move actually played in the game** whenever it
   wasn't best (real human errors), with the engine's second choice as
   fallback.
-- **Difficulty lives in win-probability space**, never raw centipawns, and
-  is a property of the item alone — fixed by the engine's gap when the item
-  is labeled, and never revised by anyone's answers. A gap alone can't
-  predict how hard a comparison *feels*, so this is knowingly approximate;
-  the correction belongs in offline analysis, which can regularise it and
-  isn't the thing choosing which items get served. Online it would make
-  every user's difficulty a function of every other user's answers, which
-  costs more — in coupling, and in a feedback loop that biases the very
-  estimate it produces — than the targeting accuracy is worth.
+- **Difficulty is how far apart the two moves are and how far ahead you
+  have to read to see it.** The first lives in win-probability space, never
+  raw centipawns; the second is the shallowest engine search that gets the
+  pair the right way round and is not contradicted deeper. Both are
+  properties of the item alone — fixed when it is labeled, and never revised
+  by anyone's answers. Two axes because one of them was doing a job it
+  can't: a hanging queen and a quiet move that loses to a four-move idea
+  are not the same task, and while the gap can tell the two apart it can't
+  tell either from the middle. This is still knowingly approximate; the
+  correction belongs in offline analysis, which can regularise it and isn't
+  the thing choosing which items get served. Online it would make every
+  user's difficulty a function of every other user's answers, which costs
+  more — in coupling, and in a feedback loop that biases the very estimate
+  it produces — than the targeting accuracy is worth.
+- **How far ahead a user has to look is part of what adapts.** It is a
+  difficulty, so it belongs on the rating rather than in a constant that
+  is the same for everybody, and a beginner should be spending their
+  attention on what a position *looks* like before spending it on reading
+  four moves into one. There is still a ceiling — past it the answer isn't
+  reachable from the surface at all — but the ceiling is now only the top
+  of the axis, not the amount asked of everyone below it.
 - **Any two items a bank can hold must be orderable by difficulty.** The
-  gap-to-rating curve may be approximate, but it may not be flat: a range
-  of gaps that all map to one rating is a range selection cannot aim
-  inside, and it lands on whichever users sit there. What the curve is
-  worth is measured, from the strength of the humans whose real errors the
-  items record — and only over the gaps where that measurement has any
-  power. Outside those, it must still separate items, on the grounds that a
-  wrong ordering is recoverable and no ordering is not.
-- **Items must be learnable**: if shallow and deep search disagree about
-  which move is better, the answer isn't reachable from the surface and
-  the item is never served.
+  curve may be approximate, but it may not be flat: a range of items that
+  all map to one rating is a range selection cannot aim inside, and it
+  lands on whichever users sit there. What the curve is worth is measured,
+  from the strength of the humans whose real errors the items record — and
+  only where that measurement has any power. That is less far on the
+  lookahead axis than on the gap axis, which is why the gap axis holds most
+  of the scale: what the strength data settles about lookahead is that it
+  makes items harder and that the first ply matters most, not by how much.
+  Where nothing is settled the curve must still separate items, on the
+  grounds that a wrong ordering is recoverable and no ordering is not.
+- **Items must be learnable**: if no search up to the ceiling gets the two
+  moves the right way round, the answer isn't reachable from the surface
+  and the item is never served. That verdict has to be taken on an engine
+  that has not just been told the answer — a shallow search reading a deep
+  search's leftovers is not a shallow search — and it has to be
+  reproducible, or an item's difficulty is a coin flip made once.
 - **Items never repeat while fresh ones remain**, so every answer is a
   first exposure recorded before feedback — simultaneously a clean
   measurement and a training trial. Repeats (bank exhausted) are flagged
@@ -81,9 +99,14 @@ automatically.
   produces no error and no signal, only users quietly held at the wrong
   accuracy. Every rating a user can occupy has to have enough items near
   it to spend a session inside, which is a thing to measure rather than
-  assume. Where it can't be met it is named: the top of the scale asks for
-  gaps below what the labeler will admit, and a gap that small is engine
-  noise rather than a difference anyone could see.
+  assume. Where it can't be met it is named. The lookahead axis is what
+  reaches the top of the scale, because the gap axis gets there only by
+  asking for gaps so small they are engine noise rather than a difference
+  anyone could see — but it reaches it thinly, and it is the axis nothing
+  in the pipeline can steer: mining and labeling filter on gap, and no
+  filter can ask the tree for more positions that take four moves to read.
+  So the top stays the part to watch, and the remedy there is a bigger
+  bank rather than a better-aimed one.
 - **New users are assumed to be beginners** — no strength question; the
   rating system must instead climb fast for experienced players.
 - **Nothing gates the first trial.** Arriving is a read: no name to type, and

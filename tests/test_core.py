@@ -3,7 +3,7 @@ from itertools import pairwise
 
 import pytest
 
-from trainer.label import MAX_GAP_WP, MIN_GAP_WP
+from trainer.label import DEPTH_SHALLOW, MAX_GAP_WP, MIN_GAP_WP
 from trainer.rating import (
     CALIB_END_STEP,
     CALIB_START_STEP,
@@ -12,6 +12,8 @@ from trainer.rating import (
     GAP_SLOPE,
     RATING_MAX,
     RATING_MIN,
+    REFERENCE_DEPTH,
+    SELECTION_JITTER,
     TARGET_ACCURACY,
     USER_MAX,
     USER_MIN,
@@ -85,6 +87,45 @@ def test_difficulty_is_smooth_where_the_evidence_runs_out():
     above = (difficulty_rating(k + 1e-4) - difficulty_rating(k)) / 1e-4
     assert below == pytest.approx(above, rel=1e-3)
     assert below == pytest.approx(-GAP_SLOPE, rel=1e-3)  # the measured slope
+
+
+def test_lookahead_is_a_second_axis_and_not_a_tiebreak():
+    """Depth has to move an item somewhere selection can tell apart, or it is
+    decoration: `pick_item` jitters the target by SELECTION_JITTER, so a step
+    smaller than that is inside the noise it is competing with."""
+    at = [difficulty_rating(0.2, d) for d in range(1, DEPTH_SHALLOW + 1)]
+    assert all(a < b for a, b in pairwise(at))
+    assert at[1] - at[0] > SELECTION_JITTER
+    # Saturating, not linear: the step the measurement is clearest about is the
+    # first one, and each later ply is worth less than the one before it.
+    assert all(b - a < prev - before for (before, prev), (a, b) in pairwise(pairwise(at)))
+    # And the minority axis. The gap curve is the one with a measurement behind
+    # it and the only one the pipeline can steer, so it keeps most of the scale.
+    gap_span = difficulty_rating(MIN_GAP_WP, 1) - difficulty_rating(MAX_GAP_WP, 1)
+    assert 0 < at[-1] - at[0] < gap_span / 2
+
+
+def test_an_unmeasured_lookahead_leaves_an_item_where_it_was():
+    """Rows labeled before depth was measured keep their difficulty until
+    `trainer.backfill_depth` reaches them — being served at the wrong difficulty
+    is a smaller wrong than being served as though they were the hardest kind."""
+    for gap in (MIN_GAP_WP, 0.2, MAX_GAP_WP):
+        assert difficulty_rating(gap, None) == difficulty_rating(gap, REFERENCE_DEPTH)
+
+
+def test_the_hardest_item_the_labeler_admits_is_not_clamped():
+    """RATING_MAX is a guard, not a design feature. If the bank's hard end sat
+    on it, every item there would share one difficulty and selection could not
+    aim inside them — the failure the curve exists to prevent."""
+    hardest = difficulty_rating(MIN_GAP_WP, DEPTH_SHALLOW)
+    assert hardest < RATING_MAX
+    assert hardest > difficulty_rating(MIN_GAP_WP, DEPTH_SHALLOW - 1)
+
+
+def test_a_wider_gap_read_deeper_can_be_the_harder_item():
+    """What the second axis buys: the top of the scale is reachable at gaps the
+    labeler will actually admit, instead of only at ones near its floor."""
+    assert difficulty_rating(0.10, 8) > difficulty_rating(MIN_GAP_WP, 1)
 
 
 def test_difficulty_matches_the_measured_slope_where_it_was_measured():

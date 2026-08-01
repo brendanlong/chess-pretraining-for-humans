@@ -1,13 +1,14 @@
 """Elo machinery for adaptive item selection.
 
-An item's difficulty is a fixed property of the item: its win-probability gap,
-mapped onto the rating scale by `difficulty_rating` below. Only the user has a
-rating that moves, so an answer is scored like a game against a fixed opponent,
-and no two users are coupled through the bank.
+An item's difficulty is a fixed property of the item: how far apart the two
+moves are in win probability, and how far ahead you have to read to see that
+they are, mapped onto the rating scale by `difficulty_rating` below. Only the
+user has a rating that moves, so an answer is scored like a game against a
+fixed opponent, and no two users are coupled through the bank.
 
-That makes the user's rating a running estimate of the gap they can reliably
-see, and it makes each response independent of every response before it —
-which is what the difficulty model in issue #27 needs, since it estimates
+That makes the user's rating a running estimate of the comparison they can
+reliably see, and it makes each response independent of every response before
+it — which is what the difficulty model in issue #27 needs, since it estimates
 per-item difficulty offline where it can be regularised and where item
 selection isn't feeding back into the thing being measured.
 
@@ -23,7 +24,10 @@ TARGET_ACCURACY = 0.80
 K_USER = 32
 SELECTION_JITTER = 75  # rating points of noise around the target difficulty
 RATING_MIN = 0
-RATING_MAX = 2600
+# Above the hardest item the labeler can admit: the smallest gap it takes, read
+# at the deepest lookahead it allows, lands at 3120. A guard, not a design
+# feature — see `difficulty_rating`.
+RATING_MAX = 3200
 
 # How much strength one point of win-probability gap is worth. Measured, not
 # chosen: every 'game'-source item records the gap of a real error and the Elo
@@ -66,8 +70,71 @@ _DECAY = GAP_SLOPE / KNEE_DIFFICULTY
 _TARGET_OFFSET = 400 * math.log10(1 / TARGET_ACCURACY - 1)
 
 
-def _gap_for_difficulty(difficulty: float) -> float:
-    """Inverse of `difficulty_rating`, for reading a scale position as a gap."""
+# The second axis: what a doubling of the lookahead an item demands is worth.
+# A one-ply read adds nothing (log2(1) == 0), so the gap curve above keeps
+# meaning exactly what it was measured to mean, and depth only ever adds.
+#
+# Doublings rather than plies because that is the shape the measurement has.
+# Within a narrow gap bin — the bin is what holds supply fixed, and without it
+# nothing is identified at all, since deep positions simply don't come with big
+# gaps — the upper tail of the strength of the players who made the error rises
+# with `solution_depth`. The rise is positive in all ten gap deciles, almost all
+# of it is the step from one ply to two, and past two the profile is flat to
+# within its own noise. log2 fits that better than a line or a root (rms
+# residual 540 points against 834 and 683), and it front-loads the axis onto the
+# step the data is clearest about, which is also the one the eye agrees with: a
+# refutation you see at once against one you don't.
+#
+# The magnitude is chosen, not measured, and this is the honest reason. Read
+# against `GAP_SLOPE`, the same tail puts a doubling at 860 points, 95% CI
+# [708, 3038] over 300 bootstrap resamples. But `GAP_SLOPE` is one of two
+# readings of a weak relationship — binning by strength and regressing on gap
+# gives 6096, binning by gap and regressing on strength gives 297, and there is
+# no fact of the matter between them without a model of erring nobody has. A
+# second axis read off the same tail inherits that whole twentyfold ambiguity,
+# so what the data settles is the sign and the shape, not the size.
+#
+# Everything that does bear on the size points the same way, down:
+#
+#   - Gap is steerable and depth is not. `mine` and `label` both filter on gap,
+#     and nothing anywhere can ask the tree for more deep positions — you get
+#     the mix it has (72% of the bank is solved at one ply). An axis that took
+#     the larger share of the scale would put bands out of reach of the only
+#     tool that can fill them.
+#   - The gap axis is the one with a real measurement behind it, so it should
+#     keep the majority of the scale.
+#   - Bigger values thin the bank rather than extend it. Simulated over the
+#     24,989-item bank: at 200 every band holding 1,000 items without this axis
+#     still does, and the three at the top that were starved (227, 0 and 0 items
+#     within a jitter of where users at 2700-2900 are aimed — the failure SPEC
+#     names) come up to 1102, 686 and 736. At 600 the top of the scale stretches
+#     2,000 points further than the bank can fill and holds ~300 a band.
+DEPTH_SLOPE = 200.0
+# A one-ply read: the shallowest there is, and so where the depth axis is zero.
+REFERENCE_DEPTH = 1
+
+
+def depth_difficulty(solution_depth: int | None) -> float:
+    """What an item's required lookahead adds to its difficulty.
+
+    None — a row from before this was measured — adds nothing, so such a row
+    stays exactly as hard as it was until `trainer.backfill_depth` reaches it.
+    """
+    if solution_depth is None:
+        return 0.0
+    return DEPTH_SLOPE * math.log2(max(solution_depth, REFERENCE_DEPTH) / REFERENCE_DEPTH)
+
+
+def _gap_for_difficulty(difficulty: float, solution_depth: int | None = REFERENCE_DEPTH) -> float:
+    """Inverse of `difficulty_rating`, for reading a scale position as a gap.
+
+    Only invertible once the lookahead is named, because two axes reach the
+    same difficulty from different places — that is what having two of them
+    buys. It defaults to a one-ply read, which is the reading that answers
+    "what would the pipeline have to mine": mining and labeling filter on gap
+    and can't ask for depth at all.
+    """
+    difficulty -= depth_difficulty(solution_depth)
     if difficulty >= KNEE_DIFFICULTY:
         # Clamped at the top as well as the bottom: a difficulty above the
         # scale's own intercept has no gap behind it, and reporting a negative
@@ -76,8 +143,19 @@ def _gap_for_difficulty(difficulty: float) -> float:
     return CALIBRATED_GAP_HI - math.log(max(difficulty, 1e-9) / KNEE_DIFFICULTY) / _DECAY
 
 
-def difficulty_rating(gap_wp: float) -> float:
+def gap_difficulty(gap_wp: float) -> float:
+    """The part of an item's difficulty that its win-probability gap accounts for."""
+    if gap_wp <= CALIBRATED_GAP_HI:
+        return GAP_INTERCEPT - GAP_SLOPE * gap_wp
+    return KNEE_DIFFICULTY * math.exp(-_DECAY * (gap_wp - CALIBRATED_GAP_HI))
+
+
+def difficulty_rating(gap_wp: float, solution_depth: int | None = None) -> float:
     """An item's difficulty, in the same units as a user's rating.
+
+    Two axes: how much the two moves differ by, and how far ahead you have to
+    read to see that they do. `solution_depth` is None on rows labeled before
+    it was measured, which leaves difficulty where the gap alone puts it.
 
     Lives here rather than in the labeler that first applies it because it is
     the definition of `items.rating`, which `db.connect` re-derives and the
@@ -85,13 +163,10 @@ def difficulty_rating(gap_wp: float) -> float:
     `gap_wp` that gets *stored*, not the full-precision one it was rounded
     from, or the stored rating stops being a function of the stored gap.
     """
-    if gap_wp <= CALIBRATED_GAP_HI:
-        d = GAP_INTERCEPT - GAP_SLOPE * gap_wp
-    else:
-        d = KNEE_DIFFICULTY * math.exp(-_DECAY * (gap_wp - CALIBRATED_GAP_HI))
-    # Bounds are a guard, not a design feature: the curve is already inside
-    # them for every gap the labeler admits, and clamping here would flatten
-    # the easy end of the bank.
+    d = gap_difficulty(gap_wp) + depth_difficulty(solution_depth)
+    # Bounds are a guard, not a design feature: the surface is already inside
+    # them for every gap and depth the labeler admits, and clamping here would
+    # flatten an end of the bank.
     return max(RATING_MIN, min(RATING_MAX, d))
 
 
@@ -107,9 +182,13 @@ USER_MIN = 300
 USER_MAX = 2900
 
 
-def target_gap(user_rating: float) -> float:
-    """The win-probability gap a user of this rating is aimed at."""
-    return _gap_for_difficulty(user_rating + _TARGET_OFFSET)
+def target_gap(user_rating: float, solution_depth: int | None = REFERENCE_DEPTH) -> float:
+    """The win-probability gap a user of this rating is aimed at, at that depth.
+
+    Wider at a deeper read: a user is aimed at a difficulty, and lookahead is
+    one of the two things that reaches it.
+    """
+    return _gap_for_difficulty(user_rating + _TARGET_OFFSET, solution_depth)
 
 
 def regraded_user_rating(old_rating: float) -> float:
@@ -122,10 +201,15 @@ def regraded_user_rating(old_rating: float) -> float:
 
     The old constants live here because rows written under them still exist;
     this is the only thing that still needs to know them.
+
+    Stated at the reference depth on both sides, which is what makes it still a
+    regrade and not a re-aim: the old scale had no lookahead axis, so the gap it
+    served has to be read against the depth where the new one has none either.
     """
     old_target = old_rating + _TARGET_OFFSET
     gap = (2400 - old_target) / 5000
-    return max(USER_MIN, min(USER_MAX, difficulty_rating(gap) - _TARGET_OFFSET))
+    moved = difficulty_rating(gap, REFERENCE_DEPTH) - _TARGET_OFFSET
+    return max(USER_MIN, min(USER_MAX, moved))
 
 
 def calibrate(user_rating: float, step: float, correct: bool) -> tuple[float, float]:

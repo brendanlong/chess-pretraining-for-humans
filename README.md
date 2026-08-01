@@ -31,8 +31,18 @@ The database is `data/items.db` unless `TRAINER_DB` says otherwise — which is
 how the container finds it on its volume.
 
 Labeling is the slow step and its defaults are laptop-sized. On a bigger box
-raise `--workers` toward the core count before `--threads`: Stockfish scales
-better as independent searches than as one wide one.
+raise `--workers` toward the core count rather than `--threads`: Stockfish
+scales better as independent searches than as one wide one, and one thread is
+also what makes an item's required lookahead reproducible, so leaving
+`--threads` alone is free.
+
+A bank labeled before lookahead was measured has that column empty, and its
+items are served as though their answers were visible at a glance. One pass
+fixes it:
+
+```bash
+uv run python -m trainer.backfill_depth --workers 20
+```
 
 ### Keeping the bank full
 
@@ -53,8 +63,14 @@ curl -s -r 0-4000000000 https://database.lichess.org/standard/lichess_db_standar
   | zstdcat 2>/dev/null \
   | uv run python -m trainer.mine --min-gap-wp 0.20 --max-gap-wp 0.25 \
       --max-candidates 2000 > data/band.jsonl
-uv run python -m trainer.label data/band.jsonl --workers 20 --threads 1
+uv run python -m trainer.label data/band.jsonl --workers 20
 ```
+
+A gap window aims at a band only for items whose answer is visible on the first
+ply; the rest of what it mines lands higher, by however far ahead they turn out
+to have to be read. That is not steerable — nothing can ask the tree for
+positions that take four moves to see — so the top of the scale fills at
+whatever rate a bigger bank fills it.
 
 Mining is cheap next to labeling, so mine a window generously and label what
 the shortfall asks for. Months are independent streams and can be mined at

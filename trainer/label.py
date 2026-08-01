@@ -8,14 +8,16 @@ For each candidate position:
 2. The distractor is the move actually played in the game when it differs
    from the best move (those are the errors humans actually make); otherwise
    the deep search's second choice ('multipv' provenance).
-3. Both moves are re-evaluated at shallow depth. If the shallow search
-   disagrees with the deep search about which move is better, the item's
-   answer hinges on deep calculation rather than surface features, so it is
-   marked not learnable and never served (label is correct, item is noise).
-4. The deep evals are converted to win probability and the gap fixes the
-   item's difficulty (small gap = hard = high rating). That mapping is all
-   difficulty is: nothing downstream revises it, so an item means the same
-   thing to every user and on every deployment.
+3. Both moves are re-searched to DEPTH_SHALLOW, keeping the evaluation at
+   every iteration on the way. The shallowest one from which the two moves
+   stay the right way round is how far ahead the position has to be read
+   (`solution_depth`); a position that isn't the right way round even at
+   DEPTH_SHALLOW is not learnable and is never served (the label is still
+   correct — the item is noise).
+4. The deep evals are converted to win probability, and the gap together with
+   that depth fixes the item's difficulty (small gap, deep read = hard = high
+   rating). That mapping is all difficulty is: nothing downstream revises it,
+   so an item means the same thing to every user and on every deployment.
 
 Usage:
     uv run python -m trainer.label data/candidates.jsonl [--limit N]
@@ -36,6 +38,12 @@ from .rating import difficulty_rating
 from .winprob import score_to_winprob
 
 DEPTH_DEEP = 18
+# The deepest read an item is allowed to demand, and so the top of the
+# `solution_depth` scale. Everything from 1 to here is graded onto difficulty
+# by `rating.difficulty_rating`; past here the answer isn't reachable from the
+# surface at all and the item is dropped. The cap is what makes "how far you
+# have to look" a bounded axis rather than an open-ended one — but it is now
+# only the *ceiling* on lookahead, not the amount asked of everybody.
 DEPTH_SHALLOW = 8
 PV_PLIES = 8  # how much of each line to keep for the reveal replay
 MIN_GAP_WP = 0.015
@@ -46,13 +54,15 @@ MIN_GAP_WP = 0.015
 # curve exists to prevent, reintroduced through the labeler instead. This is
 # above the widest gap the current bank holds (0.648), so it binds on nothing.
 MAX_GAP_WP = 0.70
-# One engine per worker, each given a couple of threads: a laptop-sized default
-# that leaves the machine usable. Stockfish scales badly across threads compared
-# with running independent searches, so on a bigger box raise `--workers` toward
-# the core count before raising `--threads` (measured on 24 cores: 20x1 labels
-# 1.6x faster than 8x2).
+# One engine per worker, each on one thread: a laptop-sized default that leaves
+# the machine usable, and the arrangement that goes fastest anyway. Stockfish
+# scales badly across threads compared with running independent searches, so on
+# a bigger box raise `--workers` toward the core count rather than `--threads`
+# (measured on 24 cores: 20x1 labels 1.6x faster than 8x2). One thread is also
+# the only setting `solution_depth` can be measured on, so leaving it here means
+# the measurement costs nothing to protect.
 ENGINE_WORKERS = 8
-ENGINE_THREADS = 2
+ENGINE_THREADS = 1
 
 
 _local = threading.local()
@@ -75,6 +85,96 @@ def pov_parts(score: chess.engine.PovScore, turn: chess.Color) -> tuple[int | No
 
 def pv_text(info: chess.engine.InfoDict) -> str:
     return " ".join(m.uci() for m in info.get("pv", [])[:PV_PLIES])
+
+
+def winprob_ladder(
+    engine: chess.engine.SimpleEngine, board: chess.Board, move: chess.Move
+) -> dict[int, float]:
+    """What one move is worth at every search depth up to DEPTH_SHALLOW.
+
+    Read off the engine's own iterative deepening rather than by re-searching
+    per depth, so the whole ladder costs what the single fixed-depth search it
+    replaces cost — the deepest iteration dominates the ones below it.
+
+    The transposition table is emptied first, and that is the whole measurement:
+    a shallow search that can look up what a deep search already stored is not a
+    shallow search. The deep pass in `label_candidate` runs on this same
+    position moments earlier, so without this the engine reports a two-ply read
+    of a conclusion it reached at eighteen — which changed the verdict on 8 of
+    100 sampled positions. It costs under a tenth of a millisecond, and it is
+    what makes the number mean the same thing here and in
+    `trainer.backfill_depth`, where no deep pass precedes it.
+    """
+    engine.configure({"Clear Hash": None})
+    ladder: dict[int, float] = {}
+    with engine.analysis(
+        board, chess.engine.Limit(depth=DEPTH_SHALLOW), root_moves=[move]
+    ) as analysis:
+        for info in analysis:
+            depth, score = info.get("depth"), info.get("score")
+            # Only depths inside the ladder: Stockfish reports `seldepth` beyond
+            # the iteration it is on, and finishing an iteration can carry it a
+            # step past the limit.
+            if score is not None and depth is not None and 1 <= depth <= DEPTH_SHALLOW:
+                cp, mate = pov_parts(score, board.turn)
+                ladder[depth] = score_to_winprob(cp, mate)
+    return ladder
+
+
+def shallowest_settled(best: dict[int, float], distractor: dict[int, float]) -> int | None:
+    """The shallowest depth from which two ladders stay the right way round.
+
+    "And stay" is the point. A position whose ordering flips back and forth was
+    never settled at the depth it first happened to look right, and calling that
+    depth the answer would say a comparison is easy on the strength of a
+    coincidence. So the walk goes down from the deepest rung, not up from the
+    first — which also makes it cheap.
+
+    A depth neither search reported is stepped over rather than ending the walk:
+    a missing rung is no evidence either way, and reading it as disagreement
+    would inflate every depth above it.
+
+    None means no depth settles it, which is the learnability filter: the answer
+    isn't reachable from the surface, so the item is noise however correct its
+    label is.
+    """
+    found = None
+    for depth in sorted(set(best) & set(distractor), reverse=True):
+        if best[depth] <= distractor[depth]:
+            break
+        found = depth
+    return found
+
+
+def solution_depth(
+    engine: chess.engine.SimpleEngine, board: chess.Board, best: chess.Move, distractor: chess.Move
+) -> int | None:
+    """How far ahead this comparison has to be read, in plies; None if too far.
+
+    Searched on one thread whatever the labeler is otherwise running, and then
+    put back. A parallel search splits the tree differently every time it runs,
+    which is a fine price for a number that only has to be roughly right — but
+    this one *defines* an item, so two runs over the same position have to reach
+    the same answer or the bank stops meaning anything. Measured over 60
+    positions: one thread agrees with itself 60 times out of 60, two threads 51.
+    The ladder is shallow enough that giving up the threads costs nothing, and
+    on one thread it is reproducible across engine processes and across the
+    order positions are fed in — which is what lets `trainer.backfill_depth`
+    reach the same answer years later on the same position.
+
+    Guarded because the swap reallocates the thread pool twice, and the default
+    is already one thread, so the common path should not pay for a setting it
+    isn't using.
+    """
+    if ENGINE_THREADS != 1:
+        engine.configure({"Threads": 1})
+    try:
+        return shallowest_settled(
+            winprob_ladder(engine, board, best), winprob_ladder(engine, board, distractor)
+        )
+    finally:
+        if ENGINE_THREADS != 1:
+            engine.configure({"Threads": ENGINE_THREADS})
 
 
 def label_candidate(cand: dict) -> dict | None:
@@ -117,13 +217,7 @@ def label_candidate(cand: dict) -> dict | None:
     if not (MIN_GAP_WP <= gap_wp <= MAX_GAP_WP):
         return None
 
-    # Learnability filter: does a shallow search see the same ordering?
-    shallow_wp = {}
-    for move in (best, distractor):
-        info = engine.analyse(board, chess.engine.Limit(depth=DEPTH_SHALLOW), root_moves=[move])
-        cp_s, mate_s = pov_parts(info["score"], board.turn)
-        shallow_wp[move] = score_to_winprob(cp_s, mate_s)
-    learnable = int(shallow_wp[best] > shallow_wp[distractor])
+    depth = solution_depth(engine, board, best, distractor)
 
     return {
         "fen": cand["fen"],
@@ -139,10 +233,11 @@ def label_candidate(cand: dict) -> dict | None:
         "gap_wp": gap_wp,
         "pv_best": pv_best,
         "pv_distractor": pv_d,
-        "learnable": learnable,
+        "solution_depth": depth,
+        "learnable": int(depth is not None),
         "depth_deep": DEPTH_DEEP,
         "depth_shallow": DEPTH_SHALLOW,
-        "rating": difficulty_rating(gap_wp),
+        "rating": difficulty_rating(gap_wp, depth),
         "ply": cand["ply"],
         "game_url": cand["game_url"],
         "mover_elo": cand["mover_elo"],
@@ -193,12 +288,12 @@ def main() -> None:
                    (fen, best_uci, distractor_uci, distractor_source,
                     cp_best, mate_best, cp_distractor, mate_distractor,
                     wp_best, wp_distractor, gap_wp, pv_best, pv_distractor,
-                    learnable, depth_deep, depth_shallow, rating,
+                    solution_depth, learnable, depth_deep, depth_shallow, rating,
                     ply, game_url, mover_elo, time_control)
                    VALUES (:fen, :best_uci, :distractor_uci, :distractor_source,
                     :cp_best, :mate_best, :cp_distractor, :mate_distractor,
                     :wp_best, :wp_distractor, :gap_wp, :pv_best, :pv_distractor,
-                    :learnable, :depth_deep, :depth_shallow, :rating,
+                    :solution_depth, :learnable, :depth_deep, :depth_shallow, :rating,
                     :ply, :game_url, :mover_elo, :time_control)""",
                 item,
             )

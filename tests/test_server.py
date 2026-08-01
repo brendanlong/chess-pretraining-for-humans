@@ -1,6 +1,7 @@
 import ast
 import contextlib
 import gzip
+import json
 import re
 import sqlite3
 import struct
@@ -97,6 +98,15 @@ def test_no_repeats_until_exhausted_then_flagged(client, db):
     assert result["repeat"] is True
     assert "correct" in result  # feedback still shown
     assert user_row(db, client)["rating"] == rating_before  # but no rating movement
+
+
+def test_required_lookahead_reaches_the_reveal_and_not_the_trial(client):
+    """It explains a difficulty the gap alone doesn't, which is worth saying —
+    but "this one needs four plies" is a hint about where to look, so it may not
+    be said until the answer is committed."""
+    trial = next_trial(client)
+    assert "solution_depth" not in json.dumps(trial)
+    assert answer(client, trial)["solution_depth"] == ITEM["solution_depth"]
 
 
 def test_first_exposure_accuracy_excludes_repeats(client):

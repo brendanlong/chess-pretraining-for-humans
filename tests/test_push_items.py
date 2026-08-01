@@ -13,6 +13,7 @@ from tests.conftest import FEN_TMPL, add_item
 from trainer import push_items
 from trainer.db import connect
 from trainer.push_items import export, merge
+from trainer.rating import difficulty_rating
 
 
 def bank(path, ranks):
@@ -71,8 +72,7 @@ def test_merge_adds_new_positions_and_leaves_the_record_alone(tmp_path):
     before = tuple(connect(live).execute("SELECT * FROM items WHERE id = 1").fetchone())
     incoming = bank(tmp_path / "fresh.db", ["8", "7P", "6P1"])  # two overlap, one is new
 
-    added, skipped = merge(live, incoming)
-    assert (added, skipped) == (1, 2)
+    assert merge(live, incoming) == (1, 2, 0)
 
     conn = connect(live)
     assert conn.execute("SELECT COUNT(*) FROM items").fetchone()[0] == 3
@@ -84,11 +84,64 @@ def test_merge_adds_new_positions_and_leaves_the_record_alone(tmp_path):
     assert conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 1
 
 
+def test_merge_fills_in_a_lookahead_depth_the_live_bank_never_measured(tmp_path):
+    """The one thing a held position takes from the incoming bank.
+
+    Depth needs Stockfish, which only the pipeline machine has, and the live
+    bank can't be replaced wholesale — so without this the rows that predate
+    the measurement would be served at gap-only difficulty forever.
+    """
+    live = live_db(tmp_path)
+    conn = connect(live)
+    conn.execute("UPDATE items SET solution_depth = NULL")
+    conn.commit()
+    conn.close()
+    incoming = bank(tmp_path / "fresh.db", ["8", "7P"])
+
+    assert merge(live, incoming) == (0, 2, 2)
+    conn = connect(live)
+    rows = conn.execute("SELECT solution_depth, rating FROM items ORDER BY id").fetchall()
+    assert [r["solution_depth"] for r in rows] == [2, 2]
+    # And the difficulty that follows from it: `connect` re-derives on the way in.
+    assert rows[0]["rating"] == difficulty_rating(0.10, 2) != difficulty_rating(0.10)
+
+
+def test_merge_retires_a_position_no_search_gets_right(tmp_path):
+    """Unlearnable is a depth verdict too, and it has to travel as one."""
+    live = live_db(tmp_path)
+    conn = connect(live)
+    conn.execute("UPDATE items SET solution_depth = NULL")
+    conn.commit()
+    conn.close()
+    incoming = bank(tmp_path / "fresh.db", [])
+    conn = connect(incoming)
+    add_item(conn, FEN_TMPL.format("8"), solution_depth=None, learnable=0)
+    conn.commit()
+    conn.close()
+
+    assert merge(live, incoming) == (0, 1, 1)
+    served = connect(live).execute("SELECT learnable FROM items ORDER BY id").fetchall()
+    assert [r["learnable"] for r in served] == [0, 1]
+
+
+def test_merge_leaves_a_depth_already_measured_alone(tmp_path):
+    """Re-measuring one is relabelling, which is what this tool refuses."""
+    live = live_db(tmp_path)
+    incoming = bank(tmp_path / "fresh.db", [])
+    conn = connect(incoming)
+    add_item(conn, FEN_TMPL.format("8"), solution_depth=7)
+    conn.commit()
+    conn.close()
+
+    assert merge(live, incoming) == (0, 1, 0)
+    assert connect(live).execute("SELECT solution_depth FROM items").fetchone()[0] == 2
+
+
 def test_merge_dry_run_writes_nothing(tmp_path):
     live = live_db(tmp_path)
     incoming = bank(tmp_path / "fresh.db", ["6P1"])
 
-    assert merge(live, incoming, dry_run=True) == (1, 0)
+    assert merge(live, incoming, dry_run=True) == (1, 0, 0)
     assert connect(live).execute("SELECT COUNT(*) FROM items").fetchone()[0] == 2
 
 
@@ -101,7 +154,7 @@ def test_merge_survives_a_source_missing_a_column(tmp_path):
     conn.commit()
     conn.close()
 
-    assert merge(live, incoming) == (1, 0)
+    assert merge(live, incoming) == (1, 0, 0)
     added = connect(live).execute("SELECT * FROM items WHERE id = 3").fetchone()
     assert added["mover_elo"] is None
     assert added["fen"] == FEN_TMPL.format("6P1")
@@ -146,4 +199,4 @@ def test_roundtrip(tmp_path):
     """What the refresh actually runs: export here, merge there."""
     out = tmp_path / "export.db"
     export(bank(tmp_path / "fresh.db", ["8", "7P", "6P1"]), out)
-    assert merge(live_db(tmp_path), out) == (1, 2)
+    assert merge(live_db(tmp_path), out) == (1, 2, 0)

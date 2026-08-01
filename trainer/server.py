@@ -644,6 +644,11 @@ def answer(a: Answer, request: Request):
             "line": line_steps(item["fen"], item["pv_distractor"], item["distractor_uci"]),
         },
         "gap_wp": round(item["gap_wp"] * 100, 1),
+        # The other half of what made this item as hard as it was rated, and the
+        # answer to "why was that worth so much when the moves are miles apart".
+        # Safe here and nowhere earlier: a deep item is a hint about where to
+        # look, so this belongs to the reveal, not to the trial.
+        "solution_depth": item["solution_depth"],
         "distractor_source": item["distractor_source"],
         "game_url": item["game_url"],
         "item_rating": round(item["rating"]),

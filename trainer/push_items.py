@@ -13,11 +13,11 @@ ids are assigned per-database and `responses.item_id` points at the live ones.
     local$  uv run python -m trainer.push_items export --out /tmp/items.db
     server$ python -m trainer.push_items merge /tmp/items.db
 
-Positions already in the bank are skipped rather than updated. An item whose
-labels changed underneath the answers already given to it would make those
-responses uninterpretable — the recorded `correct` was decided against the old
-best move. Relabelling in place is a different, rarer operation and deliberately
-isn't this tool.
+Positions already in the bank are skipped rather than updated, with one
+exception named on `MEASURED_COLUMNS`. An item whose labels changed underneath
+the answers already given to it would make those responses uninterpretable —
+the recorded `correct` was decided against the old best move. Relabelling in
+place is a different, rarer operation and deliberately isn't this tool.
 """
 
 import argparse
@@ -30,6 +30,15 @@ from .db import DEFAULT_DB, connect
 # `id` is per-database; everything else about an item is a property of the
 # position, so it travels.
 PER_DATABASE_COLUMNS = {"id"}
+# The pair `merge` will fill in on a position the live bank already holds: how
+# far ahead the comparison has to be read, and — because "no depth sees it" is
+# one of the answers — whether it is learnable at all. They move together or
+# not at all: `learnable` is a reading of `solution_depth`.
+MEASURED_COLUMNS = "solution_depth, learnable"
+# A row nobody has run the depth ladder over yet. Not simply a NULL depth: an
+# unlearnable row has one too, and is the ladder's verdict rather than its
+# absence.
+_UNMEASURED = "{table}.solution_depth IS NULL AND {table}.learnable = 1"
 
 
 def item_columns(conn: sqlite3.Connection, schema: str = "main") -> list[str]:
@@ -87,8 +96,12 @@ def export(db: Path, out: Path) -> int:
     return n
 
 
-def merge(db: Path, incoming: Path, dry_run: bool = False) -> tuple[int, int]:
-    """Insert every position the live bank doesn't have yet. Returns (added, skipped)."""
+def merge(db: Path, incoming: Path, dry_run: bool = False) -> tuple[int, int, int]:
+    """Insert every position the live bank doesn't have yet.
+
+    Returns (added, skipped, measured) — the last being positions already held
+    whose lookahead depth the incoming bank knows and the live one doesn't.
+    """
     if not incoming.exists():
         sys.exit(f"{incoming} does not exist")
     conn = connect(db)
@@ -102,6 +115,21 @@ def merge(db: Path, incoming: Path, dry_run: bool = False) -> tuple[int, int]:
             f"INSERT INTO main.items ({cols}) SELECT {cols} FROM inc.items"
             " WHERE true ON CONFLICT(fen) DO NOTHING"
         ).rowcount
+        # The one thing a held position does take from the incoming bank. It is
+        # not the relabelling this tool refuses: lookahead depth needs Stockfish
+        # and so can only be measured on the pipeline's side of the boundary,
+        # and filling in a blank changes how hard the item is *said* to be, and
+        # whether it is noise, without touching which move is correct — so the
+        # answers already given to it still mean what they meant. Only blanks:
+        # a row that has been measured keeps its verdict, since re-measuring one
+        # is relabelling.
+        measured = conn.execute(
+            f"UPDATE main.items SET ({MEASURED_COLUMNS}) = ("
+            f"  SELECT {MEASURED_COLUMNS} FROM inc.items WHERE inc.items.fen = main.items.fen)"
+            f" WHERE {_UNMEASURED.format(table='main.items')}"
+            f"   AND EXISTS (SELECT 1 FROM inc.items WHERE inc.items.fen = main.items.fen"
+            f"               AND NOT ({_UNMEASURED.format(table='inc.items')}))"
+        ).rowcount
         if dry_run:
             conn.rollback()
         else:
@@ -109,7 +137,7 @@ def merge(db: Path, incoming: Path, dry_run: bool = False) -> tuple[int, int]:
     finally:
         detach(conn, "inc")
         conn.close()
-    return added, offered - added
+    return added, offered - added, measured
 
 
 def main() -> None:
@@ -126,10 +154,11 @@ def main() -> None:
     if args.cmd == "export":
         print(f"exported {export(args.db, args.out)} items to {args.out}")
     else:
-        added, skipped = merge(args.db, args.incoming, args.dry_run)
+        added, skipped, measured = merge(args.db, args.incoming, args.dry_run)
         print(
             f"{'would add' if args.dry_run else 'added'} {added} items"
             f", skipped {skipped} already in the bank"
+            f", filled in lookahead depth on {measured} of them"
         )
 
 

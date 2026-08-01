@@ -66,10 +66,16 @@ CREATE TABLE IF NOT EXISTS items (
     gap_wp REAL NOT NULL,
     pv_best TEXT,        -- space-separated UCI line starting with best_uci
     pv_distractor TEXT,  -- space-separated UCI line starting with distractor_uci
-    learnable INTEGER NOT NULL,       -- shallow search agrees which move is better
+    -- Plies of lookahead the comparison needs: the shallowest search that gets
+    -- the two moves the right way round and is not contradicted deeper. NULL on
+    -- an unlearnable row (no depth does), and on a row labeled before it was
+    -- measured, where difficulty falls back to gap alone.
+    solution_depth INTEGER,
+    learnable INTEGER NOT NULL,       -- some search up to depth_shallow sees the ordering
     depth_deep INTEGER NOT NULL,
     depth_shallow INTEGER NOT NULL,
-    rating REAL NOT NULL,             -- difficulty: gap_wp via rating.difficulty_rating
+    -- difficulty: rating.difficulty_rating(gap_wp, solution_depth)
+    rating REAL NOT NULL,
     ply INTEGER,
     game_url TEXT,
     mover_elo INTEGER,
@@ -219,6 +225,11 @@ def connect(path: Path = DEFAULT_DB, check_same_thread: bool = True) -> sqlite3.
     for col in ("pv_best", "pv_distractor"):
         if col not in item_cols:
             conn.execute(f"ALTER TABLE items ADD COLUMN {col} TEXT")
+    # Rows labeled before lookahead depth was measured keep a NULL here, which
+    # `difficulty_rating` reads as "gap only" — so they stay exactly as hard as
+    # they were until `trainer.backfill_depth` measures them.
+    if "solution_depth" not in item_cols:
+        conn.execute("ALTER TABLE items ADD COLUMN solution_depth INTEGER")
     # Difficulty is a function of the item alone, so the columns that existed to
     # carry answers back into it go. `items.attempts`/`correct` were a global
     # tally no query reads now. `responses.item_rating_after` recorded a move
@@ -233,7 +244,7 @@ def connect(path: Path = DEFAULT_DB, check_same_thread: bool = True) -> sqlite3.
         conn.execute("ALTER TABLE responses DROP COLUMN item_rating_after")
     # Registering the function rather than repeating the formula in SQL keeps
     # one definition of difficulty.
-    conn.create_function("difficulty_rating", 1, difficulty_rating, deterministic=True)
+    conn.create_function("difficulty_rating", 2, difficulty_rating, deterministic=True)
     conn.create_function("regraded_user_rating", 1, rating.regraded_user_rating, deterministic=True)
     # Item difficulty is re-derived, because "a pure function of `gap_wp`" has to
     # be true of the rows, not just of the code that writes new ones. Users are
@@ -249,15 +260,15 @@ def connect(path: Path = DEFAULT_DB, check_same_thread: bool = True) -> sqlite3.
     # both see version 0 and both regrade. The lock is taken only when a read
     # says there is work, so an already-current database still opens without one.
     items_stale = conn.execute(
-        "SELECT 1 FROM items WHERE rating != difficulty_rating(gap_wp) LIMIT 1"
+        "SELECT 1 FROM items WHERE rating != difficulty_rating(gap_wp, solution_depth) LIMIT 1"
     ).fetchone()
     if items_stale or _schema_version(conn) < SCHEMA_VERSION:
         conn.commit()  # release the implicit transaction the ALTERs above opened
         conn.execute("BEGIN IMMEDIATE")
         try:
             conn.execute(
-                "UPDATE items SET rating = difficulty_rating(gap_wp)"
-                " WHERE rating != difficulty_rating(gap_wp)"
+                "UPDATE items SET rating = difficulty_rating(gap_wp, solution_depth)"
+                " WHERE rating != difficulty_rating(gap_wp, solution_depth)"
             )
             if _schema_version(conn) < SCHEMA_VERSION:
                 conn.execute("UPDATE users SET rating = regraded_user_rating(rating)")

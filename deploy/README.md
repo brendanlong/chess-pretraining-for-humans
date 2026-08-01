@@ -115,6 +115,13 @@ add, asks, then merges. Positions already in the bank are skipped rather than
 relabelled: an item whose best move changed under the answers already given to
 it would make those responses uninterpretable.
 
+Run `uv run python -m trainer.backfill_depth` over the local bank first. It is
+the only way a lookahead depth reaches the deployment — measuring one needs
+Stockfish, which the image doesn't carry — and the merge fills those in on
+positions the live bank already holds, which is the one thing it will update.
+The dry run counts them separately, so you can see it happen. Until it does,
+those items are served as if their answers were visible on the first ply.
+
 ## Restoring
 
 Litestream restores on boot only when the database is missing, so recovering
@@ -193,6 +200,18 @@ change first, if it should change.
   file, so a pre-regrade backup arrives without it and is regraded correctly on
   the next open, while clearing it on a database that has already been regraded
   is precisely the double pass it exists to prevent.
+- **Adding lookahead to difficulty moves the items but not the users, and it
+  lands in two steps.** The release that makes required lookahead the second
+  axis re-derives `items.rating` on the first connect, as it does for any curve
+  change — but every live row has a NULL `solution_depth` at that moment, which
+  reads as "adds nothing", so nothing actually moves until a push carries the
+  measured depths over (above). Ratings are deliberately not regraded either
+  time: the axis is zero at a one-ply read, so the gap curve still means what it
+  measured, and about three items in four sit there. What does change is that a
+  quarter of the bank becomes harder than it was, and the top of the user scale
+  — which had almost nothing to serve — fills up. Expect accuracy to dip for
+  users whose band gained deep items, and let Elo do the rest; that is the
+  correction, not a fault.
 - **`VACUUM` breaks replication.** It rewrites every page and invalidates
   Litestream's tracking. `VACUUM INTO` a new file and treat it as a new
   database (stop Litestream, clear `/data/.items.db-litestream`, re-snapshot).

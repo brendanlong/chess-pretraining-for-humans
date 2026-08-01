@@ -13,13 +13,18 @@ frontend. Data flows one way:
   of win probability.
 - **Labeling** (`trainer/label.py`) runs local Stockfish per candidate:
   a deep multipv search provides ground truth (best move, both evals,
-  8-ply lines for both moves); a shallow pass implements the learnability
-  filter; the win-probability gap fixes the item's difficulty for good,
-  through the curve on `rating.difficulty_rating` — whose slope is measured
-  from the strength of the humans whose errors the items are, and whose
-  reasoning sits beside the constants. Gap-range flags allow mining
-  specific difficulty bands.
-  (`trainer/backfill_pvs.py` retrofits lines onto older items.)
+  8-ply lines for both moves); then each move is re-searched from a cleared
+  hash, keeping the evaluation at every iteration, and the shallowest depth
+  from which the pair stays the right way round is how far ahead the item
+  has to be read. No depth at all is the learnability filter. That depth and
+  the win-probability gap together fix the item's difficulty for good,
+  through the curve on `rating.difficulty_rating` — whose two slopes are
+  measured (one of them only in sign and shape) from the strength of the
+  humans whose errors the items are, and whose reasoning sits beside the
+  constants. Gap-range flags allow mining specific difficulty bands; nothing
+  can steer the depth mix, which is why `rating` gives that axis the smaller
+  share of the scale. (`trainer/backfill_pvs.py` and
+  `trainer/backfill_depth.py` retrofit lines and depths onto older items.)
 - **Supply** (`trainer/supply.py`) reports what the bank can serve at each
   user rating, and what a refill would have to mine to fix a thin one. Why a
   thin band is otherwise invisible, and why the shortfall is stated in gaps,
@@ -260,7 +265,10 @@ file: the bank and the record share a file, so `trainer/push_items.py`
 carries items across as their own database and merges them in, matching on
 position rather than on row id. Positions already present are skipped —
 relabelling an item under the answers already given to it would make those
-answers uninterpretable.
+answers uninterpretable. The single exception is a lookahead depth the live
+bank has never had measured, which the merge fills in: it needs Stockfish and
+so can only be measured on the pipeline's side, and it changes how hard the
+item is *said* to be without touching which move is correct.
 
 Bootstrap, runbooks (bank refresh, restore), and the operational cautions
 live in `deploy/README.md`; everything else about the container is said in
