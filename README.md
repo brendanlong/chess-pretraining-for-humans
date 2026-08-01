@@ -60,7 +60,7 @@ uv run python -m trainer.label data/band.jsonl --workers 20
 ```
 
 A gap window aims at the *deep* gap, and difficulty is a function of the
-shallow one. They correlate at 0.79 and no better, so a window lands across a
+shallow one. The two correlate imperfectly, so a window lands across a
 spread of difficulties rather than in a band — `trainer.supply --gaps` prints
 where each window's items actually went, which is what to aim with.
 
@@ -202,12 +202,10 @@ uv run python -m trainer.bench --save   # re-record the baseline
 uv run python -m trainer.bench --only static-js,trial-loop
 ```
 
-Two columns decide the verdict. Throughput is what a user would feel and what
-somebody else on the machine ruins; cpu spent per step is what the code's own
-cost moves, and it mostly survives company. So a jump in cpu fails the run
-wherever it was measured, a drop in throughput fails one only on cores the run
-had to itself, and rows it won't stand behind are marked rather than counted.
-Prefer a quiet machine anyway: it gives the sharper answer.
+Two columns decide the verdict, throughput and cpu spent per step; which of
+them may fail a run where — and why rows the run won't stand behind are marked
+rather than counted — is argued at the top of `trainer/bench.py`. Prefer a
+quiet machine anyway: it gives the sharper answer.
 
 `bench-baseline.json` is committed and only means anything against the machine
 that recorded it. The run warns when that has changed, and refuses to record a

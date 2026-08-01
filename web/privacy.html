@@ -73,10 +73,10 @@
 
     <p>Settings like replay speed live in your browser's local storage and are
     never sent to the server. The server writes ordinary request logs, which
-    include IP addresses, and the signup rate limiter holds a count per IP
-    address in memory for up to an hour (until the process restarts, in the
-    worst case) — neither is written to the database or tied to your
-    responses.</p>
+    include IP addresses, and its rate limiters hold short-lived counts in
+    memory, keyed mostly by IP address, for up to an hour (until the process
+    restarts, in the worst case) — neither is written to the database or tied
+    to your responses.</p>
 
     <h2>What it's for</h2>
     <p>Two things: running Chess Pretraining for you, and the research it exists
@@ -124,7 +124,8 @@
     which is what lets us say exactly what is in it. What we send: which of our
     pages you opened, chosen from a fixed list of the pages that exist, and the
     width of your screen, plus a random number so that the request isn't served
-    from a cache. Never the address bar's contents — once you have answered a
+    from a cache and a flag when the browser says it is automated, so bots can
+    be counted apart from people. Never the address bar's contents — once you have answered a
     question it names that position, which is what makes it a link you can send
     someone, and it stays in your browser — and never the page's title. If you arrived from another site we
     send that site's address without the page, and nothing at all when you
@@ -160,9 +161,10 @@
     username and email if you made an account, and every answer with its
     timing, the position it was about, and a link to the game it came from.
     The JSON file is the whole of it; the CSV is the answers alone, one row
-    each, for a spreadsheet. The only thing held back is the hash of your
-    password, which exists precisely so that nobody — us included — holds the
-    password.</p>
+    each, for a spreadsheet. Held back are only the hash of your
+    password — which exists precisely so that nobody, us included, holds the
+    password — and internal bookkeeping, like database row ids, that says
+    nothing about you.</p>
     <p>Signing up is not a condition of any of that. The anonymous record at
     the top of this page is created by your first answer, not by registering,
     and it is downloadable from that moment on. If you never make an account,
@@ -173,8 +175,10 @@
     the file is one too, and it can't fall out of date.</p>
 
     <h2>Keeping and deleting data</h2>
-    <p>Guest records that answered nothing and went idle are swept
-    automatically. Everything else is kept while the project runs.</p>
+    <p>A visit that answers nothing leaves nothing to keep — the record is
+    created by your first answer, not your arrival. Expired sessions are
+    deleted automatically; everything else is kept while the project
+    runs.</p>
     <p>If you have an account you can delete it yourself: <b>Settings &rarr;
     Account &rarr; Delete account</b>, confirmed with your password. That erases
     the account, the email on it, its sessions, and every response it ever gave —

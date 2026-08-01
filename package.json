@@ -1,6 +1,7 @@
 {
   "name": "chess-pretraining",
   "private": true,
+  "license": "MIT",
   "description": "Lint and build for the static frontend in web/",
   "type": "module",
   "scripts": {

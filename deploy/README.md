@@ -96,7 +96,7 @@ deploy once CI passes.
 The default expiry is 20 years, so `-x 8760h` is worth passing — but a token
 that expires is a deploy that starts failing in CI rather than a site that goes
 down, and nothing warns you beforehand. `fly tokens list -a chess-pretraining`
-prints the expiry; the live one runs to 2027-07-30.
+prints the expiry.
 
 **5. Fill the bank.** A fresh deployment has no items and `/api/next` answers
 503 until it does — see below.
@@ -111,11 +111,25 @@ same file, so the bank is merged in, never copied over:
 ```
 
 It exports an items-only database, uploads it, shows you what a merge would
-add, asks, then merges. Positions already in the bank are skipped rather than
-relabelled: an item whose best move changed under the answers already given to
-it would make those responses uninterpretable.
+add, asks, then merges. Positions already in the bank are skipped, never
+relabelled; DESIGN.md says why.
 
+## Deletion requests and password resets
 
+`trainer.account` (see the main README) handles what the app can't: an emailed
+deletion request, a forgotten password. It runs the same way on the deployment
+— the image sets `TRAINER_DB` and `PYTHONPATH`, so no flags are needed, and
+the prompts (new password, typing the name back to confirm a delete) work over
+`fly ssh`:
+
+```bash
+fly ssh console -a chess-pretraining
+  python -m trainer.account list
+  python -m trainer.account delete somename
+```
+
+It opens the live database under the same locking the server uses, so the
+machine stays up while it runs.
 
 ## Restoring
 
@@ -159,8 +173,8 @@ at most 30 days, and a deleted row sits in every snapshot taken before the
 delete. So the recovery window is 21 days (`snapshot.retention` in
 `litestream.yml`) plus 7 for the bucket's noncurrent versions — 28, under the
 promise. `terraform/variables.tf` checks that sum at plan time; raising either
-half fails the plan and points here. The published number is the thing to
-change first, if it should change.
+half fails the plan, pointing at the promise in `web/privacy.html`. The
+published number is the thing to change first, if it should change.
 
 ## Things that will bite
 
