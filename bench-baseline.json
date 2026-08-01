@@ -1,0 +1,109 @@
+{
+  "machine": {
+    "host": "brendan-desktop",
+    "cpu": "AMD Ryzen 9 5900X 12-Core Processor",
+    "cores": 24,
+    "python": "3.12.13",
+    "platform": "Linux-7.0.0-27-generic-x86_64-with-glibc2.43"
+  },
+  "settings": {
+    "concurrency": 8,
+    "repeat": 3,
+    "items": 12660,
+    "warm_history": 300,
+    "requests": {
+      "healthz": 4000,
+      "static-html": 4000,
+      "static-js": 4000,
+      "static-304": 4000,
+      "static-png": 2000,
+      "next-cold": 2000,
+      "next-warm": 2000,
+      "stats": 2000,
+      "trial-loop": 1500,
+      "login": 200
+    }
+  },
+  "scenarios": {
+    "healthz": {
+      "steps": 4000,
+      "rps": 3340.8,
+      "p50_ms": 2.296,
+      "p95_ms": 3.033,
+      "p99_ms": 3.389,
+      "mean_ms": 2.344
+    },
+    "static-html": {
+      "steps": 4000,
+      "rps": 2954.3,
+      "p50_ms": 2.692,
+      "p95_ms": 3.505,
+      "p99_ms": 3.99,
+      "mean_ms": 2.668
+    },
+    "static-js": {
+      "steps": 4000,
+      "rps": 2970.0,
+      "p50_ms": 2.658,
+      "p95_ms": 3.427,
+      "p99_ms": 3.875,
+      "mean_ms": 2.661
+    },
+    "static-304": {
+      "steps": 4000,
+      "rps": 3283.2,
+      "p50_ms": 2.364,
+      "p95_ms": 3.126,
+      "p99_ms": 3.531,
+      "mean_ms": 2.388
+    },
+    "static-png": {
+      "steps": 2000,
+      "rps": 3032.2,
+      "p50_ms": 2.54,
+      "p95_ms": 3.334,
+      "p99_ms": 3.748,
+      "mean_ms": 2.575
+    },
+    "next-cold": {
+      "steps": 2000,
+      "rps": 334.3,
+      "p50_ms": 21.339,
+      "p95_ms": 39.852,
+      "p99_ms": 45.669,
+      "mean_ms": 23.256
+    },
+    "next-warm": {
+      "steps": 2000,
+      "rps": 263.0,
+      "p50_ms": 28.365,
+      "p95_ms": 54.491,
+      "p99_ms": 65.092,
+      "mean_ms": 29.891
+    },
+    "stats": {
+      "steps": 2000,
+      "rps": 358.8,
+      "p50_ms": 20.219,
+      "p95_ms": 37.785,
+      "p99_ms": 43.458,
+      "mean_ms": 22.073
+    },
+    "trial-loop": {
+      "steps": 1500,
+      "rps": 177.4,
+      "p50_ms": 41.243,
+      "p95_ms": 71.637,
+      "p99_ms": 111.1,
+      "mean_ms": 43.964
+    },
+    "login": {
+      "steps": 200,
+      "rps": 8.0,
+      "p50_ms": 497.573,
+      "p95_ms": 566.978,
+      "p99_ms": 606.176,
+      "mean_ms": 496.993
+    }
+  }
+}

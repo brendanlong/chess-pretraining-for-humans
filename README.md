@@ -183,3 +183,24 @@ directly — so run it once before serving, and the server needs nothing else.
 serves; the server prefers it when it exists, so build it to check what ships
 and delete it to go back to editing the sources. CI runs the tests against
 both, because the two are meant to differ only in size.
+
+## Benchmarks
+
+Nothing above notices a change that only makes the app slower, so there's a
+load benchmark over the API and the static tree:
+
+```bash
+uv run python -m trainer.bench          # ~4 min, compares to bench-baseline.json
+uv run python -m trainer.bench --save   # re-record the baseline
+uv run python -m trainer.bench --only static-js,trial-loop
+```
+
+It builds its own item bank, serves it from a scratch database and a real
+uvicorn on a loopback port, and exits non-zero if any scenario lost more than
+20% of its throughput. Nothing it does touches `data/items.db`.
+
+Timings only mean something against a baseline recorded on the same machine —
+`bench-baseline.json` is committed so a regression shows up as a number rather
+than a feeling, and the run warns when the machine underneath has changed. Run
+it before and after a change that could plausibly cost anything, and re-record
+when a deliberate trade-off moves the numbers for good.
