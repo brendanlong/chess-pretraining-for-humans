@@ -230,19 +230,35 @@ def test_a_shared_answer_is_scored_by_elo_even_during_calibration(client, db):
     assert after["calib_step"] == calibrating["calib_step"]
 
 
-def test_a_url_naming_an_item_you_have_answered_is_not_honoured(client, db):
+def test_a_url_naming_an_item_you_have_answered_reopens_it_as_a_rerun(client, db):
     """The case that isn't about links at all: the tab reloads, and the URL it
-    reloads names the trial whose answer is on the screen it came from. A URL
-    buys no more second exposures than selection does, so it falls back."""
+    reloads names the trial whose answer is on the screen it came from. It
+    opens that position rather than a stranger's — answerable, and worth
+    nothing, which is what makes serving a remembered answer safe.
+
+    Answered *wrongly* the second time, because that is what tells the two
+    designs apart: an answer held out of the rating leaves it where it was, and
+    an unrated right answer would agree with either."""
     first = next_trial(client)
-    answer(client, first)
+    answer(client, first, choice_index_of(first, ITEM["best_uci"]))
+    before = user_row(db, client)["rating"]
 
     again = shared_trial(client, first["item_id"])
-    assert again["item_id"] != first["item_id"]
-    assert again["repeat"] is False
-    answer(client, again)
-    # Two answers, two items — no second row for the one the URL named.
-    assert db.execute("SELECT COUNT(DISTINCT item_id) FROM responses").fetchone()[0] == 2
+    assert again["item_id"] == first["item_id"]
+    assert (again["repeat"], again["times_answered"]) == (True, 1)
+    result = answer(client, again, choice_index_of(again, ITEM["distractor_uci"]))
+
+    assert result["correct"] is False
+    assert "best" in result  # feedback, like any trial
+    assert result["repeat"] is True
+    assert user_row(db, client)["rating"] == before  # and a rating that didn't move
+    # Counted nowhere a fresh answer would be, either.
+    stats = client.get("/api/stats").json()
+    assert stats["accuracy_last_50"] == 1.0  # the wrong rerun is not a first exposure
+    assert stats["items_remaining"] == 1  # still one item nobody has answered
+
+    # And the count the note reads climbs with each reopening.
+    assert shared_trial(client, first["item_id"])["times_answered"] == 2
 
 
 @pytest.mark.parametrize(

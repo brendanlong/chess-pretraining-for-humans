@@ -53,12 +53,15 @@
   <section id="panel">
     <div id="repeat-note" hidden>
       <span class="note-badge">rerun</span>
-      You've seen every item — this one won't affect your rating.
+      <!-- Written by `repeatCopy`: a rerun is served either because the bank
+           ran out or because a link to an already-answered position was
+           reopened, and the two sentences are different. -->
+      <span id="repeat-text"></span>
     </div>
     <div id="stale-link-note" hidden>
       <span class="note-badge">link</span>
-      We couldn't open the position that link named &mdash; most likely you've
-      answered it already. Here's a fresh one.
+      We couldn't open the position that link named &mdash; it isn't in this
+      item bank. Here's a fresh one.
     </div>
     <div id="ask">
       <p id="prompt">Which move is better?<span class="kbd-hint"> Press <kbd>1</kbd> or <kbd>2</kbd>.</span></p>

@@ -164,9 +164,13 @@ automatically.
   gets — carrying an item id and never an answer. It names it only *after* the
   answer, because a URL that named the trial in progress would be asking the
   server for it on every reload, and marking a position the app itself chose
-  as one nobody aimed. A URL also buys no second exposures — it is a durable
-  thing that gets reopened, so one naming an item this user has answered is
-  not honoured at all. The
+  as one nobody aimed. A URL is a durable thing that gets reopened — the tab
+  reloads, the link comes back around, a friend sends it on — so one naming an
+  item this user has already answered opens *that* position again rather than
+  a stranger's, as a rerun: answerable and explained, and worth nothing to the
+  rating. That is what makes serving a position whose answer the user may
+  remember safe, and it is the same bargain the exhausted bank already
+  strikes. On a first exposure the
   answer counts: it rates and it is counted in accuracy, because it is a real
   first exposure against an item of measured difficulty, and Elo is a
   statement about the item and not about who chose it. What it carries is a

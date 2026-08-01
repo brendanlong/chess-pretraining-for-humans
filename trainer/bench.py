@@ -517,9 +517,11 @@ async def _step_next(vu: VU) -> None:
 def named_id(vu: VU) -> int:
     """The item this user's link names.
 
-    Past the seeded history, because `named_item` refuses an item the caller
-    has already answered — and refusing is silent by design, so a scenario that
-    named one would be measuring `pick_item` under a name that says otherwise.
+    Past the seeded history, because an item the caller has already answered
+    comes back as a rerun — which is a different thing to serve and a different
+    thing to be measuring, so a scenario that named one would report the repeat
+    path under a name that says fresh link. Following somebody else's link is
+    the case worth a number.
     One id per user rather than one for the scenario, so this reads more than a
     single page; the same one every request, so what varies between runs is the
     query and not how much of the bank a run happened to warm.

@@ -195,11 +195,12 @@ text for pasting into an assistant. Answering a trial names it in the URL
 (`?item=`, by `replaceState`, so the back button still leaves the app) and
 loading the next one takes the name back out, which makes the address bar the
 share link and the Share button a way of reaching it without one. Why it goes
-in on the answer rather than on arrival is at `nameTrialInUrl`. Only the
-disappointing case is announced: a URL whose item the server won't serve —
-stale, already answered, or not an id at all — gets an ordinary trial and a
-line saying so, which the page recognises by not being handed what it asked
-for.
+in on the answer rather than on arrival is at `nameTrialInUrl`. Reopening one
+that names an already-answered position replays it as a rerun, and the note
+says which kind of rerun it is — the two sentences are `repeatCopy`. Only the
+disappointing case is announced: a URL whose item the bank hasn't got — stale,
+unlearnable, or not an id at all — gets an ordinary trial and a line saying so,
+which the page recognises by not being handed what it asked for.
 
 `count.js` is the page counter, on every page and reporting only a path looked
 up in a table of the pages that exist — GoatCounter's own script reports the

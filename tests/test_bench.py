@@ -77,11 +77,11 @@ def test_no_address_is_charged_past_its_block(users):
 
 @pytest.mark.parametrize("users", [1, 8, 16, 31])
 def test_the_named_scenario_asks_for_items_the_account_has_not_answered(tmp_path, users):
-    """`named_item` falls back to ordinary selection for an item the caller has
-    already answered, and falling back is *silent* — it is what a stale link is
-    supposed to do. So a scenario naming one would quietly measure `pick_item`
-    twice and report it as two different things. Checked against the rows the
-    seeder really writes, not against the constant it writes them from."""
+    """An item the caller has already answered is served as a rerun, silently —
+    the payload says so but the request looks the same, so a scenario naming
+    one would quietly report the repeat path as the fresh-link number. Checked
+    against the rows the seeder really writes, not against the constant it
+    writes them from."""
     seeded = tmp_path / "seeded.db"
     bench.build_template(seeded, items=bench.WARM_HISTORY + 64)
     conn = db.connect(seeded)

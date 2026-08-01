@@ -537,17 +537,19 @@ def healthz():
     return {"ok": True}
 
 
-def named_item(item_id: int, user_id: int | None) -> dict | None:
-    """The item a URL names, if this caller can be served it.
+def named_item(item_id: int) -> dict | None:
+    """The item a URL names, if the bank has it to serve.
 
-    None for an id from another bank, an item the engine won't hold an answer
-    to, and — the case that isn't about the link at all — one this caller has
-    already answered. A URL is a durable thing that gets reopened: the tab
-    reloads, somebody clicks the link twice. Honouring it the second time would
-    hand back a position whose answer is on the screen it just came from, which
-    is the one thing an item may never be, so a URL cannot buy a second
-    exposure any more than selection can. The caller gets an ordinary trial and
-    a line saying why.
+    Only two refusals, and both are the bank's rather than the caller's: an id
+    from another bank, and an item the engine won't hold an answer to. Having
+    answered it is not one of them. A URL is a durable thing that gets
+    reopened — the tab reloads, somebody clicks the link twice, a friend sends
+    back the link you sent them — and landing on a stranger's position instead
+    of the one the link names is the wrong answer to all three. So it is served
+    again, as a repeat: feedback, and a rating that doesn't move. That is what
+    makes handing back a position whose answer the caller may already know
+    safe, because the thing an answer may never be *aimed at* is the rating,
+    and a repeat isn't aimed at anything.
 
     Nothing here is a leak the ordinary trial flow doesn't already allow: the
     payload is symmetric between the two moves, so naming an item buys the
@@ -556,18 +558,21 @@ def named_item(item_id: int, user_id: int | None) -> dict | None:
     are sequential, so this is the bank's positions readable by counting. The
     answers stay behind `/api/answer`, which is where they were.
     """
-    # One statement, and the cheapest shape either half has: a primary-key seek
-    # for the item, and `NOT EXISTS` probing `idx_responses_item` at exactly
-    # (user, item) for the history — the same reason selection uses it, one
-    # candidate instead of a walk's worth.
-    row = conn.execute(
-        """SELECT * FROM items
-           WHERE id = ? AND learnable = 1
-             AND NOT EXISTS (SELECT 1 FROM responses
-                             WHERE user_id = ? AND item_id = ?)""",
-        (item_id, user_id or 0, item_id),
-    ).fetchone()
+    row = conn.execute("SELECT * FROM items WHERE id = ? AND learnable = 1", (item_id,)).fetchone()
     return dict(row) if row else None
+
+
+def times_answered(item_id: int, user_id: int | None) -> int:
+    """How many times this caller has answered `item_id` — nonzero is what
+    makes a named item a repeat, and the number itself is what the page says.
+
+    Reads `idx_responses_item` at exactly (user, item), the same probe selection
+    uses to skip a seen candidate: one seek, and a row per earlier answer.
+    """
+    return conn.execute(
+        "SELECT COUNT(*) FROM responses WHERE user_id = ? AND item_id = ?",
+        (user_id or 0, item_id),
+    ).fetchone()[0]
 
 
 @app.get("/api/next")
@@ -577,7 +582,7 @@ def next_item(item: str | None = None, user_id: int | None = OptionalUserId):
 
     `item` names a position rather than asking for one, which is what following
     somebody's link does. It is served instead of what selection would have
-    picked, and the answer to it is marked — or, if `named_item` won't have it,
+    picked, and the answer to it is marked — or, if the bank hasn't got it,
     selection picks after all and the caller can see it didn't get what it
     asked for, which is all the page needs to say so.
     """
@@ -595,13 +600,17 @@ def next_item(item: str | None = None, user_id: int | None = OptionalUserId):
     # endpoint anyone can reach, which is a worse answer than the 422 this is
     # here to avoid.
     wanted = int(item) if item and item.isascii() and item.isdigit() and len(item) < 19 else None
-    named = named_item(wanted, user_id) if wanted is not None else None
+    named = named_item(wanted) if wanted is not None else None
     is_repeat = False
     row = named
     if row is None:
         row, is_repeat = pick_item(u["rating"] if u else rating.USER_START, user_id)
     if row is None:
         raise HTTPException(503, "no items in bank — run the mining/labeling pipeline")
+    # Only for a named item: selection reports its own repeats, and the ordinary
+    # path already filtered on this history, so it must not pay to ask again.
+    answered = times_answered(row["id"], user_id) if named is not None else 0
+    is_repeat = is_repeat or answered > 0
     served = trials.Served(repeat=is_repeat, shared=named is not None)
     moves = [row["best_uci"], row["distractor_uci"]]
     rng.shuffle(moves)
@@ -614,6 +623,10 @@ def next_item(item: str | None = None, user_id: int | None = OptionalUserId):
         "side_to_move": "white" if chess.Board(row["fen"]).turn else "black",
         "moves": [{"uci": m, "san": san(row["fen"], m)} for m in moves],
         "repeat": is_repeat,
+        # Which kind of repeat this is, so the page can say the true sentence:
+        # zero means the bank ran out, and anything else means the caller
+        # reopened a link to a position they have answered this many times.
+        "times_answered": answered,
         # No fresh-item count: it costs a pass over the bank, and the drawer
         # counter that reads it is seeded from /api/stats and counted down there.
         "trial_number": (u["attempts"] if u else 0) + 1,
@@ -691,18 +704,19 @@ def answer(a: Answer, request: Request):
         # see the `trials` module docstring.
         if is_repeat and not served.repeat:
             raise HTTPException(409, "that trial has already been answered — fetch a new one")
-        # Repeats get feedback but move nothing: served once the bank is
-        # exhausted, they can be answered from memory of the reveal.
+        # Repeats get feedback but move nothing: whether the bank ran out or a
+        # link got reopened, they can be answered from memory of the reveal.
         #
-        # A shared item moves the rating like any other — it is a real first
-        # exposure and Elo already prices how hard it was. The staircase is what
-        # can't take one: it steps by a fixed amount *because* selection
-        # guarantees the item was aimed at the user, so on an item nobody aimed
-        # it would pay a quarter of the scale for what, in a two-alternative
-        # task, a beginner wins half the time by guessing. Elo reads the item's
-        # difficulty, so it prices the same answer at a whole K if the item was
-        # far above them and at nothing if it wasn't — which is the question
-        # "are they better than we thought" actually being asked.
+        # A shared item on its first exposure moves the rating like any other —
+        # it is a real first exposure and Elo already prices how hard it was.
+        # The staircase is what can't take one: it steps by a fixed amount
+        # *because* selection guarantees the item was aimed at the user, so on
+        # an item nobody aimed it would pay a quarter of the scale for what, in
+        # a two-alternative task, a beginner wins half the time by guessing.
+        # Elo reads the item's difficulty, so it prices the same answer at a
+        # whole K if the item was far above them and at nothing if it wasn't —
+        # which is the question "are they better than we thought" actually
+        # being asked.
         new_step = u["calib_step"]
         if is_repeat:
             new_user_r = u["rating"]
