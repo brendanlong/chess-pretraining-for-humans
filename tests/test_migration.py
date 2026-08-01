@@ -8,7 +8,7 @@ starts from a fresh schema.
 import sqlite3
 
 from trainer import account, auth
-from trainer.db import connect
+from trainer.db import SCHEMA_VERSION, connect
 from trainer.rating import difficulty_rating, regraded_user_rating
 
 from .conftest import FEN_RANKS, FEN_TMPL, add_item
@@ -56,7 +56,7 @@ def test_migration_preserves_users_and_responses(tmp_path):
     conn = connect(path)
 
     user = conn.execute("SELECT * FROM users WHERE name = 'brendan'").fetchone()
-    assert user["rating"] == regraded_user_rating(1420.0)
+    assert user["rating"] == regraded_user_rating(1420.0, 0)
     assert user["attempts"] == 3
     assert user["password_hash"] is None  # a legacy row is just a guest
     assert user["created_at"] is not None  # backfilled, not left NULL
@@ -87,11 +87,10 @@ def test_migration_drops_the_columns_that_carried_answers_into_difficulty(tmp_pa
 
 
 def test_migration_re_derives_difficulty_that_drifted_off_the_formula(tmp_path):
-    """`items.rating` is a pure function of `gap_wp` and `solution_depth` — a
-    claim about the rows, not just about the code that writes new ones. Two
-    kinds of row disagreed: a rating an older server's Elo had moved, and one
-    computed from the full-precision gap before the gap was rounded for
-    storage."""
+    """`items.rating` is a pure function of `shallow_gap` — a claim about the
+    rows, not just about the code that writes new ones. Two kinds of row
+    disagreed: a rating an older server's Elo had moved, and one computed from
+    the full-precision gap before the gap was rounded for storage."""
     path = old_db(tmp_path)
     conn = connect(path)
     add_item(conn, FEN_TMPL.format(FEN_RANKS[0]))
@@ -100,10 +99,8 @@ def test_migration_re_derives_difficulty_that_drifted_off_the_formula(tmp_path):
     conn.close()
 
     conn = connect(path)
-    item = conn.execute("SELECT gap_wp, solution_depth, rating FROM items").fetchone()
-    assert item["rating"] == difficulty_rating(item["gap_wp"], item["solution_depth"]) != 1234.5
-    # And the depth is doing work: it is not the gap-only rating either.
-    assert item["rating"] != difficulty_rating(item["gap_wp"])
+    item = conn.execute("SELECT shallow_gap, rating FROM items").fetchone()
+    assert item["rating"] == difficulty_rating(item["shallow_gap"]) != 1234.5
 
 
 # `items` as it stood before lookahead was an axis: no `solution_depth`, and a
@@ -160,14 +157,16 @@ def test_regrade_runs_exactly_once(tmp_path):
     first = connect(path)
     once = first.execute("SELECT rating FROM users").fetchone()["rating"]
     first.close()
-    assert once == regraded_user_rating(1420.0)
+    assert once == regraded_user_rating(1420.0, 0)
 
     for _ in range(3):
         again = connect(path)
         assert again.execute("SELECT rating FROM users").fetchone()["rating"] == once
         again.close()
     conn = connect(path)
-    assert conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0] == "1"
+    assert conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0] == str(
+        SCHEMA_VERSION
+    )
     assert conn.execute("SELECT value FROM meta WHERE key='regraded_at'").fetchone() is not None
     conn.close()
 
@@ -176,7 +175,9 @@ def test_a_fresh_database_is_not_regraded(tmp_path):
     """A new database has nothing on the old scale, so it must be stamped as
     current rather than left for the regrade to walk on the next open."""
     conn = connect(tmp_path / "fresh.db")
-    assert conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0] == "1"
+    assert conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0] == str(
+        SCHEMA_VERSION
+    )
 
 
 def test_migration_is_idempotent_and_takes_no_write_lock_when_current(tmp_path):

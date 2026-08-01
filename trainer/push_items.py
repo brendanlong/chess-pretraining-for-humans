@@ -30,18 +30,18 @@ from .db import DEFAULT_DB, connect
 # `id` is per-database; everything else about an item is a property of the
 # position, so it travels.
 PER_DATABASE_COLUMNS = {"id"}
-# What `merge` will fill in on a position the live bank already holds: how far
-# ahead the comparison has to be read, whether it is learnable at all — because
-# "no depth sees it" is one of the ladder's answers — and the difficulty that
-# follows from the first. All three or none: `learnable` is a reading of
-# `solution_depth`, and `rating` is a function of it, so landing one without the
-# others would leave the bank saying three things.
+# What `merge` will fill in on a position the live bank already holds: the
+# lookahead ladder, the two readings taken off it, and the difficulty that
+# follows. All of them or none — `shallow_gap` is a reading of `gap_ladder`,
+# `learnable` is a reading of `solution_depth`, and `rating` is a function of
+# `shallow_gap` — so landing one without the others would leave the bank saying
+# several different things about the same item.
 #
 # `rating` is recomputed here rather than left to `db.connect`'s re-derivation
 # because the merge runs against a database a *server* has open, and that server
 # ran its migrations at boot. Nothing would put the new difficulty in front of a
 # user until the machine restarted, which is not a step this runbook has.
-MEASURED_COLUMNS = ("solution_depth", "learnable")
+MEASURED_COLUMNS = ("solution_depth", "gap_ladder", "shallow_gap", "learnable")
 # A row nobody has run the ladder over. Just the NULL: 0 is the ladder saying no
 # depth settles it, which is a verdict and not an absence. `learnable` gets no
 # say — on a live row it is the *old* single-depth check's word, taken on a hash
@@ -143,7 +143,7 @@ def merge(db: Path, incoming: Path, dry_run: bool = False) -> tuple[int, int, in
             fill = ", ".join(MEASURED_COLUMNS)
             measured = conn.execute(
                 f"UPDATE main.items SET ({fill}, rating) = (SELECT {fill},"
-                f"    difficulty_rating(main.items.gap_wp, inc.items.solution_depth)"
+                f"    difficulty_rating(inc.items.shallow_gap)"
                 f"    FROM inc.items WHERE inc.items.fen = main.items.fen)"
                 f" WHERE {_UNMEASURED.format(table='main.items')}"
                 f"   AND EXISTS (SELECT 1 FROM inc.items WHERE inc.items.fen = main.items.fen"

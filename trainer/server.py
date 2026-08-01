@@ -644,11 +644,15 @@ def answer(a: Answer, request: Request):
             "line": line_steps(item["fen"], item["pv_distractor"], item["distractor_uci"]),
         },
         "gap_wp": round(item["gap_wp"] * 100, 1),
-        # The other half of what made this item as hard as it was rated, and the
-        # answer to "why was that worth so much when the moves are miles apart".
-        # Safe here and nowhere earlier: a deep item is a hint about where to
-        # look, so this belongs to the reveal, not to the trial.
+        # What made this item as hard as it was rated, and the answer to "why
+        # was that worth so much when the moves are miles apart": `gap_wp` is
+        # what the answer is worth at full depth, `shallow_gap` is what there
+        # was to see. Safe here and nowhere earlier — both are hints about where
+        # to look, so they belong to the reveal and not to the trial.
         "solution_depth": item["solution_depth"],
+        "shallow_gap": (
+            None if item["shallow_gap"] is None else round(item["shallow_gap"] * 100, 1)
+        ),
         "distractor_source": item["distractor_source"],
         "game_url": item["game_url"],
         "item_rating": round(item["rating"]),

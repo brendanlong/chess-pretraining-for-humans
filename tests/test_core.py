@@ -3,17 +3,16 @@ from itertools import pairwise
 
 import pytest
 
-from trainer.label import DEPTH_SHALLOW, MAX_GAP_WP, MIN_GAP_WP
 from trainer.rating import (
     CALIB_END_STEP,
     CALIB_START_STEP,
     CALIBRATED_GAP_HI,
     CALIBRATED_GAP_LO,
     GAP_SLOPE,
+    HARD_CEILING,
     RATING_MAX,
     RATING_MIN,
-    REFERENCE_DEPTH,
-    SELECTION_JITTER,
+    SHALLOW_PLIES,
     TARGET_ACCURACY,
     USER_MAX,
     USER_MIN,
@@ -22,6 +21,7 @@ from trainer.rating import (
     difficulty_rating,
     expected_score,
     regraded_user_rating,
+    shallow_gap_of,
     target_gap,
     target_item_rating,
     update,
@@ -57,83 +57,55 @@ def test_elo_cannot_walk_a_rating_off_the_scale():
     assert r == USER_MIN
     r = USER_MAX
     for _ in range(200):
-        r = update(r, difficulty_rating(MIN_GAP_WP), correct=True)
+        r = update(r, difficulty_rating(-0.3), correct=True)
     assert r == USER_MAX
 
 
-def test_difficulty_is_strictly_decreasing_over_every_gap_a_bank_can_hold():
-    """The property selection actually needs. Banks mined with a wider
-    `--max-gap-wp` exist and reach a 0.65 gap, and any two of those items must
-    still be orderable — a clamp at the easy end would make 13.8% of
-    the bank indistinguishable and every beginner see the same block."""
-    gaps = [g / 1000 for g in range(1, 900)]
-    ratings = [difficulty_rating(g) for g in gaps]
-    assert all(a > b for a, b in pairwise(ratings))
-    # Not just "inside the bounds" — the exponential is positive by
-    # construction, so that would be vacuous. The bank's widest real gap has to
-    # stay far enough off the floor to leave the easy end room to spread.
-    assert difficulty_rating(0.648) > 20
-    assert difficulty_rating(0.35) - difficulty_rating(0.648) > 200
-    assert difficulty_rating(0.9) > RATING_MIN and difficulty_rating(MIN_GAP_WP) < RATING_MAX
+def test_a_misleading_item_is_harder_than_a_merely_invisible_one():
+    """The whole reason difficulty reads the shallow end of the search. A gap
+    that is negative there is a position whose surface recommends the wrong
+    move, and it has to rate above one that is merely too small to see."""
+    assert difficulty_rating(-0.10) > difficulty_rating(0.0) > difficulty_rating(0.10)
 
 
-def test_difficulty_is_smooth_where_the_evidence_runs_out():
-    """Linear where player-strength data constrains it, decaying past that. The
-    join has to be continuous in value *and* slope, or selection would see a
-    cliff at an arbitrary gap and items either side would be wrongly spaced."""
-    k = CALIBRATED_GAP_HI
-    assert difficulty_rating(k - 1e-9) == pytest.approx(difficulty_rating(k + 1e-9))
-    below = (difficulty_rating(k) - difficulty_rating(k - 1e-4)) / 1e-4
-    above = (difficulty_rating(k + 1e-4) - difficulty_rating(k)) / 1e-4
-    assert below == pytest.approx(above, rel=1e-3)
-    assert below == pytest.approx(-GAP_SLOPE, rel=1e-3)  # the measured slope
+def test_difficulty_is_strictly_decreasing_over_every_shallow_gap_there_is():
+    """Including well past both ends of the evidence. A range of gaps that share
+    one rating is a range selection cannot aim inside, and it lands on whoever
+    sits there."""
+    gaps = [g / 1000 for g in range(-500, 900)]
+    assert all(a > b for a, b in pairwise([difficulty_rating(g) for g in gaps]))
 
 
-def test_lookahead_is_a_second_axis_and_not_a_tiebreak():
-    """Depth has to move an item somewhere selection can tell apart, or it is
-    decoration: `pick_item` jitters the target by SELECTION_JITTER, so a step
-    smaller than that is inside the noise it is competing with."""
-    at = [difficulty_rating(0.2, d) for d in range(1, DEPTH_SHALLOW + 1)]
-    assert all(a < b for a, b in pairwise(at))
-    assert at[1] - at[0] > SELECTION_JITTER
-    # Saturating, not linear: the step the measurement is clearest about is the
-    # first one, and each later ply is worth less than the one before it.
-    assert all(b - a < prev - before for (before, prev), (a, b) in pairwise(pairwise(at)))
-    # And the minority axis. The gap curve is the one with a measurement behind
-    # it and the only one the pipeline can steer, so it keeps most of the scale.
-    gap_span = difficulty_rating(MIN_GAP_WP, 1) - difficulty_rating(MAX_GAP_WP, 1)
-    assert 0 < at[-1] - at[0] < gap_span / 2
+def test_neither_tail_reaches_its_asymptote_inside_the_bounds():
+    """The tails saturate rather than stop, so the guard rails must not be where
+    the curve actually goes — clamping is what flattens an end of the bank."""
+    assert difficulty_rating(0.8) > RATING_MIN  # easier than the bank holds
+    assert difficulty_rating(-0.5) < HARD_CEILING <= RATING_MAX
 
 
-def test_an_unmeasured_lookahead_leaves_an_item_where_it_was():
-    """Rows labeled before depth was measured keep their difficulty until
-    `trainer.backfill_depth` reaches them — being served at the wrong difficulty
-    is a smaller wrong than being served as though they were the hardest kind.
+def test_the_curve_is_smooth_at_both_ends_of_the_evidence():
+    """Linear where player strength constrains it, saturating past that at each
+    end. Both joins have to be continuous in value *and* slope, or selection
+    sees a cliff at an arbitrary gap and items either side are wrongly spaced."""
+    for k in (CALIBRATED_GAP_LO, CALIBRATED_GAP_HI):
+        assert difficulty_rating(k - 1e-9) == pytest.approx(difficulty_rating(k + 1e-9))
+        below = (difficulty_rating(k) - difficulty_rating(k - 1e-4)) / 1e-4
+        above = (difficulty_rating(k + 1e-4) - difficulty_rating(k)) / 1e-4
+        assert below == pytest.approx(above, rel=1e-3)
+        assert below == pytest.approx(-GAP_SLOPE, rel=1e-3)  # the measured slope
 
-    0 is the other thing that isn't a depth: the ladder's answer that nothing
-    settles this item. Such a row is never served, so it takes no position on
-    the scale rather than an invented one — and it must not land where a
-    logarithm of zero would put it.
+
+def test_the_shallow_gap_is_the_ladder_a_row_actually_stores():
+    """`items.rating` is a pure function of `items.shallow_gap`, which is a pure
+    function of `items.gap_ladder` — so the rounding has to happen before the
+    difficulty does, or the stored rating is a function of a number no row keeps.
     """
-    for gap in (MIN_GAP_WP, 0.2, MAX_GAP_WP):
-        at_reference = difficulty_rating(gap, REFERENCE_DEPTH)
-        assert difficulty_rating(gap, None) == at_reference
-        assert difficulty_rating(gap, 0) == at_reference
-
-
-def test_the_hardest_item_the_labeler_admits_is_not_clamped():
-    """RATING_MAX is a guard, not a design feature. If the bank's hard end sat
-    on it, every item there would share one difficulty and selection could not
-    aim inside them — the failure the curve exists to prevent."""
-    hardest = difficulty_rating(MIN_GAP_WP, DEPTH_SHALLOW)
-    assert hardest < RATING_MAX
-    assert hardest > difficulty_rating(MIN_GAP_WP, DEPTH_SHALLOW - 1)
-
-
-def test_a_wider_gap_read_deeper_can_be_the_harder_item():
-    """What the second axis buys: the top of the scale is reachable at gaps the
-    labeler will actually admit, instead of only at ones near its floor."""
-    assert difficulty_rating(0.10, 8) > difficulty_rating(MIN_GAP_WP, 1)
+    ladder = " ".join(["0.1234"] * SHALLOW_PLIES)
+    assert shallow_gap_of(ladder) == 0.1234
+    # Short of the window is not a shallow gap at all: a mean over fewer rungs
+    # would be a different measure wearing the same name.
+    assert shallow_gap_of(" ".join(["0.1"] * (SHALLOW_PLIES - 1))) is None
+    assert shallow_gap_of("") is None
 
 
 def test_difficulty_matches_the_measured_slope_where_it_was_measured():
@@ -144,36 +116,43 @@ def test_difficulty_matches_the_measured_slope_where_it_was_measured():
     assert measured == pytest.approx(GAP_SLOPE)
 
 
-def test_regrade_preserves_the_gap_a_user_is_served():
-    """The point of the regrade: a rating means nothing except against the
-    difficulty it selects, so moving the items has to move the users by the
-    same amount or everyone is silently re-aimed."""
-    offset = 400 * math.log10(1 / TARGET_ACCURACY - 1)
-    for old in (400, 700, 1000, 1400, 1800, 2200, 2600):
-        old_gap = (2400 - (old + offset)) / 5000  # the gap the old scale aimed at
-        assert target_gap(regraded_user_rating(old)) == pytest.approx(old_gap)
+def test_regrade_is_monotone_from_either_scale():
+    """Two users' ratings can't cross, or the regrade reorders them."""
+    for version in (0, 1):
+        out = [regraded_user_rating(r, version) for r in range(400, 2600, 25)]
+        # Non-decreasing everywhere — the ends are held flat on purpose, so a
+        # rating off the end of the anchors lands with its neighbours rather
+        # than being extrapolated somewhere nobody is served.
+        assert all(a <= b for a, b in pairwise(out)), f"from version {version}"
+        assert out[0] < out[-1], f"from version {version}"
 
 
-def test_regrade_is_monotone():
-    """Two users' ratings can't cross, or the regrade would reorder them."""
-    out = [regraded_user_rating(r) for r in range(400, 2600, 25)]
-    assert all(a < b for a, b in pairwise(out))
+def test_regrade_chains_the_scales_a_restored_database_may_be_behind():
+    """A backup from far enough back is two scales behind and has to cross both,
+    so the older map has to still exist and has to run first."""
+    once = regraded_user_rating(1500, 1)
+    twice = regraded_user_rating(1500, 0)
+    assert twice != once  # the pre-curve scale is not the deep-gap one
+    # And a database already current is left alone.
+    assert regraded_user_rating(1500, 2) == 1500
 
 
 def test_regrade_stays_on_the_scale_for_any_stored_rating():
-    """The old scale clamped to [400, 2600], but a hand-edited row or an
-    `account` fix could hold anything, and a rating outside the bounds would
-    make `calibrate` snap on the first answer."""
-    for old in (-1e9, 0, 400, 2600, 1e9, float("inf")):
-        assert USER_MIN <= regraded_user_rating(old) <= USER_MAX
+    """A hand-edited row or an `account` fix could hold anything, and a rating
+    outside the bounds would make `calibrate` snap on the first answer."""
+    for version in (0, 1):
+        for old in (-1e9, 0, 400, 2600, 1e9, float("inf")):
+            assert USER_MIN <= regraded_user_rating(old, version) <= USER_MAX
 
 
-def test_every_user_on_the_scale_is_aimed_at_an_item_the_bank_can_hold():
-    """A target below the easiest item hands every beginner the same clamped
-    block, so the whole user range has to map to a real gap."""
-    for r in range(USER_MIN, USER_MAX, 50):
-        gap = target_gap(r)
-        assert 0 <= gap <= MAX_GAP_WP, f"rating {r} aims at gap {gap}"
+def test_every_user_on_the_scale_is_aimed_at_a_gap_an_item_can_have():
+    """A target past either end of the curve hands a whole stretch of users the
+    same clamped block, so the entire user range has to map to a real gap — and
+    the map has to be monotone, or two users are aimed at each other's items."""
+    gaps = [target_gap(r) for r in range(USER_MIN, USER_MAX, 50)]
+    assert all(a > b for a, b in pairwise(gaps))
+    # The bank's own range, so every user is aimed somewhere items exist.
+    assert max(gaps) < 1.0 and min(gaps) > -1.0
 
 
 def test_target_rating_hits_target_accuracy():

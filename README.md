@@ -36,9 +36,11 @@ scales better as independent searches than as one wide one, and one thread is
 also what makes an item's required lookahead reproducible, so leaving
 `--threads` alone is free.
 
-A bank labeled before lookahead was measured has that column empty, and its
-items are served as though their answers were visible at a glance. One pass
-fixes it:
+A bank labeled before the lookahead ladder was measured has no difficulty of
+its own — its items keep whatever the old deep-gap curve gave them. One pass
+fixes it, at roughly half an hour per 25,000 items on 22 workers; it is a deep
+search apiece, and everything else is read off the stored ladder without an
+engine:
 
 ```bash
 uv run python -m trainer.backfill_depth --workers 20
@@ -51,12 +53,10 @@ nearest items it has — so it has to be looked for:
 
 ```bash
 uv run python -m trainer.supply           # per user rating: what its band holds
-uv run python -m trainer.supply --gaps    # the same shortfall, in mining units
+uv run python -m trainer.supply --gaps    # per deep-gap bin: where its items landed
 ```
 
-Refilling a thin band is the ordinary two steps with a gap window on each. The
-window works because the server eval mining filters on tracks the deep eval that
-fixes difficulty closely enough to aim with — measured, in `trainer/mine.py`.
+Refilling a thin band is the ordinary two steps with a gap window on each.
 
 ```bash
 curl -s -r 0-4000000000 https://database.lichess.org/standard/lichess_db_standard_rated_2026-06.pgn.zst \
@@ -66,11 +66,10 @@ curl -s -r 0-4000000000 https://database.lichess.org/standard/lichess_db_standar
 uv run python -m trainer.label data/band.jsonl --workers 20
 ```
 
-A gap window aims at a band only for items whose answer is visible on the first
-ply; the rest of what it mines lands higher, by however far ahead they turn out
-to have to be read. That is not steerable — nothing can ask the tree for
-positions that take four moves to see — so the top of the scale fills at
-whatever rate a bigger bank fills it.
+A gap window aims at the *deep* gap, and difficulty is a function of the
+shallow one. They correlate and no more than that, so a window lands across a
+spread of difficulties rather than in a band — `trainer.supply --gaps` prints
+where each window's items actually went, which is what to aim with.
 
 Mining is cheap next to labeling, so mine a window generously and label what
 the shortfall asks for. Months are independent streams and can be mined at

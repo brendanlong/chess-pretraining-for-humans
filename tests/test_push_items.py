@@ -9,7 +9,7 @@ import sqlite3
 
 import pytest
 
-from tests.conftest import FEN_TMPL, add_item
+from tests.conftest import FEN_TMPL, ITEM, add_item
 from trainer import push_items
 from trainer.db import connect
 from trainer.push_items import export, merge
@@ -87,7 +87,9 @@ def test_merge_adds_new_positions_and_leaves_the_record_alone(tmp_path):
 def unmeasured(path):
     """A live bank as it stands before any depth has reached it."""
     conn = connect(path)
-    conn.execute("UPDATE items SET solution_depth = NULL, rating = difficulty_rating(gap_wp, NULL)")
+    # `rating` keeps whatever it had: an unmeasured row has no difficulty of
+    # its own, which is the state this is standing in for.
+    conn.execute("UPDATE items SET solution_depth = NULL, gap_ladder = NULL, shallow_gap = NULL")
     conn.commit()
     conn.close()
     return path
@@ -112,7 +114,7 @@ def test_merge_fills_in_a_lookahead_depth_the_live_bank_never_measured(tmp_path)
     raw.row_factory = sqlite3.Row
     rows = raw.execute("SELECT solution_depth, rating FROM items ORDER BY id").fetchall()
     assert [r["solution_depth"] for r in rows] == [2, 2]
-    assert rows[0]["rating"] == difficulty_rating(0.10, 2) != difficulty_rating(0.10)
+    assert rows[0]["rating"] == difficulty_rating(ITEM["shallow_gap"])
 
 
 def test_merge_retires_a_position_no_search_gets_right(tmp_path):

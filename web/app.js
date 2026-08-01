@@ -212,14 +212,18 @@ function describeMove(mv, tag) {
 
 // Just the facts (position, moves, evals, lines) with no question attached,
 // so the user can ask their own — "I thought Bd3 was better because…".
-// How far ahead the engine had to search before it preferred the right move —
-// the half of an item's difficulty the gap doesn't show, and the reason a pair
-// that looks miles apart can still be rated hard. Absent on items labeled
-// before it was measured.
+// What a shallow search saw, which is what the item was rated on — the deep gap
+// beside it is only what the answer turns out to be worth. A negative shallow
+// gap is the interesting case: the position's surface recommends the losing
+// move, which is why a pair that looks miles apart can still be rated hard.
+// Absent on items labeled before it was measured.
 function lookaheadPhrase(result) {
+  const shallow = result.shallow_gap;
   const plies = result.solution_depth;
-  if (!plies) return "";
-  return plies === 1 ? ", seen at a glance" : `, seen only ${plies} plies deep`;
+  if (shallow === null || shallow === undefined) return "";
+  if (shallow < 0) return `, but a shallow search prefers the other move (${shallow}%)`;
+  if (plies === 1) return `, and ${shallow}% of it is visible at a glance`;
+  return `, of which a shallow search sees ${shallow}%`;
 }
 
 function buildCopyText() {

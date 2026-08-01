@@ -1,21 +1,23 @@
 """Measure `solution_depth` on items labeled before it existed.
 
-Difficulty is a function of the gap *and* of how far ahead the position has to
-be read, so a row with no depth measured is being served as though it needed
-none. This runs `label.solution_depth` over those rows and fills it in.
+Difficulty is a function of the gap the *shallow* end of the search saw, so a
+row with no ladder measured has no difficulty of its own and is being served at
+whatever the deep gap alone once said. This runs the ladder over those rows and
+fills in the three columns that come off it.
 
 Idempotent, and NULL is what makes it so: a row the ladder has already answered
-holds a depth or the 0 that says no depth settles it, and neither is NULL. That
-second answer retires the item — it stops being served, which is a verdict on
-the item's noise, not on its answer, so responses already given to it stay
-interpretable. It can retire a row an older, weaker filter had passed, which is
-the point of running this over a bank that predates the measurement.
+holds a depth or the 0 that says even the deepest search doesn't settle it, and
+neither is NULL. That second answer retires the item, which is rare and is not
+a judgement about difficulty — the scale reaches as far as the engine can see,
+so nothing is retired for being hard. It means the deep pass and a search
+restricted to the two moves disagree about which is better, so the item has no
+answer to teach. Responses already given to it stay interpretable either way.
 
     uv run python -m trainer.backfill_depth [--workers 8]
 
-`items.rating` is not written here: `db.connect` re-derives it from the two
-columns it is a function of, and unlike `trainer.push_items` this runs on the
-pipeline's own bank, which no server has open.
+`items.rating` is not written here: `db.connect` re-derives it from the column
+it is a function of, and unlike `trainer.push_items` this runs on the pipeline's
+own bank, which no server has open.
 """
 
 import argparse
@@ -26,18 +28,18 @@ from pathlib import Path
 import chess
 
 from .db import DEFAULT_DB, connect
-from .label import _engines, get_engine, solution_depth
+from .label import _engines, gap_ladder_text, get_engine, measure_lookahead, shallowest_settled
+from .rating import shallow_gap_of
 
 
-def measure(item: dict) -> tuple[int, int | None]:
-    board = chess.Board(item["fen"])
-    depth = solution_depth(
+def measure(item: dict) -> tuple[int, int | None, str]:
+    ladder = measure_lookahead(
         get_engine(),
-        board,
+        chess.Board(item["fen"]),
         chess.Move.from_uci(item["best_uci"]),
         chess.Move.from_uci(item["distractor_uci"]),
     )
-    return item["id"], depth
+    return item["id"], shallowest_settled(ladder), gap_ladder_text(ladder)
 
 
 def main() -> None:
@@ -57,10 +59,11 @@ def main() -> None:
 
     done = retired = 0
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
-        for item_id, depth in pool.map(measure, items):
+        for item_id, depth, ladder in pool.map(measure, items):
             conn.execute(
-                "UPDATE items SET solution_depth = ?, learnable = ? WHERE id = ?",
-                (depth or 0, int(depth is not None), item_id),
+                "UPDATE items SET solution_depth = ?, gap_ladder = ?, shallow_gap = ?,"
+                " learnable = ? WHERE id = ?",
+                (depth or 0, ladder, shallow_gap_of(ladder), int(depth is not None), item_id),
             )
             conn.commit()  # commit per item: a trainer server may share the db
             done += 1
