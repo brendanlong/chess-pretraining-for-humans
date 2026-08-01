@@ -9,14 +9,18 @@ the rows it was taken from. CALIBRATION.md is the prose; this is the arithmetic.
     uv run python -m trainer.fit_difficulty --windows  # score every window 1..k
     uv run python -m trainer.fit_difficulty --axes     # shallow vs deep vs depth
 
-Pure Python on purpose: this has to run wherever the bank does, and a fit that
-needs a scientific stack installed first is a fit nobody re-runs.
+numpy is a dev-group dependency and is not in the deployment; nothing the
+server does imports this. Using it rather than hand-rolling the statistics is
+deliberate: the published constants were fitted with `numpy.percentile`, and a
+quantile that interpolates differently moves the slope by percent — enough to
+read as a disagreement with the comment when it is only a convention.
 """
 
 import argparse
-import random
 import sqlite3
 from pathlib import Path
+
+import numpy as np
 
 from .db import DEFAULT_DB, connect
 from .rating import SHALLOW_PLIES
@@ -25,20 +29,10 @@ from .rating import SHALLOW_PLIES
 # to have a stable quantile is dropped rather than allowed to swing the fit.
 BAND_WIDTH = 100
 MIN_BAND = 120
+# A fraction, so every reader of it wants `np.quantile` and not
+# `np.percentile` — which takes 0..100 and silently answers a different
+# question, one that still fits a plausible-looking slope.
 QUANTILE = 0.75
-
-
-def quantile(sorted_values: list[float], q: float) -> float:
-    """Linear interpolation between order statistics — numpy's default, and so
-    the published constants'. A nearest-rank quantile is a different estimator
-    and moves the fitted slope by several percent, which is enough to make a
-    re-measurement look like a disagreement when it is only a convention."""
-    if len(sorted_values) == 1:
-        return sorted_values[0]
-    pos = q * (len(sorted_values) - 1)
-    lo = int(pos)
-    hi = min(lo + 1, len(sorted_values) - 1)
-    return sorted_values[lo] + (sorted_values[hi] - sorted_values[lo]) * (pos - lo)
 
 
 def rows(conn, untargeted: set[str] | None) -> list[tuple[float, list[float], float]]:
@@ -66,66 +60,67 @@ def rows(conn, untargeted: set[str] | None) -> list[tuple[float, list[float], fl
     return out
 
 
-def fit(sample: list[tuple[float, float]]) -> tuple[float, int]:
-    """Slope in rating points per unit gap, from (strength, gap) pairs.
+def fit(elo: np.ndarray, gap: np.ndarray) -> tuple[float, int]:
+    """Slope in rating points per unit gap. Returns (slope, bands used).
 
     Bin by strength, take a quantile of the gap in each band, and fit strength
     back against it weighted by band size. The direction matters: this asks
     "how big is the error a player of this strength still makes", which is a
     boundary, and not "how strong is the player who makes an error this big",
-    which is a mean over everyone who ever blundered. Returns (slope, bands).
+    which is a mean over everyone who ever blundered.
+
+    nan when the sample can't say — fewer than three bands, or every band's
+    quantile identical. A number that propagates and prints is a better way to
+    report that than a traceback.
     """
-    bands: dict[int, list[float]] = {}
-    for elo, gap in sample:
-        bands.setdefault(int(elo // BAND_WIDTH), []).append(gap)
-    cells = [
-        (key * BAND_WIDTH + BAND_WIDTH / 2, quantile(sorted(gaps), QUANTILE), len(gaps))
-        for key, gaps in bands.items()
-        if len(gaps) >= MIN_BAND
-    ]
+    cells = []
+    for key in np.unique(elo // BAND_WIDTH):
+        gaps = gap[elo // BAND_WIDTH == key]
+        if gaps.size >= MIN_BAND:
+            cells.append(
+                (key * BAND_WIDTH + BAND_WIDTH / 2, np.quantile(gaps, QUANTILE), gaps.size)
+            )
     if len(cells) < 3:
         return float("nan"), len(cells)
-    n = sum(w for _, _, w in cells)
-    mean_x = sum(x * w for _, x, w in cells) / n
-    mean_y = sum(y * w for y, _, w in cells) / n
-    var = sum(w * (x - mean_x) ** 2 for _, x, w in cells)
-    cov = sum(w * (x - mean_x) * (y - mean_y) for y, x, w in cells)
-    if var == 0:
-        # Every band's quantile identical: the sample says nothing about slope,
-        # and a traceback would be a worse way to say so than a number that
-        # propagates and prints as "nan".
+    strength, gap75, weight = np.array(cells).T
+    centred = gap75 - np.average(gap75, weights=weight)
+    variance = np.sum(weight * centred**2)
+    if variance == 0:
         return float("nan"), len(cells)
-    return -cov / var, len(cells)
+    covariance = np.sum(weight * centred * (strength - np.average(strength, weights=weight)))
+    return -covariance / variance, len(cells)
 
 
-def spread(sample: list[tuple[float, float]], bins: int = 9) -> float:
-    """How far the tail of erring strength moves from the easiest bin to the
-    hardest, when items are ordered by a candidate difficulty measure.
+def spread(elo: np.ndarray, hardness: np.ndarray, bins: int = 9) -> float:
+    """How far the tail of erring strength moves from the easiest bin of items
+    to the hardest, when they are ordered by a candidate difficulty measure.
 
-    The score every candidate axis is compared on. `gap` is passed already
-    signed so that larger means harder, so this is directly comparable across
-    measures on different scales — which is the only way to ask whether the
-    shallow gap beats the deep one without first having a curve for each.
+    The score every candidate axis is compared on. `hardness` is signed so that
+    larger means harder, so this is comparable across measures on different
+    scales — which is the only way to ask whether the shallow gap beats the deep
+    one without first having a fitted curve for each.
     """
-    ordered = sorted(sample, key=lambda pair: pair[1])
-    size = len(ordered) // bins
-    tails = [
-        quantile(sorted(elo for elo, _ in ordered[i * size : (i + 1) * size]), QUANTILE)
-        for i in range(bins)
+    by_hardness = elo[np.argsort(hardness)]
+    tails = [np.quantile(chunk, QUANTILE) for chunk in np.array_split(by_hardness, bins)]
+    return float(tails[-1] - tails[0])
+
+
+def bootstrap(elo: np.ndarray, gap: np.ndarray, draws: int, seed: int = 0) -> tuple[float, float]:
+    rng = np.random.default_rng(seed)
+    slopes = [
+        fit(*(a[i] for a in (elo, gap)))[0]
+        for i in (rng.integers(0, elo.size, elo.size) for _ in range(draws))
     ]
-    return tails[-1] - tails[0]
-
-
-def bootstrap(sample: list[tuple[float, float]], draws: int, seed: int = 0) -> tuple[float, float]:
-    rng = random.Random(seed)
-    slopes = sorted(
-        fit([sample[rng.randrange(len(sample))] for _ in range(len(sample))])[0]
-        for _ in range(draws)
-    )
-    return quantile(slopes, 0.025), quantile(slopes, 0.975)
+    return tuple(np.quantile(slopes, [0.025, 0.975]))
 
 
 def window(ladder: list[float], plies: int) -> float:
+    """The mean of a ladder's first `plies` rungs, or its last if it is shorter.
+
+    Short ladders never reach the fit — `rows` filters them — but averaging a
+    different number of rungs for different items would be a different measure
+    wearing one name, so the fallback is stated rather than left to slicing.
+    """
     return sum(ladder[:plies]) / plies if len(ladder) >= plies else ladder[-1]
 
 
@@ -156,39 +151,40 @@ def main() -> None:
     if untargeted is None:
         print("  (no --untargeted: a bank mined at chosen gap bands will bias this)")
 
+    elo = np.array([e for e, _, _ in data])
+    deep_gap = np.array([d for _, _, d in data])
+    shallow = np.array([window(lad, SHALLOW_PLIES) for _, lad, _ in data])
+
     if args.axes:
         print("\nelo-tail spread, larger is a better difficulty measure:")
-        for name, key in (
-            (f"shallow gap (1..{SHALLOW_PLIES})", lambda lad, dp: -window(lad, SHALLOW_PLIES)),
-            ("gap at one ply", lambda lad, dp: -lad[0]),
-            ("gap at full depth", lambda lad, dp: -dp),
+        for name, gap in (
+            (f"shallow gap (1..{SHALLOW_PLIES})", shallow),
+            ("gap at one ply", np.array([lad[0] for _, lad, _ in data])),
+            ("gap at full depth", deep_gap),
         ):
-            print(f"  {name:<26} {spread([(elo, key(lad, dp)) for elo, lad, dp in data]):+7.1f}")
+            print(f"  {name:<26} {spread(elo, -gap):+7.1f}")
         return
 
     if args.windows:
         print("\nwindow  slope  bands   elo-tail spread")
         for plies in range(1, 19):
-            sample = [(elo, window(lad, plies)) for elo, lad, _ in data]
-            slope, bands = fit(sample)
-            signed = [(elo, -gap) for elo, gap in sample]
+            gap = np.array([window(lad, plies) for _, lad, _ in data])
+            slope, bands = fit(elo, gap)
             mark = " <- SHALLOW_PLIES" if plies == SHALLOW_PLIES else ""
-            print(f"  1..{plies:<2} {slope:7.0f} {bands:>6}   {spread(signed):+7.1f}{mark}")
+            print(f"  1..{plies:<2} {slope:7.0f} {bands:>6}   {spread(elo, -gap):+7.1f}{mark}")
         return
 
-    sample = [(elo, window(lad, SHALLOW_PLIES)) for elo, lad, _ in data]
-    slope, bands = fit(sample)
+    slope, bands = fit(elo, shallow)
     print(f"\nGAP_SLOPE over {bands} strength bands: {slope:.0f} rating points per unit gap")
     if args.bootstrap:
-        lo, hi = bootstrap(sample, args.bootstrap)
+        lo, hi = bootstrap(elo, shallow, args.bootstrap)
         print(f"  95% CI [{lo:.0f}, {hi:.0f}] over {args.bootstrap} resamples")
-    gaps = sorted(gap for _, gap in sample)
-    print(f"  gaps the fit saw: {gaps[0]:+.3f}..{gaps[-1]:+.3f}")
+    print(f"  gaps the fit saw: {shallow.min():+.3f}..{shallow.max():+.3f}")
     # The check that this is the same method that produced the number published
     # for the deep gap when the deep gap was the axis. If this stops returning
     # something very near it, the estimator has drifted and the shallow figure
     # above is not comparable with anything.
-    deep, deep_bands = fit([(elo, dp) for elo, _, dp in data])
+    deep, deep_bands = fit(elo, deep_gap)
     print(f"\nthe same method against `gap_wp` over {deep_bands} bands: {deep:.0f}")
     print("  (was published as 6096 when the deep gap was the axis)")
 

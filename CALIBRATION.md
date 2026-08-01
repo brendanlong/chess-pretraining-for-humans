@@ -45,7 +45,11 @@ without it is not a measurement.
 
 Bin errors by player strength, take the 75th percentile of the gap in each
 band, fit strength back against that. `trainer/fit_difficulty.py` is the
-implementation and its docstrings carry the reasoning for each choice.
+implementation and its docstrings carry the reasoning for each choice. It uses
+numpy, from the dev group and not the deployment, because the published
+constants were fitted with it: a quantile that interpolates differently moves
+the slope by percent, which reads as a disagreement with a comment when it is
+only a convention.
 
 The direction is the part that is easy to get wrong and worth stating twice:
 this asks *how big an error a player of a given strength still makes*, not *how
