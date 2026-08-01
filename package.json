@@ -13,8 +13,8 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "chessground": "9.2.1",
-    "esbuild": "0.25.12",
-    "eslint": "^10.7.0",
+    "esbuild": "0.28.1",
+    "eslint": "^10.8.0",
     "globals": "^17.7.0"
   }
 }
