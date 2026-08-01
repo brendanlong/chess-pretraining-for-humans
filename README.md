@@ -38,15 +38,6 @@ scales better as independent searches than as one wide one, and one thread is
 also what makes an item's required lookahead reproducible, so leaving
 `--threads` alone is free.
 
-A bank labeled before the lookahead ladder was measured has no difficulty of
-its own — its items keep whatever the old deep-gap curve gave them. One pass
-fixes it, at roughly half an hour per 25,000 items on 22 workers; it is a deep
-search apiece, and everything else is read off the stored ladder without an
-engine:
-
-```bash
-uv run python -m trainer.backfill_depth --workers 20
-```
 
 ### Keeping the bank full
 

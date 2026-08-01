@@ -7,6 +7,8 @@ starts from a fresh schema.
 
 import sqlite3
 
+import pytest
+
 from trainer import account, auth
 from trainer.db import SCHEMA_VERSION, connect
 from trainer.rating import difficulty_rating, regraded_user_rating
@@ -56,9 +58,7 @@ def test_migration_preserves_users_and_responses(tmp_path):
     conn = connect(path)
 
     user = conn.execute("SELECT * FROM users WHERE name = 'brendan'").fetchone()
-    # Not regraded yet: the bank this database has is still on the old scale, so
-    # moving the user would aim them at difficulties nothing here is labeled at.
-    assert user["rating"] == 1420.0
+    assert user["rating"] == regraded_user_rating(1420.0, 0)
     assert user["attempts"] == 3
     assert user["password_hash"] is None  # a legacy row is just a guest
     assert user["created_at"] is not None  # backfilled, not left NULL
@@ -134,42 +134,12 @@ VALUES ('legacy', 'e2e4', 'a2a3', 'game', 0.55, 0.45, 0.2, 1, 18, 8, ?)
 """
 
 
-def test_a_bank_from_before_lookahead_keeps_its_difficulty_until_it_is_measured(tmp_path):
-    """The column arrives empty, and empty has to mean "adds nothing" — not
-    "needs no lookahead" and not "unlearnable". Otherwise the release that adds
-    the axis re-rates a whole live bank on a measurement nobody has taken."""
-    path = tmp_path / "pre-lookahead.db"
-    legacy = sqlite3.connect(path)
-    legacy.executescript(PRE_LOOKAHEAD_ITEMS)
-    legacy.execute(PRE_LOOKAHEAD_ROW, (difficulty_rating(0.2),))
-    legacy.commit()
-    legacy.close()
-
-    conn = connect(path)
-    item = conn.execute("SELECT solution_depth, learnable, rating FROM items").fetchone()
-    assert item["solution_depth"] is None
-    assert item["learnable"] == 1  # still served, on the old filter's word
-    assert item["rating"] == difficulty_rating(0.2)  # and exactly as hard as before
-    # `depth_shallow` named a cutoff that no longer exists, so it goes with the
-    # design that had one. A column describing a rule the code doesn't follow
-    # is worse than no column.
-    assert "depth_shallow" not in {row[1] for row in conn.execute("PRAGMA table_info(items)")}
-
-
-def test_regrade_waits_for_the_bank_and_then_runs_exactly_once(tmp_path):
-    """Two rules at once. Users move only when the items they select have moved,
-    because a rating means nothing except against the difficulties it picks —
-    and then only once, because a rating carries no mark of which scale produced
-    it and a second pass would move someone already correct."""
+def test_regrade_runs_exactly_once(tmp_path):
+    """A rating carries no mark of which scale produced it, so a second pass
+    would move someone already correct. Items move in the same transaction —
+    they can, because a bank arrives measured and `connect` re-derives every
+    difficulty on the way in."""
     path = old_db(tmp_path)
-    held = connect(path)
-    assert held.execute("SELECT rating FROM users").fetchone()["rating"] == 1420.0
-    assert held.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone() is None
-    # The bank arrives on the current scale, as a push would bring it.
-    add_item(held, FEN_TMPL.format(FEN_RANKS[0]))
-    held.commit()
-    held.close()
-
     first = connect(path)
     once = first.execute("SELECT rating FROM users").fetchone()["rating"]
     first.close()
@@ -185,6 +155,22 @@ def test_regrade_waits_for_the_bank_and_then_runs_exactly_once(tmp_path):
     )
     assert conn.execute("SELECT value FROM meta WHERE key='regraded_at'").fetchone() is not None
     conn.close()
+
+
+def test_a_bank_with_no_shallow_gap_refuses_to_open_and_says_why(tmp_path):
+    """Every labeler writes a shallow gap, so a NULL means the database predates
+    the measurement — a restore from far enough back. One loud failure naming
+    the fix beats nineteen guards quietly serving it at whatever difficulty an
+    older curve left behind."""
+    path = tmp_path / "ancient.db"
+    conn = connect(path)
+    add_item(conn, "no-gap")
+    conn.execute("UPDATE items SET shallow_gap = NULL")
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(RuntimeError, match="predates the measurement"):
+        connect(path)
 
 
 def test_a_fresh_database_is_not_regraded(tmp_path):
@@ -347,42 +333,3 @@ def test_list_cli_reports_accounts_and_guests(tmp_path, capsys):
     assert account.main(["--db", str(old_db(tmp_path)), "list"]) == 0
     out = capsys.readouterr().out
     assert "brendan" in out and "3 trials" in out and "guest" in out
-
-
-def test_a_ladder_too_short_to_average_does_not_relock_on_every_open(tmp_path):
-    """`connect` must not take a write lock on a database it has nothing to do
-    to — the labeler may be holding one, and then the server fails to start
-    instead of just working. A row whose ladder has no shallow gap is the case
-    that bites: the derivation writes nothing, so a guard that asks whether the
-    ladder is non-empty rather than whether the answer exists matches it again
-    forever."""
-    path = tmp_path / "short.db"
-    conn = connect(path)
-    add_item(conn, "short-ladder", gap_ladder="0.1000 0.1000", shallow_gap=None)
-    conn.commit()
-    conn.close()
-
-    connect(path).close()  # derives what it can, once
-    # Now hold the write lock from somewhere else and open again.
-    holder = sqlite3.connect(path, isolation_level=None)
-    holder.execute("PRAGMA busy_timeout=0")
-    holder.execute("BEGIN IMMEDIATE")
-    try:
-        connect(path).close()
-    finally:
-        holder.rollback()
-        holder.close()
-
-
-def test_a_row_with_no_shallow_gap_keeps_the_difficulty_it_had(tmp_path):
-    """There is nothing to derive one from, and inventing a difficulty for an
-    item is worse than leaving it on the curve that last had an opinion."""
-    path = tmp_path / "nogap.db"
-    conn = connect(path)
-    add_item(conn, "no-gap", gap_ladder="", shallow_gap=None, rating=1234.5)
-    conn.commit()
-    conn.close()
-
-    row = connect(path).execute("SELECT shallow_gap, rating FROM items").fetchone()
-    assert row["shallow_gap"] is None
-    assert row["rating"] == 1234.5

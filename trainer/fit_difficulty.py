@@ -17,7 +17,6 @@ read as a disagreement with the comment when it is only a convention.
 """
 
 import argparse
-import sqlite3
 from pathlib import Path
 
 import numpy as np
@@ -35,29 +34,28 @@ MIN_BAND = 120
 QUANTILE = 0.75
 
 
-def rows(conn, untargeted: set[str] | None) -> list[tuple[float, list[float], float]]:
+def rows(conn, everything: bool) -> list[tuple[float, list[float], float]]:
     """(mover_elo, ladder, deep gap) for every error the fit is entitled to use.
 
     'game'-source only, because the whole method rests on the item recording a
-    mistake a named human really made; and learnable only, because an item
-    nobody is served says nothing about who could see it.
+    mistake a named human really made; learnable only, because an item nobody is
+    served says nothing about who could see it; and `mined_untargeted` only,
+    because a gap window aimed at a band is selection on the very quantity being
+    regressed. `everything` lifts that last one, which is how you see what the
+    bias is worth rather than taking it on faith.
     """
-    out = []
-    for row in conn.execute(
-        "SELECT fen, mover_elo, gap_ladder, gap_wp FROM items"
-        " WHERE learnable = 1 AND distractor_source = 'game' AND mover_elo IS NOT NULL"
-        "   AND gap_ladder IS NOT NULL AND gap_ladder != ''"
-    ):
-        if untargeted is not None and row["fen"] not in untargeted:
-            continue
-        out.append(
-            (
-                float(row["mover_elo"]),
-                [float(x) for x in row["gap_ladder"].split()],
-                float(row["gap_wp"]),
-            )
+    return [
+        (
+            float(row["mover_elo"]),
+            [float(x) for x in row["gap_ladder"].split()],
+            float(row["gap_wp"]),
         )
-    return out
+        for row in conn.execute(
+            "SELECT mover_elo, gap_ladder, gap_wp FROM items"
+            " WHERE learnable = 1 AND distractor_source = 'game' AND mover_elo IS NOT NULL"
+            "   AND gap_ladder != ''" + ("" if everything else " AND mined_untargeted = 1")
+        )
+    ]
 
 
 def fit(elo: np.ndarray, gap: np.ndarray) -> tuple[float, int]:
@@ -128,10 +126,10 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Re-measure the difficulty curve.")
     ap.add_argument("--db", type=Path, default=DEFAULT_DB)
     ap.add_argument(
-        "--untargeted",
-        type=Path,
-        help="a bank mined without aiming at gap bands; the fit is restricted to "
-        "positions it holds, because targeting is selection on the fitted quantity",
+        "--everything",
+        action="store_true",
+        help="include positions mined at a chosen gap band. Not a measurement — "
+        "it is how you check what that selection is worth",
     )
     ap.add_argument("--windows", action="store_true", help="score every window 1..k")
     ap.add_argument(
@@ -140,16 +138,10 @@ def main() -> None:
     ap.add_argument("--bootstrap", type=int, default=400)
     args = ap.parse_args()
 
-    untargeted = None
-    if args.untargeted:
-        # Read-only, and not through `connect`: this is a reference bank, often
-        # a chmod-444 fixture, and migrating it is neither wanted nor allowed.
-        reference = sqlite3.connect(f"file:{args.untargeted}?mode=ro", uri=True)
-        untargeted = {fen for (fen,) in reference.execute("SELECT fen FROM items")}
-    data = rows(connect(args.db), untargeted)
-    print(f"{len(data)} errors{' from the untargeted bank' if untargeted else ''}")
-    if untargeted is None:
-        print("  (no --untargeted: a bank mined at chosen gap bands will bias this)")
+    data = rows(connect(args.db), args.everything)
+    print(f"{len(data)} errors{', including gap-targeted ones' if args.everything else ''}")
+    if args.everything:
+        print("  (not a measurement — targeting selects on the fitted quantity)")
 
     elo = np.array([e for e, _, _ in data])
     deep_gap = np.array([d for _, _, d in data])

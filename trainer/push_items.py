@@ -13,9 +13,9 @@ ids are assigned per-database and `responses.item_id` points at the live ones.
     local$  uv run python -m trainer.push_items export --out /tmp/items.db
     server$ python -m trainer.push_items merge /tmp/items.db
 
-Positions already in the bank are skipped rather than updated, with one
-exception named on `MEASURED_COLUMNS`. An item whose labels changed underneath
-the answers already given to it would make those responses uninterpretable —
+Positions already in the bank are skipped rather than updated. An item whose
+labels changed underneath the answers already given to it would make those
+responses uninterpretable —
 the recorded `correct` was decided against the old best move. Relabelling in
 place is a different, rarer operation and deliberately isn't this tool.
 """
@@ -25,29 +25,11 @@ import sqlite3
 import sys
 from pathlib import Path
 
-from .db import DEFAULT_DB, connect, regrade_users
+from .db import DEFAULT_DB, connect
 
 # `id` is per-database; everything else about an item is a property of the
 # position, so it travels.
 PER_DATABASE_COLUMNS = {"id"}
-# What `merge` will fill in on a position the live bank already holds: the
-# lookahead ladder, the two readings taken off it, and the difficulty that
-# follows. All of them or none — `shallow_gap` is a reading of `gap_ladder`,
-# `learnable` is a reading of `solution_depth`, and `rating` is a function of
-# `shallow_gap` — so landing one without the others would leave the bank saying
-# several different things about the same item.
-#
-# `rating` is recomputed here rather than left to `db.connect`'s re-derivation
-# because the merge runs against a database a *server* has open, and that server
-# ran its migrations at boot. Nothing would put the new difficulty in front of a
-# user until the machine restarted, which is not a step this runbook has.
-MEASURED_COLUMNS = ("solution_depth", "gap_ladder", "shallow_gap", "learnable")
-# A row nobody has run the ladder over. Just the NULL: 0 is the ladder saying no
-# depth settles it, which is a verdict and not an absence. `learnable` gets no
-# say — on a live row it is the *old* single-depth check's word, taken on a hash
-# the deep pass had just filled, so a row carrying 0 there has still never been
-# measured and `trainer.backfill_depth` would rightly re-measure it.
-_UNMEASURED = "{table}.solution_depth IS NULL"
 
 
 def item_columns(conn: sqlite3.Connection, schema: str = "main") -> list[str]:
@@ -105,14 +87,12 @@ def export(db: Path, out: Path) -> int:
     return n
 
 
-def merge(db: Path, incoming: Path, dry_run: bool = False) -> tuple[int, int, int, bool, int]:
+def merge(db: Path, incoming: Path, dry_run: bool = False) -> tuple[int, int]:
     """Insert every position the live bank doesn't have yet.
 
-    Returns (added, skipped, measured, regraded, stranded) — `measured` being
-    positions already held whose ladder the incoming bank knows and the live one
-    doesn't, `regraded` whether this push was the one that moved the users onto
-    the current scale, and `stranded` how many live positions are left with no
-    measurement at all afterwards.
+    Returns (added, skipped). A difficulty scale change is not this tool's job:
+    `db.connect` re-derives every item and regrades every user together, on the
+    connection opened above, because a bank now always arrives measured.
     """
     if not incoming.exists():
         sys.exit(f"{incoming} does not exist")
@@ -127,50 +107,6 @@ def merge(db: Path, incoming: Path, dry_run: bool = False) -> tuple[int, int, in
             f"INSERT INTO main.items ({cols}) SELECT {cols} FROM inc.items"
             " WHERE true ON CONFLICT(fen) DO NOTHING"
         ).rowcount
-        # The one thing a held position does take from the incoming bank. It is
-        # not the relabelling this tool refuses: lookahead depth needs Stockfish
-        # and so can only be measured on the pipeline's side of the boundary,
-        # and filling in a blank changes how hard the item is *said* to be, and
-        # whether it is noise, without touching which move is correct — so the
-        # answers already given to it still mean what they meant. Only blanks:
-        # a row that has been measured keeps its verdict, since re-measuring one
-        # is relabelling.
-        #
-        # Skipped outright when either side predates the column. Schema skew is
-        # this tool's whole premise, and a bank exported from an older checkout
-        # has to still deliver its items rather than raise on the way past — the
-        # failure would roll the inserts back with it.
-        measured = 0
-        both = set(item_columns(conn, "inc")) & set(item_columns(conn, "main"))
-        if set(MEASURED_COLUMNS) <= both:
-            fill = ", ".join(MEASURED_COLUMNS)
-            measured = conn.execute(
-                # `rating` only where there is a gap to derive one from. An
-                # incoming row can carry a verdict and no gap — a ladder the
-                # engine cut short is measured and unservable both — and
-                # `difficulty_rating` has no answer for that, so asking it would
-                # raise and take the inserts down with it.
-                f"UPDATE main.items SET ({fill}, rating) = (SELECT {fill},"
-                f"    CASE WHEN inc.items.shallow_gap IS NULL THEN main.items.rating"
-                f"         ELSE difficulty_rating(inc.items.shallow_gap) END"
-                f"    FROM inc.items WHERE inc.items.fen = main.items.fen)"
-                f" WHERE {_UNMEASURED.format(table='main.items')}"
-                f"   AND EXISTS (SELECT 1 FROM inc.items WHERE inc.items.fen = main.items.fen"
-                f"               AND NOT ({_UNMEASURED.format(table='inc.items')}))"
-            ).rowcount
-        # The push is what puts a live bank on the current scale, so it is also
-        # where the users move — `db.connect` held them back until the items had
-        # arrived, and the server that is serving them ran its migrations at
-        # boot and will not run them again.
-        # Positions the live bank holds and the incoming one doesn't keep the
-        # rating an older curve gave them, with nothing to re-derive from —
-        # a bank quietly on two scales at once. It can only happen if the live
-        # side has items this push has never seen, so counting it is the check
-        # that the local bank is a superset, which is what the runbook assumes.
-        stranded = conn.execute(
-            "SELECT COUNT(*) FROM main.items WHERE shallow_gap IS NULL"
-        ).fetchone()[0]
-        regraded = regrade_users(conn)
         if dry_run:
             conn.rollback()
         else:
@@ -178,7 +114,7 @@ def merge(db: Path, incoming: Path, dry_run: bool = False) -> tuple[int, int, in
     finally:
         detach(conn, "inc")
         conn.close()
-    return added, offered - added, measured, regraded, stranded
+    return added, offered - added
 
 
 def main() -> None:
@@ -195,22 +131,11 @@ def main() -> None:
     if args.cmd == "export":
         print(f"exported {export(args.db, args.out)} items to {args.out}")
     else:
-        added, skipped, measured, regraded, stranded = merge(args.db, args.incoming, args.dry_run)
+        added, skipped = merge(args.db, args.incoming, args.dry_run)
         print(
             f"{'would add' if args.dry_run else 'added'} {added} items"
             f", skipped {skipped} already in the bank"
-            f", filled in the lookahead ladder on {measured} of them"
         )
-        if stranded:
-            print(
-                f"WARNING: {stranded} positions in {args.db} are still unmeasured — this bank"
-                " does not contain them, so they keep an older curve's difficulty"
-            )
-        if regraded:
-            print(
-                "every user rating moved onto the current difficulty scale"
-                f"{' — would have, rather' if args.dry_run else ''}"
-            )
 
 
 if __name__ == "__main__":

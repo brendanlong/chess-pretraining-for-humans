@@ -37,9 +37,10 @@ read off a quantile, never a rate.
 untargeted half is the 12,660 positions in the original seed bank; the rest
 were mined with `--min-gap-wp`/`--max-gap-wp` aimed at filling holes, which is
 selection on the very quantity being regressed. Fitting on everything moves the
-same measurement by a factor of three. `trainer.fit_difficulty --untargeted`
-takes a reference bank and restricts the fit to positions it holds; a fit run
-without it is not a measurement.
+same measurement by a factor of three. Which window a position came through is
+recorded on it (`items.mined_untargeted`), so the fit restricts itself and there
+is no reference bank to keep. `--everything` lifts the restriction, which is how
+to see what the selection is worth rather than taking the factor on faith.
 
 ## The estimator, and why it's this one
 
@@ -120,7 +121,7 @@ constant that lowered it far enough pushes the easy tail below zero.
 - **The whole axis explains a few percent of the variance in erring strength.**
   That is not a defect to be fixed by tuning; it is what one engine number can
   say about one human's attention. Treat a change that improves it a lot with
-  suspicion, and check it against `--untargeted` before believing it.
+  suspicion, and compare it against `--everything` before believing it.
 
 Re-running the fit is `uv run python -m trainer.fit_difficulty`. If it stops
 returning what `rating.GAP_SLOPE`'s comment claims, the estimator has drifted

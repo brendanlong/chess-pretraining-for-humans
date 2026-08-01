@@ -115,71 +115,22 @@ add, asks, then merges. Positions already in the bank are skipped rather than
 relabelled: an item whose best move changed under the answers already given to
 it would make those responses uninterpretable.
 
-Run `uv run python -m trainer.backfill_depth` over the local bank first. It is
-the only way the lookahead ladder — and so any difficulty at all — reaches the
-deployment, because measuring one needs Stockfish and the image doesn't carry
-it. The merge fills the ladder and everything read off it into positions the
-live bank already holds, which is the one thing it will update; the dry run
-counts them separately, so you can watch it happen. Until it does, those items
-keep whatever the old deep-gap curve gave them.
 
-Budget about half an hour per 25,000 items at `--workers 22`; it is a deep
-search per item, not the shallow one the difficulty axis used to need.
+## When a release changes the difficulty curve
 
-## Shipping the difficulty change (once)
+Item difficulties are re-derived and every user regraded together, on the first
+connect after the deploy — one transaction, so nobody is ever aimed at a scale
+the bank isn't on. Displayed ratings move; nobody's trials do.
 
-The release that moves difficulty onto the shallow gap needs the bank measured
-and pushed, and until it is, nothing about the live instance changes. Order is
-forced: the measurement can only cross as data, and only the new release knows
-the columns to carry it in.
+The one thing to get right is that the bank must already carry the measurement
+the new curve reads. A bank labeled by an older pipeline doesn't, and `connect`
+refuses to open it rather than serve it at whatever an older curve left behind:
 
-```bash
-# 1. Measure locally. ~30 min per 25k items; needs stockfish. Idempotent, so a
-#    re-run picks up where it stopped.
-uv run python -m trainer.backfill_depth --workers 20
+    RuntimeError: /data/items.db has items with no shallow_gap …
 
-# 2. Check the fit still says what the constants claim before shipping it.
-uv run python -m trainer.fit_difficulty --untargeted /path/to/an/untargeted/bank
-
-# 3. Deploy. Items keep their old difficulty (no `shallow_gap` yet) and every
-#    user keeps their rating — the regrade deliberately waits for the bank.
-git push   # CI deploys main
-
-# 4. Push the bank. This is the switch: it fills the measurements in, rewrites
-#    the difficulties, and regrades every user in one transaction.
-./deploy/push-items.sh data/items.db
-```
-
-Step 4 prints what it did. Two lines to read rather than skim:
-
-- `filled in the lookahead ladder on N of them` — N should be the whole live
-  bank. It is the count of positions that just gained a difficulty.
-- `WARNING: N positions … are still unmeasured` — the local bank didn't
-  contain them, so they keep an older curve's difficulty and the bank is on two
-  scales at once. It should not appear; if it does, the local bank is missing
-  positions the deployment has and needs them mined or the rows retired.
-
-`every user rating moved onto the current difficulty scale` is the regrade. It
-happens exactly once; a second push says nothing.
-
-Answers are not affected and nothing is rebuilt. `responses` is untouched, the
-correct move for every item is unchanged, and each row already carries the
-difficulty it was served at, so history stays interpretable across the change —
-`meta.regraded_at` marks where the scales change for anyone reading it later.
-
-### What is left over afterwards
-
-- **`items.solution_depth`** stays measured and stored. It no longer sets
-  difficulty; it is the learnability verdict, and it is kept because it is the
-  ladder's other reading and costs nothing to carry.
-- **The version-0 regrade** in `trainer/rating.py` exists only for a database
-  restored from before the *first* difficulty curve. Once no backup that old
-  survives — the window is 28 days, see below — `_precurve_to_deep` and the
-  deep-gap constants beside it can go, and `regraded_user_rating` loses a
-  branch.
-- **Items nobody can be aimed at.** About 3% of the bank is easier than the
-  easiest band any user targets. Harmless, and it is what the easy tail is for,
-  but it is bank that isn't working.
+The fix is a bank refresh (above), which is also the only way a measurement
+crosses the machine boundary — taking one needs an engine the image doesn't
+carry.
 
 ## Restoring
 
