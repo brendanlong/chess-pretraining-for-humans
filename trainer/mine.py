@@ -38,17 +38,22 @@ MIN_PLY = 12  # skip opening-book territory
 MAX_PLY = 90
 MAX_ABS_EVAL_CP = 500  # position not already decided (white POV)
 MIN_GAP_WP = 0.03  # played move must lose at least this much win prob...
-# ...but not be an absurd blunder nobody would consider. This is the server's
-# shallow gap, not the deep one that fixes an item's difficulty — but the two
-# track each other closely enough to aim with (r = 0.95 over 2,431 labeled
-# candidates; deep minus server centred on 0.000, sd 0.019), so narrowing this
-# window really does select a difficulty band, and about 70% of a window lands
-# in the matching band after labeling. That is what makes filling a thin band
-# affordable: the alternative is labeling everything and keeping a fourteenth
-# of it.
+# ...but not be an absurd blunder nobody would consider. This window is read off
+# the server's eval, and it pins the *deep* gap tightly — r = 0.95 over 2,431
+# labeled candidates, deep minus server centred on 0.000, sd 0.019.
+#
+# What it does not pin is difficulty, which is a function of the gap a *shallow*
+# search saw (`rating.GAP_SLOPE`). Deep and shallow correlate at 0.79 and no
+# better, so a 0.10-wide window here arrives spread over roughly a 0.25-wide
+# range of shallow gaps: aiming it is a shotgun, not a rifle. Measured over the
+# 24,989-item bank, a window lands about 7% of what it labels in any one
+# difficulty band, and about half of it somewhere in the ten bands that make up
+# the easy end. Filling a thin band is therefore still affordable — order twice
+# what you need and mine wide — but the arithmetic is per-region, not per-band,
+# and `trainer.supply --gaps` is what prints where a window actually went.
 #
 # What the window does not do is *bound* difficulty — `label.MAX_GAP_WP` is the
-# one that binds, and the bank reaches to a 0.648 gap because its easy end was
+# one that binds, and the bank reaches to a 0.70 gap because its easy end was
 # mined with this raised on the command line, which is what the flags are for.
 MAX_GAP_WP = 0.35
 MIN_BASE_TIME_S = 180  # blitz and slower; bullet errors are mostly mouse slips

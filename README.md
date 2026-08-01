@@ -7,6 +7,8 @@ you near 80% accuracy.
 
 - **[SPEC.md](SPEC.md)** — what this is trying to do, and the invariants.
 - **[DESIGN.md](DESIGN.md)** — how the app is put together.
+- **[CALIBRATION.md](CALIBRATION.md)** — where the difficulty numbers came
+  from, and what to re-run before changing them.
 
 ## Running it
 
@@ -31,8 +33,20 @@ The database is `data/items.db` unless `TRAINER_DB` says otherwise — which is
 how the container finds it on its volume.
 
 Labeling is the slow step and its defaults are laptop-sized. On a bigger box
-raise `--workers` toward the core count before `--threads`: Stockfish scales
-better as independent searches than as one wide one.
+raise `--workers` toward the core count rather than `--threads`: Stockfish
+scales better as independent searches than as one wide one, and one thread is
+also what makes an item's required lookahead reproducible, so leaving
+`--threads` alone is free.
+
+A bank labeled before the lookahead ladder was measured has no difficulty of
+its own — its items keep whatever the old deep-gap curve gave them. One pass
+fixes it, at roughly half an hour per 25,000 items on 22 workers; it is a deep
+search apiece, and everything else is read off the stored ladder without an
+engine:
+
+```bash
+uv run python -m trainer.backfill_depth --workers 20
+```
 
 ### Keeping the bank full
 
@@ -41,20 +55,37 @@ nearest items it has — so it has to be looked for:
 
 ```bash
 uv run python -m trainer.supply           # per user rating: what its band holds
-uv run python -m trainer.supply --gaps    # the same shortfall, in mining units
+uv run python -m trainer.supply --gaps    # per deep-gap bin: where its items landed
 ```
 
-Refilling a thin band is the ordinary two steps with a gap window on each. The
-window works because the server eval mining filters on tracks the deep eval that
-fixes difficulty closely enough to aim with — measured, in `trainer/mine.py`.
+Refilling a thin band is the ordinary two steps with a gap window on each.
 
 ```bash
 curl -s -r 0-4000000000 https://database.lichess.org/standard/lichess_db_standard_rated_2026-06.pgn.zst \
   | zstdcat 2>/dev/null \
   | uv run python -m trainer.mine --min-gap-wp 0.20 --max-gap-wp 0.25 \
       --max-candidates 2000 > data/band.jsonl
-uv run python -m trainer.label data/band.jsonl --workers 20 --threads 1
+uv run python -m trainer.label data/band.jsonl --workers 20
 ```
+
+A gap window aims at the *deep* gap, and difficulty is a function of the
+shallow one. They correlate at 0.79 and no better, so a window lands across a
+spread of difficulties rather than in a band — `trainer.supply --gaps` prints
+where each window's items actually went, which is what to aim with.
+
+The easy end is the thin one, and it is the reachable one. A position a shallow
+look settles at a glance is one humans rarely got wrong, so the bank was never
+stocked there: it holds 7,300 items below a 0.10 deep gap, which land in a
+beginner's band 0.1% of the time, against 4,200 above 0.40, which land there
+about 65% of the time. Mining `--min-gap-wp 0.30 --max-gap-wp 0.60` puts
+roughly half of what it labels somewhere in the ten bands users from 550 to
+1850 are aimed at; those bands are about 3,000 items short of a thousand
+apiece, so the order is around 6,000 candidates — a couple of hours of
+labeling, not a re-mine.
+
+The top band (a user at 3150) is the expensive one: about 4% of a window lands
+there, so filling it costs more than the rest combined. It is also the band
+almost nobody occupies, which is the order in which to care about them.
 
 Mining is cheap next to labeling, so mine a window generously and label what
 the shortfall asks for. Months are independent streams and can be mined at

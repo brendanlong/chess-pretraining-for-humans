@@ -13,17 +13,26 @@ frontend. Data flows one way:
   of win probability.
 - **Labeling** (`trainer/label.py`) runs local Stockfish per candidate:
   a deep multipv search provides ground truth (best move, both evals,
-  8-ply lines for both moves); a shallow pass implements the learnability
-  filter; the win-probability gap fixes the item's difficulty for good,
+  8-ply lines for both moves); then one more search, restricted to those two
+  moves and started from a cleared hash, ranks the pair at every depth on its
+  way back to the same depth. That whole curve is stored (`gap_ladder`), and
+  the mean of its shallow end is the item's difficulty (`shallow_gap`),
   through the curve on `rating.difficulty_rating` — whose slope is measured
-  from the strength of the humans whose errors the items are, and whose
-  reasoning sits beside the constants. Gap-range flags allow mining
-  specific difficulty bands.
-  (`trainer/backfill_pvs.py` retrofits lines onto older items.)
+  from the strength of the humans whose errors the items are, on the half of
+  the bank that was mined without aiming at particular gaps, and whose
+  reasoning sits beside the constants — and what was tried instead, in
+  CALIBRATION.md. Nothing is dropped for being hard;
+  only for the two searches disagreeing at full depth, which has nothing to
+  teach. Gap-range flags steer mining, but only at the *deep* gap, so an
+  order lands across a spread of difficulties rather than in a band.
+  (`trainer/backfill_pvs.py` and `trainer/backfill_depth.py` retrofit lines
+  and ladders onto older items; the columns read off a ladder are derived
+  without an engine, so a bank that has one needs no re-search.)
 - **Supply** (`trainer/supply.py`) reports what the bank can serve at each
-  user rating, and what a refill would have to mine to fix a thin one. Why a
-  thin band is otherwise invisible, and why the shortfall is stated in gaps,
-  is in the module.
+  user rating, and — because mining aims at the deep gap while difficulty is
+  made of the shallow one — where each deep-gap bin's items actually landed,
+  rather than an order in items it can no longer honestly state. Why a thin
+  band is otherwise invisible is in the module.
 
 ## Server (`trainer/server.py`)
 
@@ -260,7 +269,13 @@ file: the bank and the record share a file, so `trainer/push_items.py`
 carries items across as their own database and merges them in, matching on
 position rather than on row id. Positions already present are skipped —
 relabelling an item under the answers already given to it would make those
-answers uninterpretable.
+answers uninterpretable. The single exception is the lookahead ladder on a
+position the live bank has never had measured, which the merge fills in along
+with everything read off it: it needs Stockfish and so can only be measured on
+the pipeline's side, and it changes how hard the item is *said* to be without
+touching which move is correct. The merge writes the difficulty itself rather
+than leaving it to `db.connect`, because the server it is merging under ran
+its migrations at boot and will not run them again.
 
 Bootstrap, runbooks (bank refresh, restore), and the operational cautions
 live in `deploy/README.md`; everything else about the container is said in

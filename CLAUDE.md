@@ -4,13 +4,17 @@ Before adding or changing features, read:
 
 - **[SPEC.md](SPEC.md)** — goals and invariants (what we want)
 - **[DESIGN.md](DESIGN.md)** — architecture (how it's built)
+- **[CALIBRATION.md](CALIBRATION.md)** — what item difficulty is measured
+  from, what was tried and rejected, and what to re-run before retuning it
 - **[deploy/README.md](deploy/README.md)** — running the live instance
   (bootstrap, runbooks, operational cautions; the AWS half is
   [terraform/README.md](terraform/README.md))
 
 When a change alters behavior, update the relevant file: new goals or
-invariants go in SPEC.md, structural changes in DESIGN.md, and anything
-an operator does or must not do goes in deploy/README.md. All of them
+invariants go in SPEC.md, structural changes in DESIGN.md, anything an
+operator does or must not do goes in deploy/README.md, and a difficulty
+constant that gets refitted — or an alternative that gets ruled out —
+goes in CALIBRATION.md. All of them
 stay brief, code-free, and non-repeating — if it's obvious from the
 code, or already said in one of the others, don't document it. Detailed
 "why is it built this way" reasoning lives in comments beside the code

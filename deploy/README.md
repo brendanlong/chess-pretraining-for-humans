@@ -115,6 +115,72 @@ add, asks, then merges. Positions already in the bank are skipped rather than
 relabelled: an item whose best move changed under the answers already given to
 it would make those responses uninterpretable.
 
+Run `uv run python -m trainer.backfill_depth` over the local bank first. It is
+the only way the lookahead ladder — and so any difficulty at all — reaches the
+deployment, because measuring one needs Stockfish and the image doesn't carry
+it. The merge fills the ladder and everything read off it into positions the
+live bank already holds, which is the one thing it will update; the dry run
+counts them separately, so you can watch it happen. Until it does, those items
+keep whatever the old deep-gap curve gave them.
+
+Budget about half an hour per 25,000 items at `--workers 22`; it is a deep
+search per item, not the shallow one the difficulty axis used to need.
+
+## Shipping the difficulty change (once)
+
+The release that moves difficulty onto the shallow gap needs the bank measured
+and pushed, and until it is, nothing about the live instance changes. Order is
+forced: the measurement can only cross as data, and only the new release knows
+the columns to carry it in.
+
+```bash
+# 1. Measure locally. ~30 min per 25k items; needs stockfish. Idempotent, so a
+#    re-run picks up where it stopped.
+uv run python -m trainer.backfill_depth --workers 20
+
+# 2. Check the fit still says what the constants claim before shipping it.
+uv run python -m trainer.fit_difficulty --untargeted /path/to/an/untargeted/bank
+
+# 3. Deploy. Items keep their old difficulty (no `shallow_gap` yet) and every
+#    user keeps their rating — the regrade deliberately waits for the bank.
+git push   # CI deploys main
+
+# 4. Push the bank. This is the switch: it fills the measurements in, rewrites
+#    the difficulties, and regrades every user in one transaction.
+./deploy/push-items.sh data/items.db
+```
+
+Step 4 prints what it did. Two lines to read rather than skim:
+
+- `filled in the lookahead ladder on N of them` — N should be the whole live
+  bank. It is the count of positions that just gained a difficulty.
+- `WARNING: N positions … are still unmeasured` — the local bank didn't
+  contain them, so they keep an older curve's difficulty and the bank is on two
+  scales at once. It should not appear; if it does, the local bank is missing
+  positions the deployment has and needs them mined or the rows retired.
+
+`every user rating moved onto the current difficulty scale` is the regrade. It
+happens exactly once; a second push says nothing.
+
+Answers are not affected and nothing is rebuilt. `responses` is untouched, the
+correct move for every item is unchanged, and each row already carries the
+difficulty it was served at, so history stays interpretable across the change —
+`meta.regraded_at` marks where the scales change for anyone reading it later.
+
+### What is left over afterwards
+
+- **`items.solution_depth`** stays measured and stored. It no longer sets
+  difficulty; it is the learnability verdict, and it is kept because it is the
+  ladder's other reading and costs nothing to carry.
+- **The version-0 regrade** in `trainer/rating.py` exists only for a database
+  restored from before the *first* difficulty curve. Once no backup that old
+  survives — the window is 28 days, see below — `_precurve_to_deep` and the
+  deep-gap constants beside it can go, and `regraded_user_rating` loses a
+  branch.
+- **Items nobody can be aimed at.** About 3% of the bank is easier than the
+  easiest band any user targets. Harmless, and it is what the easy tail is for,
+  but it is bank that isn't working.
+
 ## Restoring
 
 Litestream restores on boot only when the database is missing, so recovering
@@ -181,6 +247,12 @@ change first, if it should change.
   every answer, and its own migrations won't put them back, so it boots happily
   and then 500s on `/api/answer` for every user. Rolling back past this release
   means restoring the database too, not just `flyctl releases rollback`.
+
+  The lookahead release drops one more, `items.depth_shallow`, for a plainer
+  reason: there is no shallow pass any more, so the column named a cutoff that
+  no longer exists. Nothing reads it and nothing can recompute it, which is the
+  point — but the same rollback caution applies, because the older labeler's
+  `INSERT` names it.
 - **The difficulty regrade moves every rating in the database, once.** The
   release that fits the gap-to-difficulty curve rewrites `items.rating` from
   `gap_wp` and `users.rating` onto the same scale, the first time the new server
@@ -193,6 +265,31 @@ change first, if it should change.
   file, so a pre-regrade backup arrives without it and is regraded correctly on
   the next open, while clearing it on a database that has already been regraded
   is precisely the double pass it exists to prevent.
+- **Moving difficulty onto the shallow gap regrades every rating — on the
+  push, not on the deploy.** The release alone changes nothing anyone can see:
+  every live row has a NULL `shallow_gap` at that moment, and a row with no
+  measurement keeps the difficulty the old curve gave it. The users are held
+  back to match, because moving them onto a scale the bank isn't on yet would
+  aim a mid-table user about eighteen percentile points too hard for however
+  long the operator took over the push. So `db.regrade_users` waits for the
+  bank, and `trainer.push_items` — the step that actually brings a live bank
+  onto the new scale — is what releases it, in the same transaction. It says
+  so when it does.
+
+  Then every displayed Elo moves, by about 700 in the middle. Nobody's trials
+  change: the anchors preserve the percentile of the bank each user was being
+  served, which is the only thing the two scales have in common, because they
+  are readings of different searches and share no gap.
+
+  Expect the easy end to be the thin one afterwards. A position a shallow look
+  settles at a glance is one humans rarely got wrong, so few were ever mined,
+  and it is beginners' bands that sit under the floor — the opposite of before.
+  `trainer.supply` names them; the remedy is mining, aimed with `--gaps`.
+
+  **Never clear or lower `meta.schema_version` by hand.** A restore brings the
+  whole file, so a backup from before either regrade arrives stamped with what
+  it was and is chained forward correctly on the next open; clearing it on a
+  database already regraded is precisely the double pass the gate prevents.
 - **`VACUUM` breaks replication.** It rewrites every page and invalidates
   Litestream's tracking. `VACUUM INTO` a new file and treat it as a new
   database (stop Litestream, clear `/data/.items.db-litestream`, re-snapshot).

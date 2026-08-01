@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Protocol
 
 from . import rating
-from .rating import difficulty_rating
+from .rating import difficulty_rating, shallow_gap_of
 
 log = logging.getLogger(__name__)
 
@@ -48,7 +48,7 @@ DEFAULT_DB = Path(os.environ.get("TRAINER_DB", "data/items.db"))
 BUSY_TIMEOUT_MS = 10_000
 USERS_NAME_INDEX = "idx_users_name_nocase"
 # Bumped only for migrations that can't tell from the data whether they ran.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS items (
@@ -66,10 +66,34 @@ CREATE TABLE IF NOT EXISTS items (
     gap_wp REAL NOT NULL,
     pv_best TEXT,        -- space-separated UCI line starting with best_uci
     pv_distractor TEXT,  -- space-separated UCI line starting with distractor_uci
-    learnable INTEGER NOT NULL,       -- shallow search agrees which move is better
+    -- Plies of lookahead the comparison needs: the shallowest search that gets
+    -- the two moves the right way round and is not contradicted deeper.
+    --
+    -- Three states, and keeping them apart is what stops `trainer.push_items`
+    -- and `trainer.backfill_depth` from disagreeing about which rows still need
+    -- the ladder run over them. 1..depth_deep is a depth; 0 is the ladder's
+    -- other answer, that not even depth_deep settles it; NULL is that nobody has
+    -- asked, which is only ever a row labeled before this was measured. Nothing
+    -- derives a difficulty from a NULL: such a row keeps the rating an older
+    -- curve gave it until a measurement arrives, which is what the guards on
+    -- the re-derivation below are for.
+    solution_depth INTEGER,
+    -- The measurement `solution_depth` summarises: the win-probability gap the
+    -- pair was ranked at, at every depth from 1 up, space-separated. Kept
+    -- because it is the expensive half — a deep search per item — while every
+    -- way of reading it is cheap and none of them is settled. A better
+    -- difficulty model can be fitted off these columns without going near
+    -- Stockfish again, which is the difference between an afternoon and a
+    -- re-label. A gap here can be negative: at that depth the search preferred
+    -- the wrong move, which is more than "didn't see it".
+    gap_ladder TEXT,
+    -- The mean of the ladder's first `rating.SHALLOW_PLIES` rungs: the gap as
+    -- the shallow end of the search saw it, which is what difficulty is a
+    -- function of. Negative where the surface recommends the wrong move.
+    shallow_gap REAL,
+    learnable INTEGER NOT NULL,       -- solution_depth != 0, once it is measured
     depth_deep INTEGER NOT NULL,
-    depth_shallow INTEGER NOT NULL,
-    rating REAL NOT NULL,             -- difficulty: gap_wp via rating.difficulty_rating
+    rating REAL NOT NULL,             -- difficulty: rating.difficulty_rating(shallow_gap)
     ply INTEGER,
     game_url TEXT,
     mover_elo INTEGER,
@@ -82,7 +106,7 @@ CREATE TABLE IF NOT EXISTS items (
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY,
     name TEXT UNIQUE NOT NULL,  -- chosen username once claimed; opaque 'guest_…' before
-    rating REAL NOT NULL DEFAULT 575,  -- rating.USER_START; every insert sets it explicitly
+    rating REAL NOT NULL DEFAULT 850,  -- rating.USER_START; every insert sets it explicitly
     calib_step REAL NOT NULL DEFAULT 250,  -- staircase step; < ~40 means calibrated
     attempts INTEGER NOT NULL DEFAULT 0,
     password_hash TEXT,  -- NULL means guest
@@ -170,6 +194,54 @@ def open_connection(
     return conn
 
 
+def _regrade_due(conn: sqlite3.Connection) -> bool:
+    """Whether `regrade_users` would do anything — read-only, so a caller can
+    ask before deciding to take a write lock. Held back while a bank still has
+    no measurement on the current scale, which can be indefinitely, so asking
+    only the schema version would relock the file on every open."""
+    if _schema_version(conn) >= SCHEMA_VERSION:
+        return False
+    has_users = conn.execute("SELECT 1 FROM users LIMIT 1").fetchone()
+    measured = conn.execute("SELECT 1 FROM items WHERE shallow_gap IS NOT NULL LIMIT 1").fetchone()
+    return bool(measured or not has_users)
+
+
+def regrade_users(conn: sqlite3.Connection) -> bool:
+    """Move every user onto the current scale, once, if the bank is on it too.
+
+    Returns whether it ran. The caller owns the transaction: this is called both
+    from `connect`'s migration and from `trainer.push_items`, which is the step
+    that actually brings a live bank onto the new scale.
+
+    Users move only once the items have. The two are one change — a rating means
+    nothing except against the difficulties it selects — but they arrive on
+    different days: the release brings the curve, and the bank's measurements
+    come later over the machine boundary, because taking them needs an engine
+    the image doesn't carry. A regrade on the release alone would aim everyone
+    at a scale nothing in the bank was on yet, which for a mid-scale user is
+    eighteen percentile points of extra difficulty until the push lands.
+
+    A database with no users has nothing to move and is stamped current
+    immediately, so a fresh one doesn't carry a pending regrade it will never
+    need. The version gate is re-read here, under whatever lock the caller took,
+    because two servers starting together would otherwise both see the old
+    version and both regrade.
+    """
+    if not _regrade_due(conn):
+        return False
+    was = _schema_version(conn)
+    conn.execute("UPDATE users SET rating = regraded_user_rating(rating, ?)", (was,))
+    conn.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
+        (str(SCHEMA_VERSION),),
+    )
+    # When, so offline analysis can split `responses` on it: rows on either side
+    # carry rating snapshots from different scales, and nothing else in the
+    # record says where the boundary is.
+    conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('regraded_at', datetime('now'))")
+    return True
+
+
 def connect(path: Path = DEFAULT_DB, check_same_thread: bool = True) -> sqlite3.Connection:
     """Open a database and bring its schema up to date."""
     conn = open_connection(path, check_same_thread)
@@ -219,24 +291,55 @@ def connect(path: Path = DEFAULT_DB, check_same_thread: bool = True) -> sqlite3.
     for col in ("pv_best", "pv_distractor"):
         if col not in item_cols:
             conn.execute(f"ALTER TABLE items ADD COLUMN {col} TEXT")
+    # Rows labeled before the ladder was measured keep NULLs here, and every
+    # reader of `shallow_gap` guards on it — so they stay exactly as hard as
+    # they were until `trainer.backfill_depth` or a push measures them.
+    for col, decl in (
+        ("solution_depth", "INTEGER"),
+        ("gap_ladder", "TEXT"),
+        ("shallow_gap", "REAL"),
+    ):
+        if col not in item_cols:
+            conn.execute(f"ALTER TABLE items ADD COLUMN {col} {decl}")
     # Difficulty is a function of the item alone, so the columns that existed to
     # carry answers back into it go. `items.attempts`/`correct` were a global
     # tally no query reads now. `responses.item_rating_after` recorded a move
     # that doesn't happen; recovering one from an old row needs the K-factor and
     # the branch that froze it during calibration, neither of which exists here,
     # so `deploy/README.md` says to copy it out first.
-    for col in ("attempts", "correct"):
+    #
+    # `items.depth_shallow` goes for a different reason: there is no shallow
+    # pass any more. The ladder runs to `depth_deep` and grades what it finds
+    # instead of rejecting it, so the second depth recorded a cutoff that no
+    # longer exists — and a column naming a rule the code doesn't follow is
+    # worse than no column.
+    for col in ("attempts", "correct", "depth_shallow"):
         if col in item_cols:
             conn.execute(f"ALTER TABLE items DROP COLUMN {col}")
     response_cols = {row[1] for row in conn.execute("PRAGMA table_info(responses)")}
     if "item_rating_after" in response_cols:
         conn.execute("ALTER TABLE responses DROP COLUMN item_rating_after")
     # Registering the function rather than repeating the formula in SQL keeps
-    # one definition of difficulty.
+    # one definition of difficulty. `push_items` calls it by this name too, from
+    # a merge that has to land a new difficulty without waiting for a restart.
     conn.create_function("difficulty_rating", 1, difficulty_rating, deterministic=True)
-    conn.create_function("regraded_user_rating", 1, rating.regraded_user_rating, deterministic=True)
-    # Item difficulty is re-derived, because "a pure function of `gap_wp`" has to
-    # be true of the rows, not just of the code that writes new ones. Users are
+    conn.create_function("shallow_gap_of", 1, shallow_gap_of, deterministic=True)
+    conn.create_function("regraded_user_rating", 2, rating.regraded_user_rating, deterministic=True)
+    # Derived from the ladder rather than re-measured: the search is the
+    # expensive half and it is already in the row, so a bank that has ladders
+    # gains the column the app selects on without going near Stockfish.
+    #
+    # Guarded on the *result*, not on the ladder being non-empty. A ladder too
+    # short to average has no shallow gap, so writing one leaves the row exactly
+    # as it was found — and a guard that didn't notice would match it again on
+    # the next connect, taking a write lock every time the server starts, which
+    # is the thing the read-first rule above exists to prevent.
+    derivable = "shallow_gap IS NULL AND shallow_gap_of(gap_ladder) IS NOT NULL"
+    if conn.execute(f"SELECT 1 FROM items WHERE {derivable} LIMIT 1").fetchone():
+        conn.execute(f"UPDATE items SET shallow_gap = shallow_gap_of(gap_ladder) WHERE {derivable}")
+    # Item difficulty is re-derived, because "a pure function of `shallow_gap`"
+    # has to be true of the rows, not just of the code that writes new ones.
+    # Users are
     # regraded in the same transaction, because the two are one change: a rating
     # means nothing except against the difficulties it selects, so moving the
     # items without moving the users would silently re-aim everyone.
@@ -249,29 +352,22 @@ def connect(path: Path = DEFAULT_DB, check_same_thread: bool = True) -> sqlite3.
     # both see version 0 and both regrade. The lock is taken only when a read
     # says there is work, so an already-current database still opens without one.
     items_stale = conn.execute(
-        "SELECT 1 FROM items WHERE rating != difficulty_rating(gap_wp) LIMIT 1"
+        "SELECT 1 FROM items"
+        " WHERE shallow_gap IS NOT NULL AND rating != difficulty_rating(shallow_gap) LIMIT 1"
     ).fetchone()
-    if items_stale or _schema_version(conn) < SCHEMA_VERSION:
+    if items_stale or _regrade_due(conn):
         conn.commit()  # release the implicit transaction the ALTERs above opened
         conn.execute("BEGIN IMMEDIATE")
         try:
             conn.execute(
-                "UPDATE items SET rating = difficulty_rating(gap_wp)"
-                " WHERE rating != difficulty_rating(gap_wp)"
+                # Only where there is a gap to derive from. A row the ladder
+                # has never run over has no difficulty of its own, so it keeps
+                # the one the old curve gave it until a measurement arrives —
+                # being stale is a smaller wrong than being invented.
+                "UPDATE items SET rating = difficulty_rating(shallow_gap)"
+                " WHERE shallow_gap IS NOT NULL AND rating != difficulty_rating(shallow_gap)"
             )
-            if _schema_version(conn) < SCHEMA_VERSION:
-                conn.execute("UPDATE users SET rating = regraded_user_rating(rating)")
-                conn.execute(
-                    "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
-                    (str(SCHEMA_VERSION),),
-                )
-                # When, so offline analysis can split `responses` on it: rows on
-                # either side carry rating snapshots from different scales, and
-                # nothing else in the record says where the boundary is.
-                conn.execute(
-                    "INSERT OR REPLACE INTO meta (key, value)"
-                    " VALUES ('regraded_at', datetime('now'))"
-                )
+            regrade_users(conn)
             conn.commit()
         except Exception:
             conn.rollback()

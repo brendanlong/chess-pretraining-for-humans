@@ -16,6 +16,10 @@ assets = [
     "playwright>=1.61.0",
 ]
 dev = [
+    # `trainer.fit_difficulty` needs it, and nothing the server does. The image
+    # builds with `--no-dev`, so it stays out of the deployment; CI installs the
+    # default groups, so the tests that check the fit still run there.
+    "numpy>=2.3.5",
     "pytest>=9.1.1",
     "ruff>=0.15.0",
     "pyright>=1.1.407",

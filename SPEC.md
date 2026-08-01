@@ -50,26 +50,66 @@ automatically.
 - **The distractor is the move actually played in the game** whenever it
   wasn't best (real human errors), with the engine's second choice as
   fallback.
-- **Difficulty lives in win-probability space**, never raw centipawns, and
-  is a property of the item alone — fixed by the engine's gap when the item
-  is labeled, and never revised by anyone's answers. A gap alone can't
-  predict how hard a comparison *feels*, so this is knowingly approximate;
-  the correction belongs in offline analysis, which can regularise it and
-  isn't the thing choosing which items get served. Online it would make
-  every user's difficulty a function of every other user's answers, which
-  costs more — in coupling, and in a feedback loop that biases the very
-  estimate it produces — than the targeting accuracy is worth.
+- **Difficulty is what a shallow search could see, not what the answer is
+  worth.** It lives in win-probability space, never raw centipawns — but the
+  gap it reads is the one the first few plies of the engine's own search
+  found, averaged, and not the gap at full depth. The deep gap says how much
+  the mistake costs; this says how much there was to notice, which is the
+  thing a human is being asked to do. Measured against the strength of the
+  players who really made these errors it predicts about half again as much
+  as the deep gap does. It does not quite subsume it — the deep gap still
+  carries a little signal of its own — but what it carries has no consistent
+  direction, flipping sign from band to band, so there is nothing to add it
+  as. It is a property of the item alone — fixed when
+  the item is labeled, and never revised by anyone's answers. Still knowingly
+  approximate; the correction belongs in offline analysis, which can
+  regularise it and isn't the thing choosing which items get served. Online
+  it would make every user's difficulty a function of every other user's
+  answers, which costs more — in coupling, and in a feedback loop that biases
+  the very estimate it produces — than the targeting accuracy is worth.
+- **A position whose surface recommends the losing move is the hardest kind
+  there is, and the scale has to say so.** That is what a *negative* shallow
+  gap is, and about one item in twenty is one. It is also why the axis can't
+  be the deep gap: some of the most lopsided positions in the bank, worth
+  half a win to get right, are ones a shallow look gets backwards — and on
+  the deep gap those rate as the easiest items there are, which is exactly
+  who they were being served to.
+- **How far ahead a user has to look is part of what adapts, and nothing is
+  thrown away for needing too much of it.** Lookahead is a difficulty, so it
+  belongs on the rating rather than in a cutoff that is the same for
+  everybody: a beginner should be spending their attention on what a position
+  *looks* like before spending it on reading four moves into one. The
+  measurement therefore runs as far as the engine's own ground-truth search,
+  and it is the rating, not a filter, that keeps a hard item away from
+  someone who couldn't have seen it. A cutoff would be the thing this exists
+  to replace.
+- **The measurement is kept, not just its summary.** The search that produces
+  it is the expensive half of labeling and every way of reading it is cheap,
+  so the whole per-depth curve is stored. A better difficulty model can then
+  be fitted without going near an engine again — which is the difference
+  between an afternoon and re-labeling the bank.
 - **Any two items a bank can hold must be orderable by difficulty.** The
-  gap-to-rating curve may be approximate, but it may not be flat: a range
-  of gaps that all map to one rating is a range selection cannot aim
-  inside, and it lands on whichever users sit there. What the curve is
-  worth is measured, from the strength of the humans whose real errors the
-  items record — and only over the gaps where that measurement has any
-  power. Outside those, it must still separate items, on the grounds that a
-  wrong ordering is recoverable and no ordering is not.
-- **Items must be learnable**: if shallow and deep search disagree about
-  which move is better, the answer isn't reachable from the surface and
-  the item is never served.
+  curve may be approximate, but it may not be flat: a range of items that all
+  map to one rating is a range selection cannot aim inside, and it lands on
+  whichever users sit there. What the curve is worth is measured, from the
+  strength of the humans whose real errors the items record — and only over
+  the range where that measurement has any power. Outside it, at both ends,
+  the curve saturates rather than stopping, so gaps nothing speaks to stay
+  ordered and distinct. A wrong ordering is recoverable and no ordering is
+  not. The fit must also be taken on the half of the bank nobody aimed at a
+  band: including the half that was, which was mined at deliberately chosen
+  gaps, moves the same measurement by a factor of three. That half is still
+  mined through a gap window — nothing here is a random sample of errors —
+  but a window is not a target.
+- **An item whose answer the engine won't hold still is never served.** Not a
+  difficulty judgement — the scale reaches as far as the engine can see, so
+  nothing is dropped for being hard. It is that the search which picked the
+  best move and a search restricted to the two candidates can disagree about
+  which is better, and an item on both sides of that disagreement has nothing
+  to teach. The reading has to be taken on an engine that has not just been
+  told the answer — a shallow search reading a deep search's leftovers is not
+  a shallow search — and it has to be reproducible, or an item's difficulty
+  is a coin flip made once.
 - **Items never repeat while fresh ones remain**, so every answer is a
   first exposure recorded before feedback — simultaneously a clean
   measurement and a training trial. Repeats (bank exhausted) are flagged
@@ -81,9 +121,17 @@ automatically.
   produces no error and no signal, only users quietly held at the wrong
   accuracy. Every rating a user can occupy has to have enough items near
   it to spend a session inside, which is a thing to measure rather than
-  assume. Where it can't be met it is named: the top of the scale asks for
-  gaps below what the labeler will admit, and a gap that small is engine
-  noise rather than a difference anyone could see.
+  assume. Where it can't be met it is named, and it is now the *easy* end
+  that can't be: a position a shallow look settles at a glance is one a
+  human rarely got wrong, so few of them were ever mined, and the bands a
+  beginner is aimed at are the thin ones. The remedy has to stay a real one
+  — mining, not a constant — which means the thin bands must be reachable
+  from what the pipeline can filter on. They are: the deep gap is what
+  mining steers, it correlates with difficulty at 0.79, and a wide window
+  at the blundering end lands about half of what it labels in the region
+  that is short. That is a shotgun and not a rifle, so the order is priced
+  per region rather than per band, and the supply report has to say where a
+  window actually landed rather than pretend the aim was true.
 - **New users are assumed to be beginners** — no strength question; the
   rating system must instead climb fast for experienced players.
 - **Nothing gates the first trial.** Arriving is a read: no name to type, and
