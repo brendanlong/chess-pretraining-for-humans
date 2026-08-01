@@ -110,11 +110,13 @@ automatically.
   told the answer — a shallow search reading a deep search's leftovers is not
   a shallow search — and it has to be reproducible, or an item's difficulty
   is a coin flip made once.
-- **Items never repeat while fresh ones remain**, so every answer is a
-  first exposure recorded before feedback — simultaneously a clean
-  measurement and a training trial. Repeats (bank exhausted) are flagged
-  and excluded from ratings and accuracy. The remedy for exhaustion is
-  mining more games.
+- **Selection never repeats an item while fresh ones remain**, so every
+  answer it chooses is a first exposure recorded before feedback —
+  simultaneously a clean measurement and a training trial. The two things
+  that do serve a repeat are the bank running out and a URL naming a
+  position this user has answered; both are flagged, and a flagged answer
+  is excluded from ratings and accuracy, which is what makes asking for
+  one harmless. The remedy for exhaustion is mining more games.
 - **Adapting difficulty is a promise about the bank, not just about
   selection.** Selection cannot fail — it serves the nearest items it
   holds, however far off they are — so a difficulty the bank is thin at

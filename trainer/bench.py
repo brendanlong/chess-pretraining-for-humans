@@ -544,10 +544,13 @@ async def _setup_named(vu: VU) -> None:
     """
     await _setup_warm(vu)
     served = (await vu.get(f"/api/next?item={named_id(vu)}")).json()
-    if served["item_id"] != named_id(vu):
+    # Both halves: the wrong item is the bank refusing the link, and the right
+    # item flagged a repeat is the account having answered it — see `named_id`
+    # for why either would put a different measurement under this name.
+    if served["item_id"] != named_id(vu) or served["repeat"]:
         raise RuntimeError(
-            f"the server would not serve item {named_id(vu)} to this account, so "
-            "this scenario would be measuring ordinary selection instead"
+            f"the server would not serve item {named_id(vu)} to this account as a "
+            "fresh trial, so this scenario would be measuring something else"
         )
 
 

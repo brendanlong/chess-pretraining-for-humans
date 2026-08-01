@@ -245,7 +245,7 @@ def test_a_url_naming_an_item_you_have_answered_reopens_it_as_a_rerun(client, db
 
     again = shared_trial(client, first["item_id"])
     assert again["item_id"] == first["item_id"]
-    assert (again["repeat"], again["times_answered"]) == (True, 1)
+    assert again["repeat"] is True
     result = answer(client, again, choice_index_of(again, ITEM["distractor_uci"]))
 
     assert result["correct"] is False
@@ -256,9 +256,9 @@ def test_a_url_naming_an_item_you_have_answered_reopens_it_as_a_rerun(client, db
     stats = client.get("/api/stats").json()
     assert stats["accuracy_last_50"] == 1.0  # the wrong rerun is not a first exposure
     assert stats["items_remaining"] == 1  # still one item nobody has answered
-
-    # And the count the note reads climbs with each reopening.
-    assert shared_trial(client, first["item_id"])["times_answered"] == 2
+    # And still marked, which is how the analysis holds out what nobody aimed.
+    row = db.execute("SELECT * FROM responses ORDER BY id DESC LIMIT 1").fetchone()
+    assert (row["item_id"], row["shared"]) == (first["item_id"], 1)
 
 
 @pytest.mark.parametrize(

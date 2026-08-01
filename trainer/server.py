@@ -562,17 +562,22 @@ def named_item(item_id: int) -> dict | None:
     return dict(row) if row else None
 
 
-def times_answered(item_id: int, user_id: int | None) -> int:
-    """How many times this caller has answered `item_id` — nonzero is what
-    makes a named item a repeat, and the number itself is what the page says.
+def already_answered(item_id: int, user_id: int | None) -> bool:
+    """Whether this caller has answered `item_id` — what makes a named item a
+    repeat.
 
-    Reads `idx_responses_item` at exactly (user, item), the same probe selection
-    uses to skip a seen candidate: one seek, and a row per earlier answer.
+    Probes `idx_responses_item` at exactly (user, item) and stops at the first
+    row, which is the same seek selection uses to skip a seen candidate. A
+    count would read every earlier answer instead, on an endpoint nobody meters
+    and over rows the caller is free to pile up.
     """
-    return conn.execute(
-        "SELECT COUNT(*) FROM responses WHERE user_id = ? AND item_id = ?",
-        (user_id or 0, item_id),
-    ).fetchone()[0]
+    return (
+        conn.execute(
+            "SELECT 1 FROM responses WHERE user_id = ? AND item_id = ? LIMIT 1",
+            (user_id or 0, item_id),
+        ).fetchone()
+        is not None
+    )
 
 
 @app.get("/api/next")
@@ -607,10 +612,10 @@ def next_item(item: str | None = None, user_id: int | None = OptionalUserId):
         row, is_repeat = pick_item(u["rating"] if u else rating.USER_START, user_id)
     if row is None:
         raise HTTPException(503, "no items in bank — run the mining/labeling pipeline")
-    # Only for a named item: selection reports its own repeats, and the ordinary
-    # path already filtered on this history, so it must not pay to ask again.
-    answered = times_answered(row["id"], user_id) if named is not None else 0
-    is_repeat = is_repeat or answered > 0
+    # Asked only of a named item: selection reports its own repeats, and the
+    # ordinary path already filtered on this history, so it must not pay again.
+    if named is not None and already_answered(row["id"], user_id):
+        is_repeat = True
     served = trials.Served(repeat=is_repeat, shared=named is not None)
     moves = [row["best_uci"], row["distractor_uci"]]
     rng.shuffle(moves)
@@ -623,10 +628,10 @@ def next_item(item: str | None = None, user_id: int | None = OptionalUserId):
         "side_to_move": "white" if chess.Board(row["fen"]).turn else "black",
         "moves": [{"uci": m, "san": san(row["fen"], m)} for m in moves],
         "repeat": is_repeat,
-        # Which kind of repeat this is, so the page can say the true sentence:
-        # zero means the bank ran out, and anything else means the caller
-        # reopened a link to a position they have answered this many times.
-        "times_answered": answered,
+        # Not which *kind* of repeat: the page asked for this position or it
+        # didn't, so it can tell a reopened link from an exhausted bank by
+        # whether it was handed what it named.
+        #
         # No fresh-item count: it costs a pass over the bank, and the drawer
         # counter that reads it is seeded from /api/stats and counted down there.
         "trial_number": (u["attempts"] if u else 0) + 1,
@@ -702,6 +707,12 @@ def answer(a: Answer, request: Request):
         # A repeat is legitimate only if we *offered* it as one, which the token
         # says. Deciding it from the bank here instead gets both boundaries wrong —
         # see the `trials` module docstring.
+        #
+        # So this is what keeps a *fresh* trial answerable once, and a token
+        # offering a repeat is by construction exempt: it can be spent as often
+        # as the answer limiter allows, for rows that rate nothing. Which is the
+        # same ceiling fetching a new trial each time already reaches, so there
+        # is nothing here for a ledger to buy.
         if is_repeat and not served.repeat:
             raise HTTPException(409, "that trial has already been answered — fetch a new one")
         # Repeats get feedback but move nothing: whether the bank ran out or a
@@ -790,8 +801,8 @@ def answer(a: Answer, request: Request):
     }
 
 
-# Accuracy is over first exposures only: repeats, served once the bank is
-# exhausted, can be answered from memory of the reveal rather than from skill.
+# Accuracy is over first exposures only: a repeat can be answered from memory
+# of the reveal rather than from skill.
 #
 # Newest-first with a limit, which is what keeps this endpoint a constant cost
 # rather than one that grows with a user's history — the window is all anyone

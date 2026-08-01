@@ -318,14 +318,15 @@ async function api(path, body) {
   return (await request(path, body)).json();
 }
 
-// Why this trial doesn't count. `n` is how many times this position has been
-// answered before, so zero is the bank having run out and anything else is a
-// link to an answered position being reopened — which is a thing links are
-// *for*, so the sentence says what happens rather than apologising for it.
-function repeatCopy(n) {
-  if (!n) return "You've seen every item — this one won't affect your rating.";
-  const before = n === 1 ? "once before" : `${n} times before`;
-  return `You've answered this position ${before} — replaying it won't affect your rating.`;
+// Why this trial doesn't count. Two reasons, and the page can tell them apart
+// on its own: being handed the position it asked for by name is a link being
+// reopened, which is a thing links are *for* — so that sentence says what
+// happens rather than apologising for it. Anything else is the bank running
+// out. Nothing in the payload says which, because nothing needs to.
+function repeatCopy(reopened) {
+  return reopened
+    ? "You've answered this position before — replaying it won't affect your rating."
+    : "You've seen every item — this one won't affect your rating.";
 }
 
 async function loadTrial(itemId) {
@@ -350,8 +351,10 @@ async function loadTrial(itemId) {
   });
   el("stat-rating").textContent = ratingLabel(trial.user_rating, trial.calibrating);
   el("stat-trial").textContent = trial.trial_number;
+  // Whether we got the position we named, which both notes below turn on.
+  const asked = Boolean(itemId) && String(trial.item_id) === String(itemId);
   if (trial.repeat) {
-    el("repeat-text").textContent = repeatCopy(trial.times_answered);
+    el("repeat-text").textContent = repeatCopy(asked);
     el("repeat-note").hidden = false;
   }
   // Only the disappointing case is worth a word, and it is exactly "we asked
@@ -359,8 +362,7 @@ async function loadTrial(itemId) {
   // exhausted-bank case, where the fallback can legitimately hand back the very
   // item that was asked for, as a rerun. Being handed what you asked for needs
   // no announcement, reopened or not.
-  if (itemId && String(trial.item_id) !== String(itemId))
-    el("stale-link-note").hidden = false;
+  if (itemId && !asked) el("stale-link-note").hidden = false;
   phase = "choosing";
   shownAt = performance.now();
 }
