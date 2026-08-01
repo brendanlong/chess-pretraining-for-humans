@@ -21,10 +21,13 @@ production will do. So everything that doesn't have to vary is held still:
   shape of the machine we deploy to (one shared vCPU) and the cheapest way to
   stop the result being a report on what else the box was doing.
 
-The driver is several processes because one Python process talking to a
-one-core server is close enough to the same speed to become the thing being
-measured. Latencies are the client's view, so they include loopback and httpx;
-that overhead is a constant the comparison cancels out.
+The driver is one process per virtual user because a Python process talking to
+a one-core server is close enough to the same speed to become the thing being
+measured. Latencies are the client's view, so loopback and httpx are inside
+every one of them. That subtracts from a difference measured in percent rather
+than cancelling: a scenario answering in a millisecond reports a 20% server
+regression as 10%. Which is why every run first measures the harness against a
+server that does nothing, and marks the rows close enough to it to be affected.
 """
 
 import argparse
@@ -136,7 +139,16 @@ SCENARIOS = (
         concurrency=auth.HASH_CONCURRENCY,
     ),
 )
+# Not one of the measurements: the same shape as `healthz`, pointed at a server
+# that does nothing, to find out how fast the driver can go when the thing it is
+# measuring is free. See `driver_ceiling`.
+CEILING = Scenario("driver-ceiling", "how fast the harness itself can go", 4000)
+# What `--only` will accept; the calibration is not something to ask for.
 BY_NAME = {s.name: s for s in SCENARIOS}
+# What a driver process resolves the name in its plan against, which includes it.
+ALL_BY_NAME = {**BY_NAME, CEILING.name: CEILING}
+# Which octet of a virtual user's address says which scenario it belongs to.
+ADDRESS_INDEX = {name: i for i, name in enumerate(ALL_BY_NAME)}
 
 
 # --- the template database ------------------------------------------------
@@ -518,6 +530,7 @@ async def _step_login(vu: VU) -> None:
 
 STEPS = {
     "healthz": (_setup_none, _step_healthz),
+    "driver-ceiling": (_setup_none, _step_healthz),
     "static-html": (_setup_none, _step_html),
     "static-js": (_setup_none, _step_js),
     "static-304": (_setup_304, _step_304),
@@ -572,7 +585,7 @@ def _pin_worker(cpus: list[int]) -> None:
 
 
 async def _run_vus(plan: dict) -> tuple[list[float], float, float]:
-    scenario = BY_NAME[plan["scenario"]]
+    scenario = ALL_BY_NAME[plan["scenario"]]
     setup, step = STEPS[scenario.name]
     vus = [
         VU(
@@ -646,6 +659,76 @@ def _login_blocks(users: int) -> int:
     return math.ceil((_split(login.requests, users)[0] + login.warmup) / LOGINS_PER_ACCOUNT)
 
 
+# Answers every request from a buffer, with no framework, no routing and no
+# parsing beyond counting header terminators. Inline rather than a file in the
+# package: it is a measuring instrument, not part of the app, and a `-c` program
+# can't pick up a stray module from the directory it happens to run in.
+NULL_SERVER = """
+import asyncio, sys
+HEAD = b'HTTP/1.1 200 OK\\r\\nContent-Length: 11\\r\\n\\r\\n{"ok":true}'
+async def handle(reader, writer):
+    try:
+        while True:
+            data = await reader.read(65536)
+            if not data:
+                return
+            writer.write(HEAD * data.count(b'\\r\\n\\r\\n'))
+            await writer.drain()
+    except (ConnectionResetError, BrokenPipeError):
+        pass
+async def main():
+    server = await asyncio.start_server(handle, '127.0.0.1', int(sys.argv[1]))
+    async with server:
+        await server.serve_forever()
+asyncio.run(main())
+"""
+# How close a scenario may come to the ceiling before its number is partly a
+# report on the harness: at this fraction of it, roughly this much of each
+# sample is the driver, so a server-side change arrives that much smaller.
+# Low enough to sit clear of where the scenarios actually land — the served-
+# from-memory ones cluster around a quarter of the ceiling and the ones that
+# touch the database are two orders below it — so the mark means the same thing
+# from run to run instead of flickering on a boundary.
+DILUTED = 0.15
+
+
+def driver_ceiling(pool: ProcessPoolExecutor, procs: int, plan: dict, pin: bool) -> float | None:
+    """Steps per second against a server that costs nothing.
+
+    Every latency here is the client's, so the driver's own cost is inside all
+    of them. That is harmless while it is small against the server's, and
+    quietly halves the sensitivity of a scenario once it isn't — a 20%
+    regression in something that answers in a millisecond arrives as 10%. The
+    only honest way to know which case a row is in is to measure the harness
+    against nothing, on the machine at hand, and say so.
+    """
+    port = free_port()
+    cmd = [sys.executable, "-c", NULL_SERVER, str(port)]
+    if pin:
+        cmd = ["taskset", "-c", str(SERVER_CPU), *cmd]
+    proc = subprocess.Popen(cmd)
+    try:
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                return None
+            with (
+                contextlib.suppress(OSError),
+                socket.create_connection(("127.0.0.1", port), timeout=1),
+            ):
+                break
+            time.sleep(0.1)
+        else:
+            return None
+        base = f"http://127.0.0.1:{port}"
+        # Repetition 0: there is only one, and nothing here meters anything, so
+        # the address it composes only has to be well-formed.
+        calibration = {**plan, "base_url": base, "repeat": 0}
+        return run_scenario(CEILING, pool, procs, calibration)["rps"]
+    finally:
+        stop_server(proc)
+
+
 def plan_scenario(scenario: Scenario, procs: int, plan: dict) -> list[dict]:
     """One plan per driver process, partitioning the virtual users between them.
 
@@ -663,7 +746,7 @@ def plan_scenario(scenario: Scenario, procs: int, plan: dict) -> list[dict]:
             {
                 **plan,
                 "scenario": scenario.name,
-                "scenario_index": SCENARIOS.index(scenario),
+                "scenario_index": ADDRESS_INDEX[scenario.name],
                 "vus": indices,
                 "counts": [counts[i] for i in indices],
                 "concurrency": vus,
@@ -763,18 +846,27 @@ class Contention:
 BUSY_CORES = 0.5
 
 
-def report(results: dict, baseline: dict | None, threshold: float, busy: float | None) -> bool:
+def report(
+    results: dict,
+    baseline: dict | None,
+    threshold: float,
+    busy: float | None,
+    ceiling: float | None = None,
+) -> bool:
     """Print the table; return True if anything regressed past the threshold."""
     old = (baseline or {}).get("scenarios", {})
     header = f"{'scenario':<13} {'steps/s':>9} {'p50 ms':>9} {'p95 ms':>9} {'p99 ms':>9}"
     print("\n" + header + ("   vs baseline" if old else ""))
     print("-" * (len(header) + (14 if old else 0)))
-    regressed = []
+    regressed, diluted = [], []
     for name, r in results.items():
         line = (
             f"{name:<13} {r['rps']:>9.1f} {r['p50_ms']:>9.2f} "
             f"{r['p95_ms']:>9.2f} {r['p99_ms']:>9.2f}"
         )
+        if ceiling and r["rps"] > ceiling * DILUTED:
+            diluted.append(name)
+            line += " ~"
         was = old.get(name)
         if was:
             # Throughput and median together: one moving without the other is
@@ -788,6 +880,12 @@ def report(results: dict, baseline: dict | None, threshold: float, busy: float |
         print(line)
     if "trial-loop" in results:
         print("(a trial-loop step is two requests: the trial, then the answer)")
+    if diluted:
+        print(
+            f"~ within {DILUTED:.0%} of the driver's own ceiling ({ceiling:.0f} steps/s "
+            f"measured against a server that does nothing): {', '.join(diluted)}.\n"
+            "  A server-side change shows up in these rows smaller than it is."
+        )
     if old and not regressed:
         print(f"\nno scenario regressed by more than {threshold:.0f}%.")
     elif regressed:
@@ -878,6 +976,9 @@ def main() -> None:
     ap.add_argument("--no-pin", action="store_true", help="don't confine the server to one core")
     ap.add_argument("--web-dir", type=Path, help="frontend tree to serve (default: the server's)")
     ap.add_argument("--baseline", type=Path, default=BASELINE)
+    ap.add_argument(
+        "--force", action="store_true", help="record a baseline even from a busy machine"
+    )
     args = ap.parse_args()
 
     chosen = SCENARIOS
@@ -960,6 +1061,9 @@ def main() -> None:
         driver_cpus = [c for c in range(cores) if c not in off_limits] if pin else []
         results = {}
         with ProcessPoolExecutor(procs, initializer=_pin_worker, initargs=(driver_cpus,)) as pool:
+            print(f"  {CEILING.name}: {CEILING.doc}", end="", flush=True)
+            ceiling = driver_ceiling(pool, procs, plan, pin)
+            print(f" [{ceiling:.0f} steps/s]" if ceiling else " [unavailable]", flush=True)
             for scenario in chosen:
                 print(f"  {scenario.name}: {scenario.doc}", end="", flush=True)
                 runs = [
@@ -978,11 +1082,30 @@ def main() -> None:
 
     # After the server and the pool have been reaped, so their CPU counts as
     # ours rather than as somebody else's.
-    regressed = report(results, None if args.save else baseline, args.threshold, contention.cores())
+    busy = contention.cores()
+    regressed = report(results, None if args.save else baseline, args.threshold, busy, ceiling)
+    if args.save and busy is not None and busy >= BUSY_CORES and not args.force:
+        # Refused rather than warned about. A baseline is read by every run
+        # after it and by nobody at the time it is written, so one recorded
+        # against a busy machine is a floor set too low, silently, until
+        # somebody wonders why nothing ever regresses.
+        raise SystemExit(
+            f"\nrefusing to record a baseline from a run that shared the machine "
+            f"with {busy:.1f} cores of other work. Re-run when it is idle, or "
+            f"pass --force if you have a reason to keep this one."
+        )
     if args.save:
         args.baseline.write_text(
             json.dumps(
-                {"machine": fingerprint(), "settings": settings, "scenarios": results}, indent=2
+                {
+                    "machine": fingerprint(),
+                    "settings": settings,
+                    # Context, not a setting: it moves with the machine's mood,
+                    # so comparing against it would fail runs for no reason.
+                    "driver_ceiling": ceiling,
+                    "scenarios": results,
+                },
+                indent=2,
             )
             + "\n"
         )

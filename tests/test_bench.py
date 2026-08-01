@@ -172,3 +172,16 @@ def test_a_subset_run_compares_against_the_same_subset():
         bench.compare_settings(baseline, settings, (bench.Scenario("healthz", "", 10),))
     with pytest.raises(SystemExit, match="concurrency"):
         bench.compare_settings(baseline, {**settings, "concurrency": 4}, (healthz,))
+
+
+def test_rows_near_the_drivers_ceiling_are_marked(capsys):
+    """A scenario the harness can barely outrun reports a change smaller than
+    it is, so the row has to say which kind of row it is."""
+    results = {"healthz": _result(3000, 2.4), "trial-loop": _result(170, 45.0)}
+    bench.report(results, None, threshold=20.0, busy=0.0, ceiling=10_000.0)
+    out = capsys.readouterr().out
+    assert "healthz" in out.split("~ within")[1]
+    assert "trial-loop" not in out.split("~ within")[1]
+    # No calibration means no claim either way.
+    bench.report(results, None, threshold=20.0, busy=0.0, ceiling=None)
+    assert "~ within" not in capsys.readouterr().out
