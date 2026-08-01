@@ -67,9 +67,23 @@ uv run python -m trainer.label data/band.jsonl --workers 20
 ```
 
 A gap window aims at the *deep* gap, and difficulty is a function of the
-shallow one. They correlate and no more than that, so a window lands across a
+shallow one. They correlate at 0.79 and no better, so a window lands across a
 spread of difficulties rather than in a band — `trainer.supply --gaps` prints
 where each window's items actually went, which is what to aim with.
+
+The easy end is the thin one, and it is the reachable one. A position a shallow
+look settles at a glance is one humans rarely got wrong, so the bank was never
+stocked there: it holds 7,300 items below a 0.10 deep gap, which land in a
+beginner's band 0.1% of the time, against 4,200 above 0.40, which land there
+about 65% of the time. Mining `--min-gap-wp 0.30 --max-gap-wp 0.60` puts
+roughly half of what it labels somewhere in the ten bands users from 550 to
+1850 are aimed at; those bands are about 3,000 items short of a thousand
+apiece, so the order is around 6,000 candidates — a couple of hours of
+labeling, not a re-mine.
+
+The top band (a user at 3150) is the expensive one: about 4% of a window lands
+there, so filling it costs more than the rest combined. It is also the band
+almost nobody occupies, which is the order in which to care about them.
 
 Mining is cheap next to labeling, so mine a window generously and label what
 the shortfall asks for. Months are independent streams and can be mined at

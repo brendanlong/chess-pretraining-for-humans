@@ -120,12 +120,14 @@ automatically.
   assume. Where it can't be met it is named, and it is now the *easy* end
   that can't be: a position a shallow look settles at a glance is one a
   human rarely got wrong, so few of them were ever mined, and the bands a
-  beginner is aimed at are the thin ones. The remedy is mining — but only
-  indirectly, because what mining can filter on is the deep gap and what
-  difficulty is made of is the shallow one. The two correlate and no more
-  than that, so an order placed in deep gaps scatters across bands, and the
-  supply report has to say where a bin actually landed rather than pretend
-  the aim was true.
+  beginner is aimed at are the thin ones. The remedy has to stay a real one
+  — mining, not a constant — which means the thin bands must be reachable
+  from what the pipeline can filter on. They are: the deep gap is what
+  mining steers, it correlates with difficulty at 0.79, and a wide window
+  at the blundering end lands about half of what it labels in the region
+  that is short. That is a shotgun and not a rifle, so the order is priced
+  per region rather than per band, and the supply report has to say where a
+  window actually landed rather than pretend the aim was true.
 - **New users are assumed to be beginners** — no strength question; the
   rating system must instead climb fast for experienced players.
 - **Nothing gates the first trial.** Arriving is a read: no name to type, and
