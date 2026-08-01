@@ -5,6 +5,8 @@ real game and two candidate moves, and you pick the better one. Stockfish
 is the ground truth, feedback is immediate, and difficulty adapts to hold
 you near 80% accuracy.
 
+Play it at **[chess-pretraining.brendanlong.com](https://chess-pretraining.brendanlong.com/)**.
+
 - **[SPEC.md](SPEC.md)** — what this is trying to do, and the invariants.
 - **[DESIGN.md](DESIGN.md)** — how the app is put together.
 - **[CALIBRATION.md](CALIBRATION.md)** — where the difficulty numbers came
