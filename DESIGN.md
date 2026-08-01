@@ -221,8 +221,8 @@ the channel that survives two arrows crossing or landing on the same
 square, where no pair of colours would have separated them — except when
 they arrive along the same ray, a battery recapturing on one square, which
 puts both discs at the same point and is not solved here. The drawer can
-turn the numbers off, which takes the badges with them: without a disc to
-pair with, the badge is only a keyboard hint again and is styled as one.
+turn the discs off for an unmarked board; the badges stay, so the numbers
+are still there to name a move by and to say what the keys do.
 
 Colour is still what the eye reads first, so it carries the full weight.
 The candidate pair is blue against orange, which sits on the

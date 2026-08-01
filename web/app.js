@@ -50,8 +50,9 @@ let stepIdx = -1; // -1 = at the decision position, before any line move
 let autoplayTimer = null;
 let stepMs = +(localStorage.getItem("stepMs") || 750); // auto-play pace
 // Numbered arrows are the default: they cost a reader nothing, and without
-// them the pairing is back to colour alone. Off is for anyone who reads the
-// colours fine and would rather have an unmarked board.
+// them the board says which arrow is which by colour alone. Off is for anyone
+// who reads the colours fine and would rather have an unmarked board; the
+// badges on the buttons keep their numbers either way.
 let arrowNumbers = localStorage.getItem("arrowNumbers") !== "off";
 let lastResult = null; // /api/answer payload for the current reveal
 
@@ -63,12 +64,6 @@ function arrow(uci, brush, num) {
   const shape = { orig: uci.slice(0, 2), dest: uci.slice(2, 4), brush };
   if (arrowNumbers) shape.label = { text: String(num) };
   return shape;
-}
-
-// The badges belong to the arrows, so they come and go with them: with numbers
-// off the buttons keep their small keyboard hint and nothing else.
-function applyArrowNumbers() {
-  document.body.classList.toggle("no-arrow-numbers", !arrowNumbers);
 }
 
 const candidateArrows = () => trial.moves.map((m, i) => arrow(m.uci, BRUSHES[i], i + 1));
@@ -685,7 +680,6 @@ segmented("speed-menu", "stepMs", String(stepMs), (v) => {
 
 segmented("numbers-menu", "arrowNumbers", arrowNumbers ? "on" : "off", (v) => {
   arrowNumbers = v === "on";
-  applyArrowNumbers();
   redrawBoard();
 });
 
@@ -744,6 +738,5 @@ const namedItem = new URLSearchParams(location.search).get("item");
 // so these are safe to race. /api/stats carries the account for the header;
 // if it fails, the page keeps its default guest view and the drawer's forms
 // still work.
-applyArrowNumbers();
 initStats();
 nextTrial(namedItem);

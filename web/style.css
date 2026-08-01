@@ -233,47 +233,29 @@ kbd {
 #choice-2 { border-color: var(--accent-2); }
 .choice:hover { filter: brightness(1.2); }
 .choice:disabled { cursor: default; opacity: 0.85; }
-/* With arrow numbers off this is a keyboard hint and nothing more, so it looks
-   like one — and goes away where there is no keyboard. */
+/* The badge is the disc the arrow carries, and has to be read as the same
+   object — a 2px border is far too little colour to pair them. The panel is
+   dark, so these take the light half of each pair while the arrow discs take
+   the dark half; both put the digit on a solid, saturated fill. They stay put
+   when the arrow discs are turned off: the colour pairing survives, and so
+   does the keyboard hint. */
 .choice .key,
 .line-card .key {
   flex: none;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  padding: 1px 6px;
-  font-size: 12px;
-  font-weight: 400;
-  color: var(--muted);
-}
-@media (hover: none) and (pointer: coarse) {
-  body.no-arrow-numbers .choice .key,
-  body.no-arrow-numbers .line-card .key { display: none; }
-}
-
-/* With them on it is the disc the arrow carries, and has to be read as the
-   same object — a 2px border is far too little colour to pair them. The panel
-   is dark, so these take the light half of each pair while the arrow discs
-   take the dark half; both put the digit on a solid, saturated fill. The
-   colours are keyed off the body rather than layered over the rule above,
-   because #choice-1 outranks anything a body class could say. */
-body:not(.no-arrow-numbers) .choice .key,
-body:not(.no-arrow-numbers) .line-card .key {
   width: 24px;
   height: 24px;
   display: grid;
   place-items: center;
-  border: none;
   border-radius: 50%;
-  padding: 0;
   font-size: 14px;
   font-weight: 700;
   background: var(--muted);
   color: var(--bg);
 }
-body:not(.no-arrow-numbers) #choice-1 .key { background: var(--accent-1); }
-body:not(.no-arrow-numbers) #choice-2 .key { background: var(--accent-2); }
-body:not(.no-arrow-numbers) .line-card.good .key { background: var(--good); }
-body:not(.no-arrow-numbers) .line-card.bad .key { background: var(--bad); }
+#choice-1 .key { background: var(--accent-1); }
+#choice-2 .key { background: var(--accent-2); }
+.line-card.good .key { background: var(--good); }
+.line-card.bad .key { background: var(--bad); }
 
 /* --- reveal phase -------------------------------------------------------- */
 
