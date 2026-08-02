@@ -225,42 +225,26 @@ function unnameTrialInUrl() {
 function describeMove(mv, tag) {
   const sans = mv.line.map((s) => s.san).join(" ");
   return (
-    `${mv.san}${tag} — Stockfish eval ${mv.eval}, ${mv.wp}% win probability for the side to move\n` +
+    `${mv.san}${tag} — ${mv.wp}% win probability for the side to move\n` +
     `  Engine line: ${sans}`
   );
 }
 
-// Just the facts (position, moves, evals, lines) with no question attached,
-// so the user can ask their own — "I thought Bd3 was better because…".
-// What a shallow search saw, which is what the item was rated on — the deep gap
-// beside it is only what the answer turns out to be worth. A negative shallow
-// gap is the interesting case: the position's surface recommends the losing
-// move, which is why a pair that looks miles apart can still be rated hard.
-// Absent on items labeled before it was measured.
-function lookaheadPhrase(result) {
-  const shallow = result.shallow_gap;
-  if (shallow === null || shallow === undefined) return "";
-  // Never "X% of it": the two are readings of different searches, not parts of
-  // one whole, and the shallow gap is the larger of the two on about one item
-  // in eight — where "30% of 4%" would be nonsense on the page.
-  if (shallow < 0) {
-    return `; a shallow search prefers the other move, by ${Math.abs(shallow)}%`;
-  }
-  return `; a shallow search sees ${shallow}% of a difference`;
-}
-
+// Just the facts (position, moves, deep win probabilities, lines) with no
+// question attached, so the user can ask their own — "I thought Bd3 was better
+// because…". Nothing derived: the gap between the two numbers is the reader's
+// to take, and the shallow search the item was *rated* on says nothing about
+// whether the move was good.
 function buildCopyText() {
   const r = lastResult;
   return [
     `Chess position (FEN):`,
     trial.fen,
     ``,
-    `${trial.side_to_move} to move. Two candidate moves, evaluated by Stockfish:`,
+    `${trial.side_to_move} to move. Two candidate moves, evaluated by Stockfish at full depth:`,
     ``,
     describeMove(r.best, ` (the engine's best move)`),
     describeMove(r.distractor, ``),
-    ``,
-    `The gap between the moves is ${r.gap_wp}% win probability${lookaheadPhrase(r)}.`,
     ``,
   ].join("\n");
 }
@@ -462,9 +446,7 @@ async function choose(i) {
   // — the one string here that didn't originate in this codebase — and
   // interpolating it into innerHTML would make a hostile PGN a stored XSS.
   const detail = el("detail");
-  detail.replaceChildren(
-    `Gap: ${result.gap_wp}% win probability${lookaheadPhrase(result)}. The alternative was `,
-  );
+  detail.replaceChildren("The alternative was ");
   if (result.distractor_source === "game") {
     detail.append("the move actually played in ");
     detail.append(gameLink(result.game_url));
