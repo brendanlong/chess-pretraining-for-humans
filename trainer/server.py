@@ -277,7 +277,13 @@ def set_session_cookie(request: Request, response: Response, token: str) -> None
         token,
         max_age=auth.SESSION_DAYS * 86400,
         httponly=True,
-        samesite="lax",  # blocks cross-site POSTs, which is our CSRF story
+        # Blocks cross-*site* POSTs, which is our CSRF story — and note the
+        # word: a sibling subdomain of the apex is same-site and its requests
+        # carry this cookie. Behind it stand two things that have to stay true,
+        # because a guest's deletion has no password to fall back on: every
+        # write takes a JSON body (a form post is a 422), and no CORS
+        # middleware hands out permission to send one.
+        samesite="lax",
         secure=request.url.scheme == "https",
         path="/",
     )
@@ -1006,39 +1012,50 @@ def delete_account(body: Deletion, request: Request):
                 "what starts a record.",
             )
         guest = auth.is_guest(u)
-        if guest:
-            # No password, so nothing here is a guessing oracle and this meters
-            # work rather than attempts. Keyed per address because per user is
-            # a counter that can only ever see one request: the row it names is
-            # gone by the time a second could arrive.
-            spend(delete_limiter, f"delete-ip:{client_key(request)}")
-        else:
-            # Metered like login, because this branch checks a password too and
-            # would otherwise be an unmetered guessing oracle. Charged before
-            # the verify, for the reason spelled out at the limiters.
-            #
-            # Its own key, though, not login's. Reaching here already required a
-            # signed-in session, so there is nothing to enumerate and no reason
-            # for someone guessing at this account's password from outside to be
-            # able to spend the budget its owner needs to erase it. Erasure is
-            # the one promise the privacy policy makes that a user might need
-            # urgently.
+        # Per user, both ways round, and never per address: erasure is the one
+        # promise the privacy policy makes that a user might need urgently, so
+        # nobody else may be able to spend the budget it needs. An address is
+        # shared — several real players behind one NAT is the case the answer
+        # limiter is sized around — and a guest reaching here spent an answer to
+        # exist at all, so the volume that mints these rows is already metered
+        # upstream. What this bounds is retries against one row.
+        spend(delete_limiter, f"delete:{u['id']}")
+        if not guest:
+            # The password check is metered like login's on top, because it is
+            # one, and an unmetered argon2 is a denial-of-service primitive
+            # whether or not the guess is right. Charged before the verify, for
+            # the reason spelled out at the limiters.
             spend(login_ip_limiter, client_key(request))
-            spend(delete_limiter, f"delete:{u['id']}")
+            if not body.password:
+                # The drawer only omits the password where the row has none, so
+                # an empty one here means this browser's idea of itself is out
+                # of date — it signed up somewhere else, and is showing a form
+                # with no field to type into. Say that rather than "wrong
+                # password", which is true and useless. It tells the caller
+                # nothing `/api/account` doesn't, and they already hold this
+                # account's session or they wouldn't be reading it.
+                raise HTTPException(
+                    400,
+                    "This browser is signed in to an account now. Reload the page "
+                    "and confirm with its password.",
+                )
             # Outside the transaction: argon2 is deliberately slow, and the
             # write lock is the one thing every writer contends for.
-            if not auth.verify_password(auth.credential_for(u), body.password or ""):
+            if not auth.verify_password(auth.credential_for(u), body.password):
                 raise HTTPException(400, "Wrong password.")
         with writing() as tx:
             # The row was read before the branch above chose how to authorize
-            # it, so re-check that the credential it decided on is still the
-            # current one. `IS` rather than `=` because a guest's is NULL: a
-            # password rotated away mid-request must not authorize destroying
-            # the account, and a guest row that a signup in another tab just
-            # claimed must not be erased without the password it now has.
+            # it, so re-check that what it authorized against is still current.
+            # The hash catches a password rotated away mid-request, and — `IS`
+            # rather than `=`, because a guest's is NULL — a guest row that a
+            # signup in another tab just claimed, which must not be erased
+            # without the password it now has. The name is what pins the *row*:
+            # NULL matches every guest, and SQLite hands a deleted id straight
+            # back out, so without it a concurrent delete of the highest row
+            # could leave this one erasing whoever inherited the number.
             current = tx.execute(
-                "SELECT 1 FROM users WHERE id = ? AND password_hash IS ?",
-                (u["id"], u["password_hash"]),
+                "SELECT 1 FROM users WHERE id = ? AND name = ? AND password_hash IS ?",
+                (u["id"], u["name"], u["password_hash"]),
             ).fetchone()
             if current is None:
                 raise HTTPException(
@@ -1053,12 +1070,12 @@ def delete_account(body: Deletion, request: Request):
             # clear it too so the browser lands on a fresh guest rather than
             # presenting a token for a row that no longer exists.
             queue_cookie(request, None)
+        # Ids are reused by SQLite once the highest row goes, so don't leave a
+        # spent counter behind for whoever gets this one next. Reaching here
+        # took the row's own secret — its password, or for a guest the cookie
+        # that is the only one it has — so clearing it helps nobody else.
+        delete_limiter.clear(f"delete:{u['id']}")
         if not guest:
-            # Ids are reused by SQLite once the highest row goes, so don't leave
-            # a spent counter behind for whoever gets this one next. Reachable
-            # only by knowing the password, exactly as in login — which is also
-            # why the guest branch's address key is not cleared here.
-            delete_limiter.clear(f"delete:{u['id']}")
             login_limiter.clear(login_key(u["name"]))
     except auth.AuthError as e:
         raise auth_error(e) from e

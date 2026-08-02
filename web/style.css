@@ -437,6 +437,10 @@ kbd {
 
 .auth-form { display: flex; flex-direction: column; gap: 8px; }
 .auth-form[hidden] { display: none; }
+/* The delete form's password field is absent for a guest, who has none. Spelled
+   out because every other JS-toggled element in the drawer has its own
+   `[hidden]` rule, and adding a `display` here later would un-hide this one. */
+.auth-form input[hidden] { display: none; }
 .auth-form input {
   min-width: 0;
   font: inherit;

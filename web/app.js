@@ -522,12 +522,22 @@ function setAccount(a) {
 // Deletion is irreversible, so it takes two deliberate steps: reveal the form,
 // then confirm. An account re-enters the password the server will check anyway;
 // a guest has none, and the reveal is the whole of the friction there is.
+//
+// Which is why opening it focuses Cancel and not the confirm button when there
+// is no password field: a button fires on keydown and keydown auto-repeats, so
+// a held Enter on a focused "Delete my data" would arm the form and then submit
+// it — one keystroke for a thing that is supposed to take two. The password
+// field absorbs the repeat in the other case; nothing would here.
 function showDeleteConfirm(open) {
+  const insideForm = el("delete-form").contains(document.activeElement);
   showDataError(null);
   el("delete-form").hidden = !open;
   el("delete-btn").hidden = open;
   el("delete-password").value = "";
-  if (open) el(account.guest ? "delete-confirm" : "delete-password").focus();
+  if (open) el(account.guest ? "delete-cancel" : "delete-password").focus();
+  // Collapsing the form out from under the focused control drops focus to the
+  // body, which sends a keyboard user back to the top of the drawer.
+  else if (insideForm) el("delete-btn").focus();
 }
 
 function showAuthError(message) {
@@ -671,10 +681,12 @@ el("delete-form").addEventListener("submit", (e) => {
     // user they'd called it off moments before the record disappears.
     el("delete-cancel").disabled = true;
     try {
-      // A guest sends no password because they have none. What that authorizes
-      // is the server's call; this only declines to invent an empty one.
-      const body = account.guest ? {} : { password: el("delete-password").value };
-      await api("/api/account/delete", body);
+      // Always the field, which is the empty string while the drawer is
+      // hiding it from a guest. The row decides which of the two branches
+      // this is, so the request doesn't need to carry the client's guess —
+      // and a tab whose guess went stale gets told what to do instead of
+      // sending a differently-shaped request nobody can answer usefully.
+      await api("/api/account/delete", { password: el("delete-password").value });
     } finally {
       el("delete-cancel").disabled = false;
     }

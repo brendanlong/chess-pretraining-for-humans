@@ -168,7 +168,7 @@ on the volume and Litestream is not replicating it.
 
 Litestream's own default retention is 24h, which would make a Friday mistake
 unrecoverable by Monday. But the window has a ceiling as well as a floor:
-`web/privacy.html` tells users that a deleted account survives in backups for
+`web/privacy.html` tells users that a deleted record survives in backups for
 at most 30 days, and a deleted row sits in every snapshot taken before the
 delete. So the recovery window is 21 days (`snapshot.retention` in
 `litestream.yml`) plus 7 for the bucket's noncurrent versions — 28, under the

@@ -114,8 +114,9 @@ page runs is ours, including the one that sends that beacon.
 Abuse control is rate limiting, not captchas — the cost of a wrong guess
 should be a wait, not a lost signup. Password checks are metered twice (per
 name *submitted* and per address, each stopping something the other can't),
-deletion on its own key so an attack on an account's password can't block
-its owner's erase button, and answering — the one unauthenticated write, and
+deletion on its own key, per user and never per address, so that neither an
+attack on an account's password nor a stranger sharing an address can block
+an erase button, and answering — the one unauthenticated write, and
 the one that mints rows — per address, far above human pace. Limits are
 charged before the slow work and never refunded; argon2 runs outside the
 write transaction under a small concurrency cap. A guest row commits atomically

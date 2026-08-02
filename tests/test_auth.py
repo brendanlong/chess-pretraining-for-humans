@@ -260,15 +260,34 @@ def test_a_guest_delete_is_not_a_password_check(client, monkeypatch):
     assert client.post("/api/account/login", json=CREDS).status_code != 429
 
 
-def test_a_guest_delete_is_still_metered(client, monkeypatch):
-    """Per address, because a guest row can only ever be deleted once: its own
-    key would be a counter that never sees a second request."""
+def test_one_browsers_delete_cannot_spend_anothers(client, monkeypatch):
+    """The delete key is per user and never per address, or one person could
+    switch off the erase button for everyone behind a shared address — the very
+    outcome cookie-only deletion exists to remove, and the thing the account
+    branch's separate key is already there to prevent."""
     monkeypatch.setattr(server, "delete_limiter", auth.RateLimiter(1, 900))
     answer(client, next_trial(client))
     assert client.post("/api/account/delete", json={}).status_code == 200
 
+    # A second guest, same address (TestClient reports one host for everyone).
     answer(client, next_trial(client))
-    assert client.post("/api/account/delete", json={}).status_code == 429
+    assert client.post("/api/account/delete", json={}).status_code == 200
+
+
+def test_an_account_is_never_erased_through_the_guest_branch(client, db):
+    """Which branch runs is decided by the row, not by what the caller sends,
+    so omitting the password can't be a way around checking it."""
+    answer(client, next_trial(client))
+    client.post("/api/account/signup", json=CREDS)
+
+    r = client.post("/api/account/delete", json={})
+
+    assert r.status_code == 400
+    assert row_counts(db) == (1, 1, 1)
+    # And it says which thing is wrong: only a browser whose idea of itself has
+    # gone stale sends this, and "wrong password" is no help to a form that is
+    # hiding the field.
+    assert "Reload" in r.json()["detail"]
 
 
 def test_a_signup_in_another_tab_beats_an_in_flight_guest_delete(client, db, monkeypatch):
