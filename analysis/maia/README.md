@@ -33,7 +33,18 @@ python export.py data/items.db items.jsonl
 python policy.py items.jsonl maia2.jsonl                  # ~40s for the bank
 python policy.py items.jsonl maia1.jsonl --family maia1   # ~3min
 python agreement.py items.jsonl rapid=maia2.jsonl maia1=maia1.jsonl
+python cost.py items.jsonl maia2.jsonl cost.jsonl        # ~10min, Stockfish
+python plausibility.py items.jsonl maia2.jsonl
 ```
+
+`agreement.py` gives the rate; `cost.py` gives the severity, and neither is
+worth reading without the other — a top-1 miss on a move worth a hundredth of a
+win probability and a top-1 miss on a hung rook score identically.
+
+`plausibility.py` asks the same question backwards: not whether Maia picks our
+answer, but whether our answer is one a human would consider at all. That is the
+one with a bearing on whether the items are fair, and it is the only report here
+that reads the bank's difficulty column.
 
 `policy.py --speed blitz` and `--opponent-elo` are the other two configuration
 knobs; pass each run to `agreement.py` as another `label=path` to compare them.

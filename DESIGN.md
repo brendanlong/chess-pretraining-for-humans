@@ -335,8 +335,10 @@ Offline measurement that is neither building the bank nor serving it.
 `analysis/maia/` is the one that exists: it asks how often the Maia
 human-imitation models pick the move Stockfish picks, on our positions.
 
-It sits outside the dependency graph in both directions, deliberately — it
-needs torch, a GPU and a downloaded checkpoint, none of which the server or the
-pipeline should ever acquire, and it opens the bank read-only. `ruff` reaches it
+Nothing in the app imports it and it needs torch, a GPU and a downloaded
+checkpoint, none of which the server or the pipeline should ever acquire. It
+opens the bank read-only, and reaches into `trainer` for exactly one thing —
+the win-probability conversion, because a cost quoted in different units from
+the bank's own would not be comparable with anything. `ruff` reaches it
 and nothing else in CI can, which is a real limit on what a number produced here
 is worth; CALIBRATION.md carries the findings and the caveats.

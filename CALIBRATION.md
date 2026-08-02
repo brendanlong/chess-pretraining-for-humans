@@ -116,17 +116,47 @@ What it measures is agreement, and only that. Maia's top move is Stockfish's
 best on 36% of the bank. That number means nothing alone — the bank exists to
 hold positions a human got wrong — so the probe mines a control with the gap
 window opened all the way: 43% there, against 37% for the humans who were
-actually at those boards. So the disagreement is mostly Maia being a club
-player rather than our selecting for blunders, and Maia is fractionally better
-than the population it imitates. Which Maia barely matters: across both model
+actually at those boards. So most of the *rate* is Maia being a club player
+rather than anything our filtering did. Which Maia barely matters: across both model
 families, the rapid and blitz checkpoints, and the opponent-rating seat, every
 configuration lands between 30% and 38%, and the only knob worth a few points
 is Maia's own rating.
 
-One thing it corroborates: where the surface recommends the losing move — the
-negative-shallow-gap items — Maia at 1500 prefers the right move 24% of the
-time against 64% over the rest of the bank. An oracle sharing no machinery with
-the ladder agreeing those are the hardest items in the bank.
+A rate on its own is unreadable, though, because top-1 agreement scores the
+same miss for a move a hundredth of a win probability worse as for hanging a
+rook. Pricing Maia's own choice on the same deep search separates them, and it
+is the severity rather than the rate that our filtering moves. On unselected
+positions Maia's disagreements are cheap — median 0.026, over half of them
+below the floor at which `trainer.mine` considers a move an error at all, and
+1.5% real blunders. On the bank the rate is eight points higher, the median
+cost is three times larger, and a quarter of them are real blunders. So the items are
+selected for positions where a human-like policy goes materially wrong, not
+merely for positions with several reasonable moves — which is what they were
+supposed to be selected for.
+
+Asked the other way round — is Stockfish's move one a human would *consider* —
+the answer is reassuring, and it is the one that bears on whether these are fair
+items. The best move is typically the one a 1100 is most likely to play or close
+to it (median probability 0.16, against 0.03 for a uniform guess over the legal
+moves); only 6% of items have an answer a 1100 would essentially never find, and
+the control says most of that is chess rather than our selection. So the trials
+are hard because the distractor is *more* attractive, not because the answer is
+an alien engine move.
+
+The tail of invisible answers also lands where it should. Sorted by the bank's
+own difficulty — a scale built from engine measurements that has never seen
+Maia — plausibility falls monotonically across every band, from a median 0.249
+at the easy end to 0.061 at the hard end, and the share of near-invisible
+answers runs 3.7% to 19.6%. The negative-shallow-gap items sit at a median 0.066
+and the scale already rates them at 2816 against the bank's 1559. Selection
+serves beginners from the easy end, which is the end where the answer is most
+findable. That is one oracle checking another and finding the ordering right.
+
+Two smaller things. Maia is a better player than the population it imitates —
+on bank items where it picks neither of our moves, its choice beats the one the
+human played three times in four. And on those same negative-shallow-gap items
+Maia at 1500 prefers the right move 24% of the time against 64% over the rest of
+the bank, agreeing from outside the ladder that they are the hardest there are.
 
 **Rejected: Maia as a difficulty axis.** The obvious next step is to score a
 Maia statistic with `fit_difficulty`'s estimator, and it cannot be done. That
