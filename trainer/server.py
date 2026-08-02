@@ -790,10 +790,10 @@ def answer(a: Answer, request: Request):
         },
         # How hard the item was, which is safe here and nowhere earlier: it is a
         # hint about where to look, so it belongs to the reveal and not to the
-        # trial. Nothing the rating was derived from goes out with it —
-        # `gap_ladder` and `shallow_gap` would be answer-adjacent data sent for
-        # no reason, and the ladder's signs are the answer key spelled out depth
-        # by depth.
+        # trial. It goes out alone. The measurement behind it (`shallow_gap` and
+        # the `gap_ladder` it averages) is answer-adjacent data nothing reads —
+        # the ladder's signs are the answer key spelled out depth by depth — and
+        # `gap_wp` is the difference between the two `wp`s already above.
         "item_rating": round(item["rating"]),
         "distractor_source": item["distractor_source"],
         "game_url": item["game_url"],

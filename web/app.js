@@ -224,8 +224,13 @@ function unnameTrialInUrl() {
 
 function describeMove(mv, tag) {
   const sans = mv.line.map((s) => s.san).join(" ");
+  // Win probability is a logistic of the centipawn score and saturates near
+  // 97.5%, where a forced mate reads like any other winning position. So the
+  // eval goes in when it is a mate score — the one thing the percentage can't
+  // say — and stays out otherwise, where it would only restate the percentage.
+  const mate = mv.eval.startsWith("#") ? `Stockfish eval ${mv.eval}, ` : "";
   return (
-    `${mv.san}${tag} — ${mv.wp}% win probability for the side to move\n` +
+    `${mv.san}${tag} — ${mate}${mv.wp}% win probability for the side to move\n` +
     `  Engine line: ${sans}`
   );
 }

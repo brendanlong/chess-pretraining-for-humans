@@ -121,8 +121,11 @@ def test_what_the_reveal_says_about_difficulty_never_reaches_the_trial(client):
     revealed = answer(client, next_trial(client))
     for field in SAID_BY_THE_REVEAL:
         assert field in revealed, f"{field} is not in the reveal, so this guards nothing"
+    # Serialized, like the trial above: a measurement would most naturally be
+    # added per move, inside `best`/`distractor`, where a key check can't see it.
+    revealed_text = json.dumps(revealed)
     for field in set(NEVER_BEFORE_ANSWERING) - set(SAID_BY_THE_REVEAL):
-        assert field not in revealed, f"{field} is in the reveal and nothing reads it"
+        assert field not in revealed_text, f"{field} is in the reveal and nothing reads it"
     assert revealed["item_rating"] == round(ITEM["rating"])
 
 
