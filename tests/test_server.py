@@ -502,6 +502,29 @@ def test_our_own_pages_open_in_the_app(client, name):
     assert not escaping, f"{name} opens {escaping} in a new browsing context"
 
 
+AUTHOR = "https://www.brendanlong.com/pages/about-me.html"
+
+
+@pytest.mark.parametrize("name", WEB_PAGES)
+def test_every_page_credits_the_author_at_one_address(client, name):
+    """Every page says who made it and where the source is, and the author
+    link is the same address everywhere: it is hand-copied into each footer
+    and into the drawer, so the drift is a page pointing somewhere else on
+    the same site — a home page or a stale path — which reads as working."""
+    path = "/" if name == "index.html" else f"/{name}"
+    anchors = Head.of(client.get(path).text).anchors
+
+    hrefs = [a["href"] for a in anchors]
+    assert AUTHOR in hrefs, f"{name} doesn't credit the author"
+    assert any("github.com/brendanlong" in h for h in hrefs), f"{name} hides the source"
+    strays = [
+        h
+        for h in hrefs
+        if urlsplit(h).netloc.endswith("brendanlong.com") and not is_ours(h) and h != AUTHOR
+    ]
+    assert not strays, f"{name} links the author at {strays}"
+
+
 def test_every_referenced_icon_is_served_at_its_declared_size(client):
     """The icons are loose files under web/; a rename would 404 in silence,
     and a resize would go on being advertised at the old size."""

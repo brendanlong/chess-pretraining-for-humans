@@ -249,7 +249,6 @@ kbd {
   border-radius: 50%;
   font-size: 14px;
   font-weight: 700;
-  background: var(--muted);
   color: var(--bg);
 }
 #choice-1 .key { background: var(--accent-1); }
