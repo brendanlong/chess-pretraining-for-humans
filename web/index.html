@@ -102,9 +102,16 @@
     </div>
   </section>
 </main>
+<!-- Our own pages navigate in place; only the outside world gets a new
+     context, because leaving this page drops an in-flight trial and whatever
+     is typed into the signup form. The legal pages have no such state, so
+     their off-site links navigate in place too: taking the back button away
+     buys nothing there. -->
 <footer id="page-footer" class="legal-links">
   Your answers are research data. <a href="privacy.html">Privacy policy</a> ·
-  <a href="terms.html">Terms of use</a>
+  <a href="terms.html">Terms of use</a> ·
+  <a href="https://github.com/brendanlong/chess-pretraining-for-humans" target="_blank" rel="noopener noreferrer">Source on GitHub</a> ·
+  by <a href="https://www.brendanlong.com/pages/about-me.html" target="_blank" rel="noopener noreferrer">Brendan&nbsp;Long</a>
 </footer>
 <div id="settings" hidden>
   <div id="settings-sheet" role="dialog" aria-modal="true" aria-label="Settings">
@@ -126,9 +133,9 @@
         <button data-value="on">on</button>
         <button data-value="off">off</button>
       </div>
-      <p class="setting-note">The numbered disc on each arrow, and the matching
-      badge on the button it belongs to. Turning them off leaves the arrow
-      colours to say which is which on their own.</p>
+      <p class="setting-note">The numbered disc each arrow carries on the
+      board. Turning them off leaves the arrow colours to pair with the
+      numbered badges on the buttons, which stay either way.</p>
     </div>
     <div class="setting">
       <span class="setting-label">Account</span>
@@ -185,15 +192,11 @@
     </div>
     <div class="setting">
       <span class="setting-label">About</span>
-      <!-- Our own pages navigate in place; only the outside world gets a new
-           context, and only from here, because leaving this page drops an
-           in-flight trial and whatever is typed into the signup form. The
-           legal pages have no such state, so their off-site links navigate
-           in place too: taking the back button away buys nothing there. -->
       <p class="setting-note legal-links">Your answers are research data.
         <a href="terms.html">Terms of use</a> ·
         <a href="privacy.html">Privacy policy</a> ·
-        <a href="https://github.com/brendanlong/chess-pretraining-for-humans" target="_blank" rel="noopener noreferrer">Source on GitHub</a>
+        <a href="https://github.com/brendanlong/chess-pretraining-for-humans" target="_blank" rel="noopener noreferrer">Source on GitHub</a> ·
+        by <a href="https://www.brendanlong.com/pages/about-me.html" target="_blank" rel="noopener noreferrer">Brendan&nbsp;Long</a>
       </p>
     </div>
   </div>

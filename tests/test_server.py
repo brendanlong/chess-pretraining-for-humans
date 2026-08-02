@@ -518,6 +518,34 @@ def test_our_own_pages_open_in_the_app(client, name):
     assert not escaping, f"{name} opens {escaping} in a new browsing context"
 
 
+AUTHOR = "https://www.brendanlong.com/pages/about-me.html"
+SOURCE = "https://github.com/brendanlong/chess-pretraining-for-humans"
+
+
+def is_the_authors(href: str) -> bool:
+    """His own site rather than this app's, which is a subdomain of it. The
+    host is compared whole — a suffix alone would take `notbrendanlong.com`
+    for his, and a bare substring would take any URL that merely mentions it.
+    """
+    host = urlsplit(href).netloc
+    return (host == "brendanlong.com" or host.endswith(".brendanlong.com")) and not is_ours(href)
+
+
+@pytest.mark.parametrize("name", WEB_PAGES)
+def test_every_page_credits_the_author_at_one_address(client, name):
+    """Every page says who made it and where the source is, and the author
+    link is the same address everywhere: it is hand-copied into each footer
+    and into the drawer, so the drift is a page pointing somewhere else on
+    the same site — a home page or a stale path — which reads as working."""
+    path = "/" if name == "index.html" else f"/{name}"
+    hrefs = [a["href"] for a in Head.of(client.get(path).text).anchors]
+
+    assert AUTHOR in hrefs, f"{name} doesn't credit the author"
+    assert SOURCE in hrefs, f"{name} hides the source"
+    strays = [h for h in hrefs if is_the_authors(h) and h != AUTHOR]
+    assert not strays, f"{name} links the author at {strays}"
+
+
 def test_every_referenced_icon_is_served_at_its_declared_size(client):
     """The icons are loose files under web/; a rename would 404 in silence,
     and a resize would go on being advertised at the old size."""
