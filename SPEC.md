@@ -196,15 +196,21 @@ automatically.
   a wall in front of a guest, who has none, and whose copy is the only thing
   that survives clearing the cookie.
 - **A deletion request erases the responses too**, and is reachable from
-  inside the app. Being signed in is the proof of ownership the optional,
-  unverified email can't supply, so deletion can't depend on an email
-  thread; and keeping the answers while dropping the name would leave us
-  holding data the user believes is gone. Losing some responses is
-  cheaper than making "we deleted it" mean something narrower than a user
-  would read it as. Nothing derived from them survives either — difficulty
-  comes from the engine, not from answers — so the only asterisks left are
-  the ones no design can remove: the backup window, and analysis already
-  published.
+  inside the app by whoever the record belongs to — which includes a guest,
+  because a guest's answers are the same research data an account's are.
+  Holding the session is the proof of ownership the optional, unverified
+  email can't supply, so deletion can't depend on an email thread. An
+  account is asked for its password on top, since a shared browser holds the
+  session; a guest has none, and no second factor exists to invent for one,
+  so the cookie has to be enough. The alternative is that the guest half of
+  what is held has no erase button at all and "clear the cookie" stands in
+  for one — and that makes the record unreachable, which is not the same as
+  gone. Keeping the answers while dropping the name would leave us holding
+  data the user believes is gone; losing some responses is cheaper than
+  making "we deleted it" mean something narrower than a user would read it
+  as. Nothing derived from them survives either — difficulty comes from the
+  engine, not from answers — so the only asterisks left are the ones no
+  design can remove: the backup window, and analysis already published.
 - **Explanations are grounded in engine output.** The engine lines are the
   authority; any prose (user's pasted questions today, generated
   narration later) sits next to them, never replaces them.

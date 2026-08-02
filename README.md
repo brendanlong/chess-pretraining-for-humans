@@ -108,10 +108,12 @@ the position it was about and a link to the game — or CSV for the answers
 alone, a row each, for a spreadsheet. Guests included; it is what clearing
 the cookie would otherwise lose.
 
-The drawer also deletes the account, confirmed with your password: the row,
-its sessions, and all of its responses go in one transaction, erasing
-exactly what the download hands over. That is the one place the app destroys
-research data on purpose — see the privacy policy.
+The same section deletes it: the row, its sessions, and all of its responses
+go in one transaction, erasing exactly what the download hands over. Guests
+included, again — their answers are the same research data, and the cookie is
+the only claim on that row anyone can make. An account confirms with its
+password on top, since a shared browser holds the session. That is the one
+place the app destroys research data on purpose — see the privacy policy.
 
 `trainer.account` is the operator's way into rows the app can't reach: the
 ones that predate accounts (the old `?user=name` profiles) have no guest

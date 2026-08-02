@@ -127,13 +127,16 @@ caller can seed, and the in-app counters are insurance — real per-IP volume
 belongs in the proxy. The full reasoning for each choice sits beside the
 limiters in `trainer/server.py` and on `RateLimiter` in `trainer/auth.py`.
 
-Deletion runs on signup's reasoning in reverse: the signed-in session is the
-proof of ownership (the optional email is never verified, so an email thread
-could prove nothing), the password is re-entered anyway because a shared
-browser holds the session, and responses and sessions are erased before the
-`users` row they reference, all in one transaction. Guests have no password
-and so can't be authenticated at all: clearing the cookie is the only
-deletion available on a row nobody can point at. `trainer/account.py` is the
+Deletion runs on signup's reasoning in reverse: the session is the proof of
+ownership (the optional email is never verified, so an email thread could
+prove nothing), and responses and sessions are erased before the `users` row
+they reference, all in one transaction. An account re-enters its password on
+top, because a shared browser holds the session; a guest has none, so the
+cookie is the whole of it — the same authorization export already runs on, and
+the only one a guest row can ever have. Which branch authorized the request is
+re-checked inside the transaction against the row's current `password_hash`,
+so neither a rotated password nor a signup landing mid-request can be talked
+past. `trainer/account.py` is the
 operator's way in for what the app can't reach — rows that predate accounts,
 or a password nobody remembers — and doubles as the only recovery path, so
 setting a password there also signs the account's existing sessions out.
@@ -249,14 +252,15 @@ between the choice buttons and the reveal — verdict and rating delta,
 then replay controls with a primary Next, then the two engine lines as
 tappable cards; secondary detail sits below the fold. Desktop places the
 same panel beside the board. A settings drawer holds replay speed, the
-account controls (sign up / sign in / sign out / delete, reached from the
-header chip), the two buttons that download this user's own record,
-session/debug counters like the fresh-item count, and the legal
-links. Delete is two deliberate steps behind a password field, and collapses
-again whenever the drawer or the account changes — a destructive control
-should never be found already armed. A download is fetched rather than
-linked, so that a refused one can say so in the drawer instead of saving the
-refusal as a file.
+account controls (sign up / sign in / sign out, reached from the header
+chip), a "your data" section, session/debug counters like the fresh-item
+count, and the legal links. Download and delete share that section because
+they name the same record, and both are offered to guests; delete is two
+deliberate steps, the second behind a password field only when there is a
+password, and it collapses again whenever the drawer or the account changes —
+a destructive control should never be found already armed. A download is
+fetched rather than linked, so that a refused one can say so in the drawer
+instead of saving the refusal as a file.
 
 `terms.html` and `privacy.html` are plain pages beside `index.html`,
 sharing its stylesheet, so they ship and version with the app instead of

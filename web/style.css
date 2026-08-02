@@ -473,12 +473,12 @@ kbd {
 #account-guest[hidden], #account-user[hidden] { display: none; }
 
 #auth-error,
-#export-error {
+#data-error {
   margin: 0;
   font-size: 13px;
   color: var(--danger);
 }
-#auth-error[hidden], #export-error[hidden] { display: none; }
+#auth-error[hidden], #data-error[hidden] { display: none; }
 
 /* Two ways of reading the same record, so neither button outranks the other. */
 #export-buttons { display: flex; gap: 8px; }

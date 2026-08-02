@@ -164,3 +164,15 @@ def test_deleting_the_account_erases_exactly_what_was_exported(client):
     r = client.post("/api/account/delete", json={"password": CREDS["password"]})
 
     assert r.json()["responses_deleted"] == exported_rows
+
+
+def test_a_guest_deletes_exactly_what_a_guest_exported(client):
+    """The pairing has to hold on the session cookie alone, which is the whole
+    of a guest's claim to the record either way round."""
+    answer(client, next_trial(client))
+    answer(client, next_trial(client))
+    exported_rows = len(exported(client)["responses"])
+
+    r = client.post("/api/account/delete", json={})
+
+    assert r.json()["responses_deleted"] == exported_rows
