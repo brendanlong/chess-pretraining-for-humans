@@ -169,85 +169,88 @@
 <body>
 
 <div id="board" class="cg-wrap">
-  <!-- Greek gift: white to move, Bxh7+ against the quiet Ne5. -->
-  <div class="sq"><piece class="black rook"></piece></div>
-  <div class="sq d"></div>
-  <div class="sq"><piece class="black bishop"></piece></div>
-  <div class="sq d"><piece class="black queen"></piece></div>
+  <!-- Item 31395 of the bank, from https://lichess.org/Ak8CyOQm — Black to
+     move. Bxe5 looks like it wins the knight while hitting the queen, but
+     loses to the Rxd8 zwischenzug; the quiet Qb8 steps off the d-file so the
+     capture works next move. Drawn from Black's side, h1 in the top-left,
+     because the app orients the board to the mover. -->
   <div class="sq"></div>
-  <div class="sq d"><piece class="black rook"></piece></div>
-  <div class="sq"><piece class="black king"></piece></div>
-  <div class="sq d"></div>
-
-  <div class="sq d"><piece class="black pawn"></piece></div>
-  <div class="sq"><piece class="black pawn"></piece></div>
-  <div class="sq d"><piece class="black pawn"></piece></div>
-  <div class="sq"><piece class="black knight"></piece></div>
-  <div class="sq d"></div>
-  <div class="sq"><piece class="black pawn"></piece></div>
-  <div class="sq d"><piece class="black pawn"></piece></div>
-  <div class="sq"><piece class="black pawn"></piece></div>
-
+  <div class="sq d"><piece class="white king"></piece></div>
   <div class="sq"></div>
+  <div class="sq d"><piece class="white rook"></piece></div>
+  <div class="sq"><piece class="white rook"></piece></div>
   <div class="sq d"></div>
-  <div class="sq"></div>
-  <div class="sq d"><piece class="black bishop"></piece></div>
-  <div class="sq"><piece class="black pawn"></piece></div>
-  <div class="sq d"><piece class="black knight"></piece></div>
   <div class="sq"></div>
   <div class="sq d"></div>
 
-  <div class="sq d"></div>
-  <div class="sq"></div>
-  <div class="sq d"></div>
-  <div class="sq"><piece class="black pawn"></piece></div>
-  <div class="sq d"></div>
-  <div class="sq"></div>
-  <div class="sq d"></div>
-  <div class="sq"></div>
-
-  <div class="sq"></div>
-  <div class="sq d"></div>
-  <div class="sq"></div>
+  <div class="sq d"><piece class="white pawn"></piece></div>
+  <div class="sq"><piece class="white pawn"></piece></div>
   <div class="sq d"><piece class="white pawn"></piece></div>
   <div class="sq"></div>
   <div class="sq d"></div>
   <div class="sq"></div>
-  <div class="sq d"></div>
+  <div class="sq d"><piece class="white pawn"></piece></div>
+  <div class="sq"><piece class="white pawn"></piece></div>
 
+  <div class="sq"></div>
+  <div class="sq d"></div>
+  <div class="sq"></div>
   <div class="sq d"></div>
   <div class="sq"></div>
   <div class="sq d"><piece class="white knight"></piece></div>
-  <div class="sq"><piece class="white bishop"></piece></div>
-  <div class="sq d"><piece class="white pawn"></piece></div>
-  <div class="sq"><piece class="white knight"></piece></div>
+  <div class="sq"></div>
+  <div class="sq d"></div>
+
+  <div class="sq d"></div>
+  <div class="sq"></div>
+  <div class="sq d"><piece class="white queen"></piece></div>
+  <div class="sq"></div>
+  <div class="sq d"></div>
+  <div class="sq"></div>
   <div class="sq d"></div>
   <div class="sq"></div>
 
-  <div class="sq"><piece class="white pawn"></piece></div>
-  <div class="sq d"><piece class="white pawn"></piece></div>
-  <div class="sq"><piece class="white pawn"></piece></div>
-  <div class="sq d"></div>
-  <div class="sq"></div>
-  <div class="sq d"><piece class="white pawn"></piece></div>
-  <div class="sq"><piece class="white pawn"></piece></div>
-  <div class="sq d"><piece class="white pawn"></piece></div>
-
-  <div class="sq d"><piece class="white rook"></piece></div>
   <div class="sq"></div>
   <div class="sq d"><piece class="white bishop"></piece></div>
-  <div class="sq"><piece class="white queen"></piece></div>
+  <div class="sq"></div>
+  <div class="sq d"><piece class="white knight"></piece></div>
+  <div class="sq"></div>
   <div class="sq d"></div>
-  <div class="sq"><piece class="white rook"></piece></div>
-  <div class="sq d"><piece class="white king"></piece></div>
+  <div class="sq"></div>
+  <div class="sq d"></div>
+
+  <div class="sq d"></div>
+  <div class="sq"><piece class="black bishop"></piece></div>
+  <div class="sq d"><piece class="black knight"></piece></div>
+  <div class="sq"></div>
+  <div class="sq d"><piece class="black bishop"></piece></div>
+  <div class="sq"></div>
+  <div class="sq d"></div>
   <div class="sq"></div>
 
-  <!--
-    Board coordinates: one unit per square, a8 at the origin, so the center of
-    the square on file f (a=0) and rank r is (f + 0.5, 8.5 - r). Both lines
-    stop a head-length short of the destination center and start a little
-    outside the origin center, the way chessground draws them.
-  -->
+  <div class="sq"><piece class="black pawn"></piece></div>
+  <div class="sq d"><piece class="black pawn"></piece></div>
+  <div class="sq"><piece class="black pawn"></piece></div>
+  <div class="sq d"></div>
+  <div class="sq"></div>
+  <div class="sq d"></div>
+  <div class="sq"><piece class="black pawn"></piece></div>
+  <div class="sq d"><piece class="black pawn"></piece></div>
+
+  <div class="sq d"></div>
+  <div class="sq"><piece class="black king"></piece></div>
+  <div class="sq d"></div>
+  <div class="sq"><piece class="black rook"></piece></div>
+  <div class="sq d"><piece class="black queen"></piece></div>
+  <div class="sq"></div>
+  <div class="sq d"></div>
+  <div class="sq"><piece class="black rook"></piece></div>
+
+  <!-- Board coordinates: one unit per square, h1 at the origin — the board
+       is from Black's side, as the app draws a Black-to-move item — so the
+       center of the square on file f (a=0) and rank r is (7.5 - f, r - 0.5).
+       Both lines stop a head-length short of the destination center and start
+       a little outside the origin center, the way chessground draws them. -->
   <svg id="arrows" viewBox="0 0 8 8">
     <defs>
       <marker id="head-1" orient="auto" markerWidth="3.2" markerHeight="3.2"
@@ -259,26 +262,24 @@
         <path class="a2-head" d="M0,0 V3.2 L3.2,1.6 Z"></path>
       </marker>
     </defs>
-    <!-- Bd3xh7 -->
-    <line class="a1" x1="3.698" y1="5.302" x2="6.977" y2="2.023"
+    <!-- Bd6xe5 -->
+    <line class="a1" x1="4.302" y1="5.302" x2="4.023" y2="5.023"
           stroke-width="0.2" marker-end="url(#head-1)"></line>
-    <!-- Nf3-e5 -->
-    <line class="a2" x1="5.375" y1="5.250" x2="4.831" y2="4.162"
+    <!-- Qd8-b8 -->
+    <line class="a2" x1="4.780" y1="7.500" x2="5.760" y2="7.500"
           stroke-width="0.2" marker-end="url(#head-2)"></line>
   </svg>
 
-  <!--
-    The discs, backed 33/64 of a square off the destination centre along the
-    arrow, which is where chessground puts a shape label when nothing else is
-    aimed at that square: d3-h7 gives (7.5, 1.5) - 0.516*(.707, -.707), and
-    f3-e5 gives (4.5, 3.5) - 0.516*(-.447, -.894). The digit sits a little
-    below the centre so its body, not its box, is what looks centred.
-  -->
+  <!-- The discs, backed 33/64 of a square off the destination centre along
+       the arrow, which is where chessground puts a shape label when nothing
+       else is aimed at that square: d6-e5 gives (3.5, 4.5) - 0.516*(-.707, -.707),
+       and d8-b8 gives (6.5, 7.5) - 0.516*(1, 0). The digit sits a little below
+       the centre so its body, not its box, is what looks centred. -->
   <svg id="arrow-labels" viewBox="0 0 8 8">
-    <circle class="l1" cx="7.135" cy="1.865" r="0.22"></circle>
-    <text x="7.135" y="1.963">1</text>
-    <circle class="l2" cx="4.731" cy="3.962" r="0.22"></circle>
-    <text x="4.731" y="4.060">2</text>
+    <circle class="l1" cx="3.865" cy="4.865" r="0.22"></circle>
+    <text x="3.865" y="4.963">1</text>
+    <circle class="l2" cx="5.984" cy="7.500" r="0.22"></circle>
+    <text x="5.984" y="7.598">2</text>
   </svg>
 </div>
 
@@ -286,8 +287,8 @@
   <div id="brand"><img src="../web/favicon.svg" alt="">Chess Pretraining</div>
   <p id="prompt">Which move is better?</p>
   <div id="choices">
-    <div class="choice"><span class="key">1</span>Bxh7+</div>
-    <div class="choice"><span class="key">2</span>Ne5</div>
+    <div class="choice"><span class="key">1</span>Bxe5</div>
+    <div class="choice"><span class="key">2</span>Qb8</div>
   </div>
   <p id="tagline">Real positions, two candidate moves, instant feedback.
   Difficulty adapts to hold you near <b>80% accuracy</b>.</p>
