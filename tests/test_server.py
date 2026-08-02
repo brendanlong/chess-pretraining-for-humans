@@ -503,6 +503,16 @@ def test_our_own_pages_open_in_the_app(client, name):
 
 
 AUTHOR = "https://www.brendanlong.com/pages/about-me.html"
+SOURCE = "https://github.com/brendanlong/chess-pretraining-for-humans"
+
+
+def is_the_authors(href: str) -> bool:
+    """His own site rather than this app's, which is a subdomain of it. The
+    host is compared whole — a suffix alone would take `notbrendanlong.com`
+    for his, and a bare substring would take any URL that merely mentions it.
+    """
+    host = urlsplit(href).netloc
+    return (host == "brendanlong.com" or host.endswith(".brendanlong.com")) and not is_ours(href)
 
 
 @pytest.mark.parametrize("name", WEB_PAGES)
@@ -512,16 +522,11 @@ def test_every_page_credits_the_author_at_one_address(client, name):
     and into the drawer, so the drift is a page pointing somewhere else on
     the same site — a home page or a stale path — which reads as working."""
     path = "/" if name == "index.html" else f"/{name}"
-    anchors = Head.of(client.get(path).text).anchors
+    hrefs = [a["href"] for a in Head.of(client.get(path).text).anchors]
 
-    hrefs = [a["href"] for a in anchors]
     assert AUTHOR in hrefs, f"{name} doesn't credit the author"
-    assert any("github.com/brendanlong" in h for h in hrefs), f"{name} hides the source"
-    strays = [
-        h
-        for h in hrefs
-        if urlsplit(h).netloc.endswith("brendanlong.com") and not is_ours(h) and h != AUTHOR
-    ]
+    assert SOURCE in hrefs, f"{name} hides the source"
+    strays = [h for h in hrefs if is_the_authors(h) and h != AUTHOR]
     assert not strays, f"{name} links the author at {strays}"
 
 
