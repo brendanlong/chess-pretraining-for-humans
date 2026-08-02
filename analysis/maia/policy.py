@@ -26,14 +26,16 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import chess
+
 ELOS = [1100, 1200, 1300, 1400, 1500, 1600, 1700, 1800, 1900]
 MAIA_HOME = Path.home() / ".local/share/maia"
 
 # lc0 prints a move's prior as two decimals of a percent, so anything under
-# 5e-5 reads as a flat zero. Both families are floored there — not because
-# maia2 needs it, but because a log-odds taken over an unfloored zero is an
-# outlier of arbitrary size, and comparing the two families means the coarser
-# instrument sets the resolution for both.
+# 5e-5 reads as a flat zero. Both families are floored there — a log-odds taken
+# over an unfloored zero is an outlier of arbitrary size, and comparing the two
+# families means the coarser instrument sets the resolution for both. maia2
+# needs it too: about 1,500 of its rows fall below this.
 PROB_FLOOR = 5e-5
 
 
@@ -113,11 +115,21 @@ def run_maia1(rows, fa, fb):
         weights = MAIA_HOME / f"weights/maia-{elo}.pb.gz"
         with MaiaPolicy(str(MAIA_HOME / "lc0"), str(weights), backend="eigen") as eng:
             for r in rows:
-                p = eng.policy(r["fen"])
-                if not p:
+                raw = eng.policy(r["fen"])
+                if not raw:
                     continue
+                board = chess.Board(r["fen"])
+                # lc0 names castling king-takes-rook, so `e1g1` is absent from
+                # its output and a plain dict lookup reads the position's most
+                # popular move as probability zero. Re-key the whole policy
+                # through the legal move list rather than special-casing the
+                # two we want: any other notation lc0 and we disagree about
+                # then shows up as a KeyError below instead of as a silent nil.
+                p = {}
+                for mv in board.legal_moves:
+                    p[mv.uci()] = raw[board.uci(mv, chess960=True)]
                 top = max(p, key=p.get)
-                pa, pb = p.get(r[fa], 0.0), p.get(r[fb], 0.0)
+                pa, pb = p[r[fa]], p[r[fb]]
                 out.append(
                     {
                         "id": r["id"],

@@ -105,48 +105,72 @@ users. Impossible: the shallow-gap axis is intrinsically taller — its
 calibrated band alone spans more than the whole of the old one — so any
 constant that lowered it far enough pushes the easy tail below zero.
 
-## A second opinion that isn't an engine
+## A second opinion that isn't an engine, and why it can't be scored here
 
 Everything above is read off a search engine, which is why the whole axis
 explains so little: an engine can say what is true and not what is hard. A
-human-imitation policy conditioned on rating can say the other thing, and
-`analysis/maia/` measures what it is worth. Not adopted — this is evidence,
-and the constants are unchanged.
+human-imitation policy conditioned on rating — Maia — can be asked the other
+question, and `analysis/maia/` is what asking cost. Nothing is adopted. The
+main thing it returned is a warning about the estimator every other line in
+this file rests on.
 
-What it settles:
+**The estimator cannot evaluate a measure that has seen the played move.**
+`spread` scores a candidate axis by how far erring strength moves across it,
+so its target is `mover_elo`. The distractor *is* that player's move. So any
+statistic that inverts a rating-conditioned model over the distractor is a
+rating classifier being scored against rating, and it wins enormously without
+saying anything about difficulty.
+
+That is not hypothetical; it is what the first pass here found and reported.
+The measure was the *elo-gradient*, Maia's log-odds between the two moves at
+1900 minus the same at 1100, and combined with the shallow gap it scored +441
+against +326 with a paired interval clear of zero, in both model families and
+under every robustness check tried. It decomposes exactly into a term over
+each move, and `axes.py` prints both:
+
+- the half over the **best** move — how much more visible the right answer
+  gets as skill rises, which is the whole stated mechanism and the only half
+  that describes the discrimination the app trains — scores **+59**, and
+  *lowers* the combined axis below the shallow gap alone;
+- the half over the **played** move, which never looks at the best move at
+  all, scores **+447**.
+
+A difficulty measure for a two-alternative choice that ignores one of the two
+alternatives is not measuring the choice. `control.py` prices it: on control
+positions where the human played the engine's best move — no error, no
+distractor, nothing to discriminate — the same statistic still spreads erring
+strength by **+196**, three fifths of what the shallow gap achieves on the
+whole bank. That is the size of the tautology, and it has to come off any
+score before the remainder is difficulty.
+
+The shallow gap is not exposed to this. It is an engine number over a position
+and two moves, and the engine has no notion of who was playing, so its
+correlation with `mover_elo` has to run through weaker players making more
+visible errors. Maia's does not have to.
+
+What survives, none of it a difficulty axis:
 
 - **Maia disagrees with Stockfish constantly, and mostly not about us.** Its
   top move is Stockfish's on 36% of the bank; on a control mined with the gap
   window opened all the way it is 43%, against 37% for the humans who were
-  actually there. So the disagreement is Maia being a club player, and our
-  selecting for blunders costs only the seven points between those.
-- **The useful quantity is not Maia's opinion but how fast it changes.** Maia's
-  log-odds between our two moves, taken at one strength, scores below the
-  shallow gap. The *difference* between the strongest and weakest levels — how
-  much more visible the right move gets as skill rises — scores above it alone,
-  and combined with the shallow gap reaches +441 against +329, a paired gain
-  outside its own resampling interval in both model families. That measure is
-  nearly orthogonal to the shallow gap (r = 0.31), which is why it adds.
-- **It corroborates the negative-shallow-gap items.** Where the surface
-  recommends the losing move, Maia at 1500 prefers the right one 24% of the
-  time against 58% elsewhere — an oracle that shares no machinery with the
-  ladder agreeing those are the hardest items in the bank.
+  actually there. The disagreement is Maia being a club player, and selecting
+  for blunders costs only the seven points between those.
+- **It corroborates the negative-shallow-gap items** from outside the ladder.
+  Where the surface recommends the losing move, Maia at 1500 prefers the right
+  one 24% of the time against 64% over the rest of the bank.
+- **The play-versus-recognise gap is still unpriced.** Maia predicts what a
+  player would *play*; the app asks what they can *recognise* between two named
+  moves, which is easier. This was filed as the caveat that mattered and it is
+  not — the circularity above is — but it stands, and the same answer disposes
+  of both: `responses` holds human accuracy per item, which is a target no move
+  of the player's is an input to. Until this is run against that, the probe has
+  measured what Maia knows about ratings and not what makes an item hard.
 
-What it does not settle, and what any adoption has to clear first:
-
-- **Maia predicts what a player would *play*, and the app asks what they can
-  *recognise* between two named moves.** Those are different tasks and
-  recognition is the easier one, so the probabilities are a proxy of unknown
-  bias, not a predicted accuracy. The responses table is the only thing that
-  can price the difference and this has not been run against it.
-- The magnitude ambiguity above is untouched: the probe scores axes on a
-  scale-free statistic and so, like the depth axis before it, says nothing
-  about how many rating points the new one is worth.
-- A difficulty that depends on a 280 MB checkpoint is a difficulty that has to
-  be reproducible for as long as the bank is. The probe reads the two families
-  as a check on each other for that reason; they correlate at 0.85 on the
-  log-odds and 0.69 on the gradient, which is agreement about the ordering and
-  not about the number.
+Reproducibility, if any of it is ever revisited: the two families agree on the
+ordering and not the number — 0.86 on the log-odds over the whole bank, 0.69 on
+the gradient over the subset `axes.py` fits. Both figures need their subset
+named, because the difference between them is mostly castling (see the probe's
+README).
 
 ## Open, and what to check when changing it
 

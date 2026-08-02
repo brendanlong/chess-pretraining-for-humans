@@ -10,6 +10,13 @@ is a human-imitation policy conditioned on rating, so it can say what a player
 of a stated strength would probably play — the denominator CALIBRATION.md says
 the error-only sample doesn't have.
 
+Read that file's section on this before drawing anything from `axes.py`. The
+short version is that a Maia statistic over the *played* move inverts to a
+rating classifier, `spread` scores against the rating of the player who played
+it, and the two multiply into a very large number that is not difficulty.
+`axes.py` splits every measure per move for that reason, and `control.py`
+exists to price the part that survives on positions containing no error.
+
 ## Setup
 
 Needs its own venv: maia2 pins torch, the app pins neither.
@@ -35,11 +42,8 @@ python policy.py items.jsonl maia1.jsonl --family maia1   # ~3min
 python axes.py items.jsonl maia2.jsonl
 ```
 
-`policy.py` also takes a mined candidate file — pass `--moves best_uci played_uci`
-— which is how the control set in CALIBRATION.md was measured. A control needs
-mining with the gap window opened all the way (`--min-gap-wp -1 --max-gap-wp 1`),
-so that the "a human blundered here" filter is off and Maia's agreement rate is
-readable as a fact about Maia rather than about our sampling.
+`control.py`'s docstring carries the rest — the control set is mined and labeled
+separately, and everything it prints needs it.
 
 ## Reading the output
 
@@ -49,8 +53,18 @@ differences it reports are small relative to the resampling noise, which is why
 it bootstraps rather than printing an argmax; treat a column of point estimates
 from it as unreadable without the paired interval beside it.
 
-One trap, since both families are scored together: lc0 prints a move's prior as
-two decimals of a percent, so a genuinely small probability arrives as a flat
-zero and an unfloored log-odds over it becomes an outlier of arbitrary size.
-That alone moved the apparent correlation between the two families from 0.30 to
-0.85. `policy.PROB_FLOOR` is the resolution both are held to.
+Two traps, both of which cost a wrong published number before they were found.
+
+**lc0 names castling king-takes-rook**, so `e1g1` is simply absent from its
+output. A `dict.get(move, 0.0)` therefore reads the position's most popular
+move as probability zero — it hit 4.7% of the bank, every item whose best move
+is castling, and maia2 gives those same moves a median probability of 0.34.
+`policy.py` re-keys lc0's whole policy through python-chess's legal move list
+instead, so a notation the two disagree about raises rather than reading as nil.
+
+**lc0 prints a prior as two decimals of a percent**, so anything genuinely small
+arrives as a flat zero and an unfloored log-odds over it is an outlier of
+arbitrary size. `policy.PROB_FLOOR` is the resolution both families are held to.
+Between them these two moved the apparent correlation between the families from
+0.35 to 0.86 — the floor is worth about half of that and the castling fix the
+other half, which is why attributing it all to resolution was itself a mistake.
