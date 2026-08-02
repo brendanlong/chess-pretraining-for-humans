@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>What Maia plays on the item bank</title>
+<style>
+  .viz-root {
+    --surface-1: #fcfcfb;
+    --page: #f9f9f7;
+    --text-primary: #0b0b0b;
+    --text-secondary: #52514e;
+    --muted: #898781;
+    --baseline: #c3c2b7;
+    --s1: #1c5cab;  /* plays Stockfish's exact move        */
+    --s2: #3987e5;  /* within 0.03 of best                 */
+    --s3: #86b6ef;  /* worse than best, better than human  */
+    --s4: #ef8f8e;  /* as bad as the human                 */
+    --s5: #b3312f;  /* worse than the human                */
+    /* A label inside a fill takes white or ink by that fill's luminance — and
+       the fills swap ends between modes, so the ink has to swap with them. */
+    --ink1: #ffffff; --ink2: #ffffff; --ink3: #0b0b0b; --ink4: #0b0b0b; --ink5: #ffffff;
+  }
+  @media (prefers-color-scheme: dark) {
+    .viz-root {
+      --surface-1: #1a1a19;
+      --page: #0d0d0d;
+      --text-primary: #ffffff;
+      --text-secondary: #c3c2b7;
+      --muted: #898781;
+      --baseline: #383835;
+      --s1: #86b6ef;
+      --s2: #2a78d6;
+      --s3: #184f95;
+      --s4: #a5322f;
+      --s5: #e59a99;
+      --ink1: #0b0b0b; --ink2: #ffffff; --ink3: #ffffff; --ink4: #ffffff; --ink5: #0b0b0b;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 28px 30px 22px;
+    background: var(--page);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  .viz-root { background: var(--surface-1); border-radius: 10px; padding: 26px 30px 22px; }
+  h1 { font-size: 19px; font-weight: 600; margin: 0 0 5px; color: var(--text-primary); letter-spacing: -0.01em; }
+  .sub { font-size: 13px; color: var(--text-secondary); margin: 0 0 26px; line-height: 1.45; }
+
+  /* Each label spans exactly the region it describes, so the split reads off
+     the divider rather than having to be matched up by eye. */
+  .sidelabels { display: flex; font-size: 12.5px; margin-bottom: 8px; }
+  .sidelabels .l { flex: 0 0 72.2%; padding-right: 10px; }
+  .sidelabels .r { flex: 1 1 auto; padding-left: 10px; }
+  .sidelabels .l, .sidelabels .r { color: var(--text-secondary); font-weight: 600; white-space: nowrap; }
+  .sidelabels .l span, .sidelabels .r span { color: var(--muted); font-weight: 400; }
+
+  .bar { display: flex; height: 62px; width: 100%; position: relative; }
+  .seg {
+    position: relative; display: flex; align-items: center; justify-content: center;
+    font-size: 14px; font-weight: 600;
+    margin-right: 2px;              /* 2px surface gap between stacked segments */
+    background: var(--surface-1);   /* the gap shows the surface, not a stroke */
+    cursor: default;
+  }
+  .seg:last-child { margin-right: 0; }
+  .seg i { position: absolute; inset: 0; display: block; }
+  .seg b { position: relative; font-weight: 600; }
+  .seg:first-child i { border-radius: 4px 0 0 4px; }
+  .seg:last-child  i { border-radius: 0 4px 4px 0; }
+
+  .divider { position: absolute; top: -10px; bottom: -10px; width: 2px; background: var(--text-primary); opacity: .55; }
+
+  .axis { height: 1px; background: var(--baseline); margin-top: 10px; }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 7px 22px; margin-top: 18px; }
+  .legend div { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-secondary); }
+  .legend i { width: 11px; height: 11px; border-radius: 2.5px; flex: none; }
+  .legend em { font-style: normal; color: var(--text-primary); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+  .notes { margin: 20px 0 0; padding: 14px 0 0; border-top: 1px solid var(--baseline);
+           font-size: 12px; color: var(--muted); line-height: 1.6; }
+  .notes b { color: var(--text-secondary); font-weight: 600; }
+
+  .tip {
+    position: fixed; pointer-events: none; opacity: 0; transition: opacity .12s;
+    background: var(--text-primary); color: var(--surface-1);
+    font-size: 12px; line-height: 1.45; padding: 7px 10px; border-radius: 6px; max-width: 260px; z-index: 10;
+  }
+  table { border-collapse: collapse; margin-top: 16px; font-size: 12px; width: 100%; }
+  caption { text-align: left; font-size: 12px; color: var(--text-secondary); padding-bottom: 6px; font-weight: 600; }
+  th, td { text-align: left; padding: 5px 10px 5px 0; color: var(--text-secondary); border-bottom: 1px solid var(--baseline); }
+  td.n { text-align: right; font-variant-numeric: tabular-nums; color: var(--text-primary); }
+</style>
+</head>
+<body data-palette="#1c5cab,#3987e5,#86b6ef,#ef8f8e,#b3312f" data-mode="light" data-surface="#fcfcfb">
+<div class="viz-root">
+  <h1>What Maia plays on our item bank, against Stockfish's answer</h1>
+  <p class="sub">All 34,307 items &mdash; real positions where a human blundered. Each item pairs Stockfish's
+    best move with the move the human actually played. This is what Maia&#8209;1500 would pick instead.</p>
+
+  <div class="sidelabels">
+    <div class="l">Maia's move beats the human's blunder <span>&mdash; 72.2%</span></div>
+    <div class="r">&#9654;&nbsp;it doesn't <span>&mdash; 27.8%</span></div>
+  </div>
+
+  <div class="bar" id="bar"></div>
+  <div class="axis"></div>
+
+  <div class="legend" id="legend"></div>
+
+  <p class="notes">
+    <b>How to read it.</b> Segments run from Maia agreeing with Stockfish (left) to Maia playing something worse
+    than the blunder we already use as the wrong answer (right). The divider marks the only line that matters if
+    Maia were used to source the answer: to its right, the &ldquo;correct&rdquo; move would be no better than the
+    distractor.<br>
+    <b>Detail.</b> Of the 23.5% that are as bad as the human's move, <b>20.3% of the bank is Maia playing that exact
+    move</b>. Of the 16.4% near&#8209;best, only <b>1.5% of the bank</b> is the case where Maia plays well but rates
+    Stockfish's move implausible (P&nbsp;&lt;&nbsp;0.01).<br>
+    <b>Method.</b> Maia&#8209;2 rapid at rating 1500. The two leftmost shares are exact over the full bank; the rest
+    are estimated from a 2,500&#8209;item random sample of the 21,999 disagreements, scored by Stockfish at depth 18.
+    &ldquo;Within 0.03&rdquo; is <code>trainer.mine</code>'s own error floor, and is load&#8209;bearing: search noise here
+    has sd&nbsp;0.017.
+  </p>
+
+  <table id="tbl"><caption>Table view</caption>
+    <thead><tr><th>What Maia&#8209;1500 plays</th><th class="n">Share of bank</th></tr></thead>
+    <tbody></tbody>
+  </table>
+</div>
+<div class="tip" id="tip"></div>
+
+<script>
+const DATA = [
+  {k:'s1', label:"Stockfish's exact move",                    v:35.9, tip:"Maia's top move is the item's answer. Using Maia here changes nothing."},
+  {k:'s2', label:"a different move, within 0.03 of best",     v:16.4, tip:"Essentially as good as Stockfish's move. Includes the 1.5% of the bank where Maia rates Stockfish's own move at P < 0.01."},
+  {k:'s3', label:"worse than best, better than the human",    v:19.9, tip:"A degraded answer, but still clearly better than the move the human played."},
+  {k:'s4', label:"as bad as the human's move",                v:23.5, tip:"Within 0.03 of the blunder. 20.3% of the bank is Maia playing the human's exact move — the answer and the distractor become the same move."},
+  {k:'s5', label:"worse than the human's move",               v:4.3,  tip:"Maia's move loses more than the blunder does. The item would teach the opposite of the truth."},
+];
+const bar = document.getElementById('bar'), leg = document.getElementById('legend'),
+      tip = document.getElementById('tip'), tb = document.querySelector('#tbl tbody');
+// Labels only go inside a segment when they comfortably fit; below this the
+// legend and tooltip carry the value instead of clipping it.
+const MIN_INLINE = 7.0;
+DATA.forEach((d, i) => {
+  const s = document.createElement('div');
+  s.className = 'seg'; s.style.flex = d.v;
+  const fill = document.createElement('i');
+  fill.style.background = `var(--${d.k})`;
+  s.appendChild(fill);
+  if (d.v >= MIN_INLINE) {
+    const t = document.createElement('b');
+    t.textContent = d.v.toFixed(1) + '%';
+    t.style.color = `var(--ink${i + 1})`;
+    s.appendChild(t);
+  }
+  s.addEventListener('mousemove', e => {
+    tip.style.opacity = 1;
+    tip.innerHTML = `<strong>${d.v.toFixed(1)}%</strong> &mdash; ${d.label}<br>${d.tip}`;
+    tip.style.left = Math.min(e.clientX + 14, innerWidth - 275) + 'px';
+    tip.style.top = (e.clientY + 18) + 'px';
+  });
+  s.addEventListener('mouseleave', () => tip.style.opacity = 0);
+  bar.appendChild(s);
+
+  const l = document.createElement('div');
+  l.innerHTML = `<i style="background:var(--${d.k})"></i><em>${d.v.toFixed(1)}%</em> ${d.label}`;
+  leg.appendChild(l);
+
+  const tr = document.createElement('tr');
+  tr.innerHTML = `<td>${d.label}</td><td class="n">${d.v.toFixed(1)}%</td>`;
+  tb.appendChild(tr);
+});
+const tr = document.createElement('tr');
+tr.innerHTML = `<td><strong>total</strong></td><td class="n"><strong>100.0%</strong></td>`;
+tb.appendChild(tr);
+
+// Divider at the boundary between "better than the blunder" and not.
+const cut = DATA.slice(0,3).reduce((a,d)=>a+d.v,0);
+const div = document.createElement('div');
+div.className = 'divider';
+div.style.left = `calc(${cut}% - 1px)`;
+bar.appendChild(div);
+</script>
+</body>
+</html>
