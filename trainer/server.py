@@ -788,22 +788,15 @@ def answer(a: Answer, request: Request):
             "wp": round(item["wp_distractor"] * 100, 1),
             "line": line_steps(item["fen"], item["pv_distractor"], item["distractor_uci"]),
         },
-        "gap_wp": round(item["gap_wp"] * 100, 1),
-        # What made this item as hard as it was rated, and the answer to "why
-        # was that worth so much when the moves are miles apart": `gap_wp` is
-        # what the answer is worth at full depth, `shallow_gap` is what there
-        # was to see. Safe here and nowhere earlier — both are hints about where
-        # to look, so they belong to the reveal and not to the trial.
-        #
-        # Nothing else off the ladder goes out. `gap_ladder` itself would be
-        # answer-adjacent data sent for no reason: nothing on the page reads it,
-        # and its signs are the answer key spelled out depth by depth.
-        "shallow_gap": (
-            None if item["shallow_gap"] is None else round(item["shallow_gap"] * 100, 1)
-        ),
+        # How hard the item was, which is safe here and nowhere earlier: it is a
+        # hint about where to look, so it belongs to the reveal and not to the
+        # trial. It goes out alone. The measurement behind it (`shallow_gap` and
+        # the `gap_ladder` it averages) is answer-adjacent data nothing reads —
+        # the ladder's signs are the answer key spelled out depth by depth — and
+        # `gap_wp` is the difference between the two `wp`s already above.
+        "item_rating": round(item["rating"]),
         "distractor_source": item["distractor_source"],
         "game_url": item["game_url"],
-        "item_rating": round(item["rating"]),
     }
 
 
