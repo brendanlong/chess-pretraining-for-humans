@@ -331,13 +331,12 @@ exercises the rate limiters without exhausting them — is argued in the module.
 
 ## Probes (`analysis/`)
 
-Offline measurement that isn't part of building or serving the bank, and that
-answers a question about it the rest of the tree can't. `analysis/maia/` is the
-one that exists: it runs the Maia human-imitation models over the items and
-scores what they say about difficulty against what the engine says.
+Offline measurement that is neither building the bank nor serving it.
+`analysis/maia/` is the one that exists: it asks how often the Maia
+human-imitation models pick the move Stockfish picks, on our positions.
 
 It sits outside the dependency graph in both directions, deliberately — it
 needs torch, a GPU and a downloaded checkpoint, none of which the server or the
-pipeline should ever acquire, and it opens the bank read-only. `ruff` reaches
-it and nothing else in CI can, which is a real limit on what a number produced
-here is worth; CALIBRATION.md carries the findings and the caveats.
+pipeline should ever acquire, and it opens the bank read-only. `ruff` reaches it
+and nothing else in CI can, which is a real limit on what a number produced here
+is worth; CALIBRATION.md carries the findings and the caveats.

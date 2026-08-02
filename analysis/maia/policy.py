@@ -39,7 +39,7 @@ MAIA_HOME = Path.home() / ".local/share/maia"
 PROB_FLOOR = 5e-5
 
 
-def run_maia2(rows, fa, fb, batch=2048):
+def run_maia2(rows, fa, fb, speed="rapid", opponent=None, batch=2048):
     import torch
     from maia2 import model
     from maia2.inference import _masked_softmax, preprocessing
@@ -49,7 +49,7 @@ def run_maia2(rows, fa, fb, batch=2048):
     move_idx = {mv: i for i, mv in enumerate(all_moves)}
     buckets = create_elo_dict()
 
-    m = model.from_pretrained(type="rapid", device="gpu").eval()
+    m = model.from_pretrained(type=speed, device="gpu").eval()
     dev = next(m.parameters()).device
 
     boards, masks, black = [], [], []
@@ -72,14 +72,23 @@ def run_maia2(rows, fa, fb, batch=2048):
 
     ia, ib = col(fa), col(fb)
 
+    def bucket(elo):
+        return buckets[f"{elo - elo % 100}-{elo - elo % 100 + 99}"]
+
     for elo in ELOS:
-        code = buckets[f"{elo - elo % 100}-{elo - elo % 100 + 99}"]
+        # maia2 conditions on both seats. Holding the opponent equal to the
+        # player is the default because that is what a rating band means in a
+        # matchmade pool; `opponent` pins it instead, which is how to tell
+        # whether the seat matters at all.
+        code = bucket(elo)
+        code_oppo = bucket(opponent) if opponent else code
         for i in range(0, len(boards), batch):
             bb, mm = boards[i : i + batch].to(dev), masks[i : i + batch].to(dev)
             n = bb.shape[0]
             ee = torch.full((n,), code, dtype=torch.long, device=dev)
+            eo = torch.full((n,), code_oppo, dtype=torch.long, device=dev)
             with torch.no_grad():
-                logits, _, _ = m(bb, ee, ee)
+                logits, _, _ = m(bb, ee, eo)
             p = _masked_softmax(logits, mm).cpu()
             pa = p.gather(1, ia[i : i + n, None]).squeeze(1)
             pb = p.gather(1, ib[i : i + n, None]).squeeze(1)
@@ -157,6 +166,15 @@ def main():
     ap.add_argument("dst")
     ap.add_argument("--family", choices=("maia1", "maia2"), default="maia2")
     ap.add_argument(
+        "--speed",
+        choices=("rapid", "blitz"),
+        default="rapid",
+        help="which maia2 checkpoint; maia1 has no equivalent",
+    )
+    ap.add_argument(
+        "--opponent-elo", type=int, help="pin maia2's opponent seat instead of matching the player"
+    )
+    ap.add_argument(
         "--moves", nargs=2, default=("best_uci", "distractor_uci"), metavar=("BEST", "DISTRACTOR")
     )
     args = ap.parse_args()
@@ -167,9 +185,12 @@ def main():
     for i, r in enumerate(rows):
         r.setdefault("id", i)
 
-    run = run_maia2 if args.family == "maia2" else run_maia1
+    if args.family == "maia2":
+        rows_out = run_maia2(rows, *args.moves, speed=args.speed, opponent=args.opponent_elo)
+    else:
+        rows_out = run_maia1(rows, *args.moves)
     with open(args.dst, "w") as out:
-        for row in run(rows, *args.moves):
+        for row in rows_out:
             out.write(json.dumps(row) + "\n")
 
 

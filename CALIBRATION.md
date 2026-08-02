@@ -105,72 +105,50 @@ users. Impossible: the shallow-gap axis is intrinsically taller — its
 calibrated band alone spans more than the whole of the old one — so any
 constant that lowered it far enough pushes the easy tail below zero.
 
-## A second opinion that isn't an engine, and why it can't be scored here
+## What Maia says about the bank
 
-Everything above is read off a search engine, which is why the whole axis
-explains so little: an engine can say what is true and not what is hard. A
-human-imitation policy conditioned on rating — Maia — can be asked the other
-question, and `analysis/maia/` is what asking cost. Nothing is adopted. The
-main thing it returned is a warning about the estimator every other line in
-this file rests on.
+Every measurement above is read off a search engine, which can say what is true
+but not what is hard. Maia is a human-imitation policy conditioned on rating, so
+it can be asked a question Stockfish can't. `analysis/maia/` is the probe;
+nothing here is adopted and no constant moves.
 
-**The estimator cannot evaluate a measure that has seen the played move.**
-`spread` scores a candidate axis by how far erring strength moves across it,
-so its target is `mover_elo`. The distractor *is* that player's move. So any
-statistic that inverts a rating-conditioned model over the distractor is a
-rating classifier being scored against rating, and it wins enormously without
-saying anything about difficulty.
+What it measures is agreement, and only that. Maia's top move is Stockfish's
+best on 36% of the bank. That number means nothing alone — the bank exists to
+hold positions a human got wrong — so the probe mines a control with the gap
+window opened all the way: 43% there, against 37% for the humans who were
+actually at those boards. So the disagreement is mostly Maia being a club
+player rather than our selecting for blunders, and Maia is fractionally better
+than the population it imitates. Which Maia barely matters: across both model
+families, the rapid and blitz checkpoints, and the opponent-rating seat, every
+configuration lands between 30% and 38%, and the only knob worth a few points
+is Maia's own rating.
 
-That is not hypothetical; it is what the first pass here found and reported.
-The measure was the *elo-gradient*, Maia's log-odds between the two moves at
-1900 minus the same at 1100, and combined with the shallow gap it scored +441
-against +326 with a paired interval clear of zero, in both model families and
-under every robustness check tried. It decomposes exactly into a term over
-each move, and `axes.py` prints both:
+One thing it corroborates: where the surface recommends the losing move — the
+negative-shallow-gap items — Maia at 1500 prefers the right move 24% of the
+time against 64% over the rest of the bank. An oracle sharing no machinery with
+the ladder agreeing those are the hardest items in the bank.
 
-- the half over the **best** move — how much more visible the right answer
-  gets as skill rises, which is the whole stated mechanism and the only half
-  that describes the discrimination the app trains — scores **+59**, and
-  *lowers* the combined axis below the shallow gap alone;
-- the half over the **played** move, which never looks at the best move at
-  all, scores **+447**.
+**Rejected: Maia as a difficulty axis.** The obvious next step is to score a
+Maia statistic with `fit_difficulty`'s estimator, and it cannot be done. That
+estimator's target is `mover_elo`, and the distractor *is* that player's move,
+so any statistic that inverts a rating-conditioned model over the distractor is
+a rating classifier being scored against rating. It wins enormously and means
+nothing: the version tried here beat the shallow gap by a paired margin clear
+of zero in both model families and under every robustness check, and then
+turned out to score +196 on control positions where the human played the best
+move — no error, no distractor, nothing to discriminate. The half of it that
+did describe the discrimination scored +59 and made the combination worse.
 
-A difficulty measure for a two-alternative choice that ignores one of the two
-alternatives is not measuring the choice. `control.py` prices it: on control
-positions where the human played the engine's best move — no error, no
-distractor, nothing to discriminate — the same statistic still spreads erring
-strength by **+196**, three fifths of what the shallow gap achieves on the
-whole bank. That is the size of the tautology, and it has to come off any
-score before the remainder is difficulty.
+The general form is worth keeping in mind for anything else proposed as an
+axis: **a measure that has seen the played move cannot be validated against the
+strength of the player who played it.** The engine measures are safe from it
+because an engine has no notion of who was at the board.
 
-The shallow gap is not exposed to this. It is an engine number over a position
-and two moves, and the engine has no notion of who was playing, so its
-correlation with `mover_elo` has to run through weaker players making more
-visible errors. Maia's does not have to.
-
-What survives, none of it a difficulty axis:
-
-- **Maia disagrees with Stockfish constantly, and mostly not about us.** Its
-  top move is Stockfish's on 36% of the bank; on a control mined with the gap
-  window opened all the way it is 43%, against 37% for the humans who were
-  actually there. The disagreement is Maia being a club player, and selecting
-  for blunders costs only the seven points between those.
-- **It corroborates the negative-shallow-gap items** from outside the ladder.
-  Where the surface recommends the losing move, Maia at 1500 prefers the right
-  one 24% of the time against 64% over the rest of the bank.
-- **The play-versus-recognise gap is still unpriced.** Maia predicts what a
-  player would *play*; the app asks what they can *recognise* between two named
-  moves, which is easier. This was filed as the caveat that mattered and it is
-  not — the circularity above is — but it stands, and the same answer disposes
-  of both: `responses` holds human accuracy per item, which is a target no move
-  of the player's is an input to. Until this is run against that, the probe has
-  measured what Maia knows about ratings and not what makes an item hard.
-
-Reproducibility, if any of it is ever revisited: the two families agree on the
-ordering and not the number — 0.86 on the log-odds over the whole bank, 0.69 on
-the gradient over the subset `axes.py` fits. Both figures need their subset
-named, because the difference between them is mostly castling (see the probe's
-README).
+What could settle it is `responses` — observed human accuracy per item is a
+target no move of the player's is an input to. That would also price the thing
+Maia is a proxy for rather than a measurement of: it predicts what a player
+would *play*, where the app asks what they can *recognise* between two named
+moves, which is the easier task.
 
 ## Open, and what to check when changing it
 
