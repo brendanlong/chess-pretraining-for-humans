@@ -165,3 +165,6 @@ __pycache__/
 *.pyc
 .venv/
 .pytest_cache/
+
+# Maia probe: maia2 caches its ~280MB checkpoint next to whatever runs it.
+analysis/maia/maia2_models/

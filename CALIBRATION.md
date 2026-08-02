@@ -105,6 +105,49 @@ users. Impossible: the shallow-gap axis is intrinsically taller — its
 calibrated band alone spans more than the whole of the old one — so any
 constant that lowered it far enough pushes the easy tail below zero.
 
+## A second opinion that isn't an engine
+
+Everything above is read off a search engine, which is why the whole axis
+explains so little: an engine can say what is true and not what is hard. A
+human-imitation policy conditioned on rating can say the other thing, and
+`analysis/maia/` measures what it is worth. Not adopted — this is evidence,
+and the constants are unchanged.
+
+What it settles:
+
+- **Maia disagrees with Stockfish constantly, and mostly not about us.** Its
+  top move is Stockfish's on 36% of the bank; on a control mined with the gap
+  window opened all the way it is 43%, against 37% for the humans who were
+  actually there. So the disagreement is Maia being a club player, and our
+  selecting for blunders costs only the seven points between those.
+- **The useful quantity is not Maia's opinion but how fast it changes.** Maia's
+  log-odds between our two moves, taken at one strength, scores below the
+  shallow gap. The *difference* between the strongest and weakest levels — how
+  much more visible the right move gets as skill rises — scores above it alone,
+  and combined with the shallow gap reaches +441 against +329, a paired gain
+  outside its own resampling interval in both model families. That measure is
+  nearly orthogonal to the shallow gap (r = 0.31), which is why it adds.
+- **It corroborates the negative-shallow-gap items.** Where the surface
+  recommends the losing move, Maia at 1500 prefers the right one 24% of the
+  time against 58% elsewhere — an oracle that shares no machinery with the
+  ladder agreeing those are the hardest items in the bank.
+
+What it does not settle, and what any adoption has to clear first:
+
+- **Maia predicts what a player would *play*, and the app asks what they can
+  *recognise* between two named moves.** Those are different tasks and
+  recognition is the easier one, so the probabilities are a proxy of unknown
+  bias, not a predicted accuracy. The responses table is the only thing that
+  can price the difference and this has not been run against it.
+- The magnitude ambiguity above is untouched: the probe scores axes on a
+  scale-free statistic and so, like the depth axis before it, says nothing
+  about how many rating points the new one is worth.
+- A difficulty that depends on a 280 MB checkpoint is a difficulty that has to
+  be reproducible for as long as the bank is. The probe reads the two families
+  as a check on each other for that reason; they correlate at 0.85 on the
+  log-odds and 0.69 on the gradient, which is agreement about the ordering and
+  not about the number.
+
 ## Open, and what to check when changing it
 
 - **Which window.** `SHALLOW_PLIES` is a choice inside the noise, not an
