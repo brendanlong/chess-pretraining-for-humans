@@ -318,6 +318,17 @@ async function api(path, body) {
   return (await request(path, body)).json();
 }
 
+// Why this trial doesn't count. Two reasons, and the page can tell them apart
+// on its own: being handed the position it asked for by name is a link being
+// reopened, which is a thing links are *for* — so that sentence says what
+// happens rather than apologising for it. Anything else is the bank running
+// out. Nothing in the payload says which, because nothing needs to.
+function repeatCopy(reopened) {
+  return reopened
+    ? "You've answered this position before — replaying it won't affect your rating."
+    : "You've seen every item — this one won't affect your rating.";
+}
+
 async function loadTrial(itemId) {
   phase = "loading";
   unnameTrialInUrl(); // whatever it named, we are leaving it
@@ -340,14 +351,18 @@ async function loadTrial(itemId) {
   });
   el("stat-rating").textContent = ratingLabel(trial.user_rating, trial.calibrating);
   el("stat-trial").textContent = trial.trial_number;
-  if (trial.repeat) el("repeat-note").hidden = false;
+  // Whether we got the position we named, which both notes below turn on.
+  const asked = Boolean(itemId) && String(trial.item_id) === String(itemId);
+  if (trial.repeat) {
+    el("repeat-text").textContent = repeatCopy(asked);
+    el("repeat-note").hidden = false;
+  }
   // Only the disappointing case is worth a word, and it is exactly "we asked
   // for a position and this isn't it" — which also keeps the note off the
   // exhausted-bank case, where the fallback can legitimately hand back the very
   // item that was asked for, as a rerun. Being handed what you asked for needs
-  // no announcement.
-  if (itemId && String(trial.item_id) !== String(itemId))
-    el("stale-link-note").hidden = false;
+  // no announcement, reopened or not.
+  if (itemId && !asked) el("stale-link-note").hidden = false;
   phase = "choosing";
   shownAt = performance.now();
 }

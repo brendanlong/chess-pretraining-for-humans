@@ -517,9 +517,11 @@ async def _step_next(vu: VU) -> None:
 def named_id(vu: VU) -> int:
     """The item this user's link names.
 
-    Past the seeded history, because `named_item` refuses an item the caller
-    has already answered — and refusing is silent by design, so a scenario that
-    named one would be measuring `pick_item` under a name that says otherwise.
+    Past the seeded history, because an item the caller has already answered
+    comes back as a rerun — which is a different thing to serve and a different
+    thing to be measuring, so a scenario that named one would report the repeat
+    path under a name that says fresh link. Following somebody else's link is
+    the case worth a number.
     One id per user rather than one for the scenario, so this reads more than a
     single page; the same one every request, so what varies between runs is the
     query and not how much of the bank a run happened to warm.
@@ -542,10 +544,13 @@ async def _setup_named(vu: VU) -> None:
     """
     await _setup_warm(vu)
     served = (await vu.get(f"/api/next?item={named_id(vu)}")).json()
-    if served["item_id"] != named_id(vu):
+    # Both halves: the wrong item is the bank refusing the link, and the right
+    # item flagged a repeat is the account having answered it — see `named_id`
+    # for why either would put a different measurement under this name.
+    if served["item_id"] != named_id(vu) or served["repeat"]:
         raise RuntimeError(
-            f"the server would not serve item {named_id(vu)} to this account, so "
-            "this scenario would be measuring ordinary selection instead"
+            f"the server would not serve item {named_id(vu)} to this account as a "
+            "fresh trial, so this scenario would be measuring something else"
         )
 
 

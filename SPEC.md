@@ -110,11 +110,13 @@ automatically.
   told the answer — a shallow search reading a deep search's leftovers is not
   a shallow search — and it has to be reproducible, or an item's difficulty
   is a coin flip made once.
-- **Items never repeat while fresh ones remain**, so every answer is a
-  first exposure recorded before feedback — simultaneously a clean
-  measurement and a training trial. Repeats (bank exhausted) are flagged
-  and excluded from ratings and accuracy. The remedy for exhaustion is
-  mining more games.
+- **Selection never repeats an item while fresh ones remain**, so every
+  answer it chooses is a first exposure recorded before feedback —
+  simultaneously a clean measurement and a training trial. The two things
+  that do serve a repeat are the bank running out and a URL naming a
+  position this user has answered; both are flagged, and a flagged answer
+  is excluded from ratings and accuracy, which is what makes asking for
+  one harmless. The remedy for exhaustion is mining more games.
 - **Adapting difficulty is a promise about the bank, not just about
   selection.** Selection cannot fail — it serves the nearest items it
   holds, however far off they are — so a difficulty the bank is thin at
@@ -164,9 +166,13 @@ automatically.
   gets — carrying an item id and never an answer. It names it only *after* the
   answer, because a URL that named the trial in progress would be asking the
   server for it on every reload, and marking a position the app itself chose
-  as one nobody aimed. A URL also buys no second exposures — it is a durable
-  thing that gets reopened, so one naming an item this user has answered is
-  not honoured at all. The
+  as one nobody aimed. A URL is a durable thing that gets reopened — the tab
+  reloads, the link comes back around, a friend sends it on — so one naming an
+  item this user has already answered opens *that* position again rather than
+  a stranger's, as a rerun: answerable and explained, and worth nothing to the
+  rating. That is what makes serving a position whose answer the user may
+  remember safe, and it is the same bargain the exhausted bank already
+  strikes. On a first exposure the
   answer counts: it rates and it is counted in accuracy, because it is a real
   first exposure against an item of measured difficulty, and Elo is a
   statement about the item and not about who chose it. What it carries is a

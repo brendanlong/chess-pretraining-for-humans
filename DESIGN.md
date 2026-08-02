@@ -60,15 +60,17 @@ transaction is open, and nesting) raise. The full reasoning sits on
 Trial endpoints: next trial, answer, stats. Selection picks an
 unseen learnable item near the rating where the user's expected score is
 80%, unless a URL named one — `/api/next?item=` serves that instead, falling
-back to ordinary selection whenever it can't: a link outlives the bank it was
-made from, arrives from chat clients with punctuation attached, and gets
-reopened after it has been answered. An answer moves the user's Elo
+back to ordinary selection only when the bank hasn't got it: a link outlives
+the bank it was made from and arrives from chat clients with punctuation
+attached. An answer moves the user's Elo
 rating and nothing else — item
 difficulty is fixed at labeling time, so the `items` row a trial came from
 is never written to and no user's answers change what another is served.
-A named item rates and counts like any other and is marked in `responses`;
-the one difference is that during calibration it is scored by Elo rather than
-by the staircase, for the reason beside that branch in `answer`.
+A named item is marked in `responses` however it goes; a first exposure to
+one rates and counts like any other, except that during calibration it is
+scored by Elo rather than by the staircase, for the reason beside that branch
+in `answer`. Reopening a link to one already answered serves it as a repeat,
+which rates and counts nothing.
 New users run a calibration staircase first (start low, big steps, halve on
 miss). All responses are recorded with timing and the rating snapshots that
 make each trial reconstructible on its own.
@@ -195,11 +197,12 @@ text for pasting into an assistant. Answering a trial names it in the URL
 (`?item=`, by `replaceState`, so the back button still leaves the app) and
 loading the next one takes the name back out, which makes the address bar the
 share link and the Share button a way of reaching it without one. Why it goes
-in on the answer rather than on arrival is at `nameTrialInUrl`. Only the
-disappointing case is announced: a URL whose item the server won't serve —
-stale, already answered, or not an id at all — gets an ordinary trial and a
-line saying so, which the page recognises by not being handed what it asked
-for.
+in on the answer rather than on arrival is at `nameTrialInUrl`. Reopening one
+that names an already-answered position replays it as a rerun, and the note
+says which kind of rerun it is — the two sentences are `repeatCopy`. Only the
+disappointing case is announced: a URL whose item the bank hasn't got — stale,
+unlearnable, or not an id at all — gets an ordinary trial and a line saying so,
+which the page recognises by not being handed what it asked for.
 
 `count.js` is the page counter, on every page and reporting only a path looked
 up in a table of the pages that exist — GoatCounter's own script reports the
