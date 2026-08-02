@@ -510,17 +510,34 @@ function setAccount(a) {
   el("account-guest").hidden = !a.guest;
   el("account-user").hidden = a.guest;
   if (!a.guest) el("account-name").textContent = a.username;
+  // A guest has no password, so the field an account confirms with is absent
+  // rather than empty — and the button names the record it erases, which for a
+  // guest isn't an account.
+  el("delete-btn").textContent = a.guest ? "Delete my data" : "Delete account";
+  el("delete-password").hidden = a.guest;
+  el("delete-password").required = !a.guest;
   showDeleteConfirm(false); // a just-claimed account shouldn't open on this
 }
 
-// Deletion is irreversible, so it takes two deliberate steps: reveal the
-// form, then re-enter the password the server will check anyway.
+// Deletion is irreversible, so it takes two deliberate steps: reveal the form,
+// then confirm. An account re-enters the password the server will check anyway;
+// a guest has none, and the reveal is the whole of the friction there is.
+//
+// Which is why opening it focuses Cancel and not the confirm button when there
+// is no password field: a button fires on keydown and keydown auto-repeats, so
+// a held Enter on a focused "Delete my data" would arm the form and then submit
+// it — one keystroke for a thing that is supposed to take two. The password
+// field absorbs the repeat in the other case; nothing would here.
 function showDeleteConfirm(open) {
-  showAuthError(null);
+  const insideForm = el("delete-form").contains(document.activeElement);
+  showDataError(null);
   el("delete-form").hidden = !open;
   el("delete-btn").hidden = open;
   el("delete-password").value = "";
-  if (open) el("delete-password").focus();
+  if (open) el(account.guest ? "delete-cancel" : "delete-password").focus();
+  // Collapsing the form out from under the focused control drops focus to the
+  // body, which sends a keyboard user back to the top of the drawer.
+  else if (insideForm) el("delete-btn").focus();
 }
 
 function showAuthError(message) {
@@ -566,7 +583,7 @@ let settingsReturnFocus = null;
 function openSettings(focusAccount) {
   settingsReturnFocus = document.activeElement;
   showDeleteConfirm(false); // also clears any error left from last time
-  showExportError(null);
+  showDataError(null);
   el("settings").hidden = false;
   const target = focusAccount && account.guest ? el("tab-signup") : el("settings-close");
   target.focus();
@@ -623,31 +640,10 @@ el("logout-btn").addEventListener("click", (e) => {
   });
 });
 
-el("delete-btn").addEventListener("click", () => showDeleteConfirm(true));
-el("delete-cancel").addEventListener("click", () => showDeleteConfirm(false));
+// --- your data: download and delete ---------------------------------------
 
-el("delete-form").addEventListener("submit", (e) => {
-  e.preventDefault();
-  submitAuth(e.submitter ?? el("delete-form").querySelector("button"), async () => {
-    // Cancel has to go down with the submit button: the request is already
-    // away, so collapsing the form back to its un-armed state would tell the
-    // user they'd called it off moments before the account disappears.
-    el("delete-cancel").disabled = true;
-    try {
-      await api("/api/account/delete", { password: el("delete-password").value });
-    } finally {
-      el("delete-cancel").disabled = false;
-    }
-    // The row and its cookie are both gone; reloading picks up a fresh guest
-    // rather than leaving a signed-in header over nothing.
-    location.reload();
-  });
-});
-
-// --- data export ----------------------------------------------------------
-
-function showExportError(message) {
-  const box = el("export-error");
+function showDataError(message) {
+  const box = el("data-error");
   box.textContent = message || "";
   box.hidden = !message;
 }
@@ -657,7 +653,7 @@ function showExportError(message) {
 // response, so the server stays the only thing that decides what the file is
 // called; the fallback is only reached if a proxy stripped the header.
 function downloadExport(btn, format) {
-  return whileBusy(btn, showExportError, async () => {
+  return whileBusy(btn, showDataError, async () => {
     const res = await request(`/api/account/export?format=${format}`);
     const named = /filename="([^"]+)"/.exec(res.headers.get("content-disposition") || "");
     const url = URL.createObjectURL(await res.blob());
@@ -673,6 +669,32 @@ function downloadExport(btn, format) {
 
 el("export-json").addEventListener("click", (e) => downloadExport(e.currentTarget, "json"));
 el("export-csv").addEventListener("click", (e) => downloadExport(e.currentTarget, "csv"));
+
+el("delete-btn").addEventListener("click", () => showDeleteConfirm(true));
+el("delete-cancel").addEventListener("click", () => showDeleteConfirm(false));
+
+el("delete-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  whileBusy(e.submitter ?? el("delete-confirm"), showDataError, async () => {
+    // Cancel has to go down with the submit button: the request is already
+    // away, so collapsing the form back to its un-armed state would tell the
+    // user they'd called it off moments before the record disappears.
+    el("delete-cancel").disabled = true;
+    try {
+      // Always the field, which is the empty string while the drawer is
+      // hiding it from a guest. The row decides which of the two branches
+      // this is, so the request doesn't need to carry the client's guess —
+      // and a tab whose guess went stale gets told what to do instead of
+      // sending a differently-shaped request nobody can answer usefully.
+      await api("/api/account/delete", { password: el("delete-password").value });
+    } finally {
+      el("delete-cancel").disabled = false;
+    }
+    // The row and its cookie are both gone; reloading picks up a fresh guest
+    // rather than leaving a signed-in header, or a rating, over nothing.
+    location.reload();
+  });
+});
 
 // A settings row where one of the buttons is the current value: mark it,
 // remember the choice, and hand it to whoever cares.

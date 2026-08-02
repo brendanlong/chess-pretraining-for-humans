@@ -228,14 +228,90 @@ def test_a_login_lockout_cannot_block_deletion(client, monkeypatch):
     assert r.status_code == 200, r.text
 
 
-def test_a_guest_cannot_delete_and_keeps_its_history(client, db):
-    """No password means nothing to authenticate against, and the cookie is the
-    only handle on the row — so clearing it is what deletion means here."""
+def test_a_guest_deletes_with_the_cookie_alone(client, db):
+    """A guest has no password, and the cookie is the only handle on the row —
+    for them and for us. So the cookie has to be enough, or the guest data we
+    hold would have no erase button at all: clearing the cookie makes the record
+    unreachable, which is not the same as gone."""
+    answer(client, next_trial(client))
+    assert row_counts(db) == (1, 1, 1)
+
+    r = client.post("/api/account/delete", json={})  # no password field at all
+
+    assert r.status_code == 200, r.text
+    assert r.json() == {"deleted": True, "responses_deleted": 1}
+    assert row_counts(db) == (0, 0, 0)
+    assert "Max-Age=0" in r.headers["set-cookie"]
+    assert client.get("/api/stats").json()["attempts"] == 0
+
+
+def test_a_guest_delete_is_not_a_password_check(client, monkeypatch):
+    """Nothing here can be guessed at, so it must not spend the budget that
+    protects the endpoints where something can — a user deleting guest data
+    shouldn't come back to a box that won't let them sign in."""
+    monkeypatch.setattr(server, "login_ip_limiter", auth.RateLimiter(1, 900))
     answer(client, next_trial(client))
 
-    r = client.post("/api/account/delete", json={"password": "anything at all"})
+    assert client.post("/api/account/delete", json={}).status_code == 200
+    # A password sent by a guest is ignored rather than checked, so a wrong one
+    # can't be the difference between deleting and not.
+    answer(client, next_trial(client))
+    assert client.post("/api/account/delete", json={"password": "wrong"}).status_code == 200
+    assert client.post("/api/account/login", json=CREDS).status_code != 429
+
+
+def test_one_browsers_delete_cannot_spend_anothers(client, monkeypatch):
+    """The delete key is per user and never per address, or one person could
+    switch off the erase button for everyone behind a shared address — the very
+    outcome cookie-only deletion exists to remove, and the thing the account
+    branch's separate key is already there to prevent."""
+    monkeypatch.setattr(server, "delete_limiter", auth.RateLimiter(1, 900))
+    answer(client, next_trial(client))
+    assert client.post("/api/account/delete", json={}).status_code == 200
+
+    # A second guest, same address (TestClient reports one host for everyone).
+    answer(client, next_trial(client))
+    assert client.post("/api/account/delete", json={}).status_code == 200
+
+
+def test_an_account_is_never_erased_through_the_guest_branch(client, db):
+    """Which branch runs is decided by the row, not by what the caller sends,
+    so omitting the password can't be a way around checking it."""
+    answer(client, next_trial(client))
+    client.post("/api/account/signup", json=CREDS)
+
+    r = client.post("/api/account/delete", json={})
+
     assert r.status_code == 400
-    assert "clearing the cookie" in r.json()["detail"]
+    assert row_counts(db) == (1, 1, 1)
+    # And it says which thing is wrong: only a browser whose idea of itself has
+    # gone stale sends this, and "wrong password" is no help to a form that is
+    # hiding the field.
+    assert "Reload" in r.json()["detail"]
+
+
+def test_a_signup_in_another_tab_beats_an_in_flight_guest_delete(client, db, monkeypatch):
+    """The row is read before the guest branch decides there is no password to
+    check. If it acquires one in between, erasing it without that password would
+    be deleting an account nobody authenticated."""
+    answer(client, next_trial(client))
+    guest = auth.session_user(db, client.cookies[auth.COOKIE_NAME])
+    assert guest is not None
+
+    real = server.auth.session_user
+
+    def claim_between(conn, token):
+        u = real(conn, token)
+        monkeypatch.setattr(server.auth, "session_user", real)  # once only
+        with server.writing() as tx:
+            auth.claim(tx, guest["id"], CREDS["username"], "not-a-real-hash", None)
+        return u
+
+    monkeypatch.setattr(server.auth, "session_user", claim_between)
+    r = client.post("/api/account/delete", json={})
+
+    assert r.status_code == 400
+    assert "signed in to an account" in r.json()["detail"]
     assert row_counts(db) == (1, 1, 1)
 
 

@@ -437,6 +437,10 @@ kbd {
 
 .auth-form { display: flex; flex-direction: column; gap: 8px; }
 .auth-form[hidden] { display: none; }
+/* The delete form's password field is absent for a guest, who has none. Spelled
+   out because every other JS-toggled element in the drawer has its own
+   `[hidden]` rule, and adding a `display` here later would un-hide this one. */
+.auth-form input[hidden] { display: none; }
 .auth-form input {
   min-width: 0;
   font: inherit;
@@ -473,12 +477,12 @@ kbd {
 #account-guest[hidden], #account-user[hidden] { display: none; }
 
 #auth-error,
-#export-error {
+#data-error {
   margin: 0;
   font-size: 13px;
   color: var(--danger);
 }
-#auth-error[hidden], #export-error[hidden] { display: none; }
+#auth-error[hidden], #data-error[hidden] { display: none; }
 
 /* Two ways of reading the same record, so neither button outranks the other. */
 #export-buttons { display: flex; gap: 8px; }

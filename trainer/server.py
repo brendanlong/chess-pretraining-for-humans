@@ -277,7 +277,13 @@ def set_session_cookie(request: Request, response: Response, token: str) -> None
         token,
         max_age=auth.SESSION_DAYS * 86400,
         httponly=True,
-        samesite="lax",  # blocks cross-site POSTs, which is our CSRF story
+        # Blocks cross-*site* POSTs, which is our CSRF story — and note the
+        # word: a sibling subdomain of the apex is same-site and its requests
+        # carry this cookie. Behind it stand two things that have to stay true,
+        # because a guest's deletion has no password to fall back on: every
+        # write takes a JSON body (a form post is a 422), and no CORS
+        # middleware hands out permission to send one.
+        samesite="lax",
         secure=request.url.scheme == "https",
         path="/",
     )
@@ -864,7 +870,9 @@ class Login(BaseModel):
 
 
 class Deletion(BaseModel):
-    password: str
+    # Optional because a guest has none to send; the endpoint decides which
+    # rows that is allowed to erase.
+    password: str | None = None
 
 
 def reissue_session(tx: Transaction, request: Request, user_id: int) -> None:
@@ -970,17 +978,24 @@ def logout(request: Request):
 
 @app.post("/api/account/delete")
 def delete_account(body: Deletion, request: Request):
-    """Erase this account, its sessions, and every response it gave.
+    """Erase this session's record: the row, its sessions, and every response.
 
-    Being signed in *is* the proof of ownership, which is why deletion belongs
-    here rather than in an email thread: the optional email is never verified,
-    so for most accounts there is no address a request could arrive from. The
-    password is still asked for again, because a shared or unattended browser
-    shouldn't be able to wipe someone's history from a drawer.
+    Holding the session is the proof of ownership, which is why deletion
+    belongs here rather than in an email thread: the optional email is never
+    verified, so for most accounts there is no address a request could arrive
+    from. It is also the same authorization export runs on — being this session
+    is what "reading your own record" means throughout the app, and erasing it
+    is the other half of that record's story.
 
-    A guest has no password to check and so can't be authenticated at all;
-    clearing the cookie is what deletion means for a row nobody — us included
-    — can point at, which is what the privacy policy says.
+    An account is asked for its password on top, because a shared or unattended
+    browser holds the session and shouldn't be able to wipe someone's history
+    from a drawer. A guest has no password, and there is no second factor to
+    invent for one: the cookie is the only handle on that row, for them and for
+    us. So the cookie has to be enough, because the alternative is that the
+    guest data we do hold has no erase button at all — and "clear the cookie"
+    is not one. That makes the record unreachable, which is not the same as
+    gone, and the responses would stay in the research data the privacy policy
+    promises deletion takes them out of.
 
     Alone among the endpoints, this one resolves the session itself instead of
     taking `CurrentUserId`. Minting a guest is what that dependency does for a
@@ -990,48 +1005,78 @@ def delete_account(body: Deletion, request: Request):
     """
     try:
         u = auth.session_user(conn, request.cookies.get(auth.COOKIE_NAME))
-        if u is None or auth.is_guest(u):
+        if u is None:
             raise HTTPException(
                 400,
-                "There's no account here to delete. A guest record is reachable only "
-                "through this browser's cookie, so clearing the cookie is what deleting "
-                "it means — after that nobody, including us, can find it again.",
+                "There's nothing here to delete yet — answering a question is "
+                "what starts a record.",
             )
-        # Metered like login, because this endpoint checks a password too and
-        # would otherwise be an unmetered guessing oracle. Charged before the
-        # verify, for the reason spelled out at the limiters.
-        #
-        # Its own key, though, not login's. Reaching here already required a
-        # signed-in session, so there is nothing to enumerate and no reason for
-        # someone guessing at this account's password from outside to be able
-        # to spend the budget its owner needs to erase it. Erasure is the one
-        # promise the privacy policy makes that a user might need urgently.
-        spend(login_ip_limiter, client_key(request))
+        guest = auth.is_guest(u)
+        # Per user, both ways round, and never per address: erasure is the one
+        # promise the privacy policy makes that a user might need urgently, so
+        # nobody else may be able to spend the budget it needs. An address is
+        # shared — several real players behind one NAT is the case the answer
+        # limiter is sized around — and a guest reaching here spent an answer to
+        # exist at all, so the volume that mints these rows is already metered
+        # upstream. What this bounds is retries against one row.
         spend(delete_limiter, f"delete:{u['id']}")
-        # Outside the transaction: argon2 is deliberately slow, and the write
-        # lock is the one thing every writer contends for.
-        if not auth.verify_password(auth.credential_for(u), body.password):
-            raise HTTPException(400, "Wrong password.")
+        if not guest:
+            # The password check is metered like login's on top, because it is
+            # one, and an unmetered argon2 is a denial-of-service primitive
+            # whether or not the guess is right. Charged before the verify, for
+            # the reason spelled out at the limiters.
+            spend(login_ip_limiter, client_key(request))
+            if not body.password:
+                # The drawer only omits the password where the row has none, so
+                # an empty one here means this browser's idea of itself is out
+                # of date — it signed up somewhere else, and is showing a form
+                # with no field to type into. Say that rather than "wrong
+                # password", which is true and useless. It tells the caller
+                # nothing `/api/account` doesn't, and they already hold this
+                # account's session or they wouldn't be reading it.
+                raise HTTPException(
+                    400,
+                    "This browser is signed in to an account now. Reload the page "
+                    "and confirm with its password.",
+                )
+            # Outside the transaction: argon2 is deliberately slow, and the
+            # write lock is the one thing every writer contends for.
+            if not auth.verify_password(auth.credential_for(u), body.password):
+                raise HTTPException(400, "Wrong password.")
         with writing() as tx:
-            # The row was read before the verify, so re-check that the hash we
-            # matched is still the current one — a password rotated away
-            # mid-request must not authorize destroying the account.
+            # The row was read before the branch above chose how to authorize
+            # it, so re-check that what it authorized against is still current.
+            # The hash catches a password rotated away mid-request, and — `IS`
+            # rather than `=`, because a guest's is NULL — a guest row that a
+            # signup in another tab just claimed, which must not be erased
+            # without the password it now has. The name is what pins the *row*:
+            # NULL matches every guest, and SQLite hands a deleted id straight
+            # back out, so without it a concurrent delete of the highest row
+            # could leave this one erasing whoever inherited the number.
             current = tx.execute(
-                "SELECT 1 FROM users WHERE id = ? AND password_hash = ?",
-                (u["id"], u["password_hash"]),
+                "SELECT 1 FROM users WHERE id = ? AND name = ? AND password_hash IS ?",
+                (u["id"], u["name"], u["password_hash"]),
             ).fetchone()
             if current is None:
-                raise HTTPException(400, "Wrong password.")
+                raise HTTPException(
+                    400,
+                    "This browser signed in to an account while the request was in "
+                    "flight, so nothing was deleted. Try again."
+                    if guest
+                    else "Wrong password.",
+                )
             counts = auth.delete_user(tx, u["id"])
             # Deleting the sessions already revoked this cookie server-side;
             # clear it too so the browser lands on a fresh guest rather than
             # presenting a token for a row that no longer exists.
             queue_cookie(request, None)
         # Ids are reused by SQLite once the highest row goes, so don't leave a
-        # spent counter behind for whoever gets this one next. Reachable only by
-        # knowing the password, exactly as in login.
+        # spent counter behind for whoever gets this one next. Reaching here
+        # took the row's own secret — its password, or for a guest the cookie
+        # that is the only one it has — so clearing it helps nobody else.
         delete_limiter.clear(f"delete:{u['id']}")
-        login_limiter.clear(login_key(u["name"]))
+        if not guest:
+            login_limiter.clear(login_key(u["name"]))
     except auth.AuthError as e:
         raise auth_error(e) from e
     return {"deleted": True, "responses_deleted": counts["responses"]}
