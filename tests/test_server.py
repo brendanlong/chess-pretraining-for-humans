@@ -760,11 +760,17 @@ def test_an_expired_token_is_refused_with_its_own_status(client, db, expired):
     """Distinct from the refusals a fresh token can't fix, because the client
     does something else with it: the trial is still this caller's, so the answer
     they already decided on is worth a round trip rather than a replacement
-    position."""
+    position.
+
+    And it costs the caller nothing on the way past — in particular no identity,
+    which the refresh that follows would then find the token wasn't issued to.
+    """
     trial = next_trial(client)
     r = client.post("/api/answer", json=answer_body(trial))
     assert r.status_code == 410
     assert db.execute("SELECT COUNT(*) FROM responses").fetchone()[0] == 0
+    assert db.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0
+    assert auth.COOKIE_NAME not in r.cookies
 
 
 def test_a_token_that_aged_out_can_be_re_signed_and_answered(client, db, monkeypatch):
@@ -777,6 +783,49 @@ def test_a_token_that_aged_out_can_be_re_signed_and_answered(client, db, monkeyp
     answered = answer(client, refresh(client, trial))
     assert answered["correct"] in (True, False)
     assert db.execute("SELECT item_id FROM responses").fetchone()[0] == trial["item_id"]
+
+
+def test_a_signed_in_tab_re_signs_its_trial_the_same_way(client, db, monkeypatch):
+    """The other half of the same path: a bound token gets a longer life, not a
+    different mechanism."""
+    answer(client, next_trial(client))  # `client` now has an identity
+    monkeypatch.setattr(trials, "TOKEN_TTL_S", -1)
+    trial = next_trial(client)
+    assert client.post("/api/answer", json=answer_body(trial)).status_code == 410
+
+    monkeypatch.setattr(trials, "TOKEN_TTL_S", 12 * 3600)
+    answer(client, refresh(client, trial))
+    assert db.execute("SELECT COUNT(*) FROM responses").fetchone()[0] == 2
+
+
+def test_a_trial_past_its_own_deadline_is_finished_rather_than_stale(client, db, monkeypatch):
+    """The deadline re-signing may not reach past. Refused as the kind of
+    refusal there is no retry for, because a retry is exactly what would be
+    wrong: this is where a trial stops existing, and the ledger that remembers
+    whether it was spent stops having to."""
+    trial = next_trial(client)
+    monkeypatch.setattr(trials, "TRIAL_LIFE_S", -1)
+    assert client.post("/api/answer", json=answer_body(trial)).status_code == 409
+    assert (
+        client.post(
+            "/api/trial/refresh",
+            json={"item_id": trial["item_id"], "trial_token": trial["trial_token"]},
+        ).status_code
+        == 409
+    )
+    assert db.execute("SELECT COUNT(*) FROM responses").fetchone()[0] == 0
+
+
+def test_a_spent_anonymous_trial_is_remembered_until_it_can_no_longer_be_answered():
+    """The coupling the whole re-signing story rests on, and the one a constant
+    could silently break: a trial the ledger has forgotten must be one no token
+    can still be redeemed against. Otherwise one held token is a fresh guest and
+    a fresh first exposure against the same item, once per window, forever —
+    which is the replay the ledger exists to stop.
+
+    Reads the real limiter, so it takes none of the fixtures that swap it.
+    """
+    assert server.anonymous_trial_use.window_s >= trials.TRIAL_LIFE_S
 
 
 def test_re_signing_says_nothing_about_the_item(client, expired):

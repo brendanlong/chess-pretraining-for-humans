@@ -165,11 +165,13 @@ answer_limiter = auth.RateLimiter(
 # is what keeps a spent anonymous trial spent, for the reasons in the `trials`
 # docstring. Keyed on the trial's nonce rather than on the token carrying it, so
 # that re-signing an expired token (`/api/trial/refresh`) shares the slot instead
-# of getting a fresh one. Per-process and lost on restart, costing at most one
-# extra replay per trial; the short anonymous token life keeps the set small.
+# of getting a fresh one, and remembered for as long as a trial can be answered
+# rather than as long as one token lives — a forgotten spend has to be one
+# nothing can be redeemed against. Per-process and lost on restart, costing at
+# most one extra replay per trial.
 anonymous_trial_use = auth.RateLimiter(
     limit=1,
-    window_s=trials.ANON_TOKEN_TTL_S,
+    window_s=trials.TRIAL_LIFE_S,
     message="That trial has already been answered — fetch a new one.",
 )
 
@@ -651,11 +653,11 @@ def refresh_trial(r: TrialRefresh, user_id: int | None = OptionalUserId):
     the moment it does that most often is a first-time visitor's first answer,
     which is the one there is least reason to lose.
 
-    It hands back a token and nothing else. That is what keeps it from being a
-    second look at the item: a peek needs the position, the pair, or the answer,
-    and none of them are here — everything in the reply was already in the token
-    that had to be presented to get it. `/api/next` remains the only way to be
-    told what a trial *is*.
+    It hands back a token, and an echo of the item id it was given. That is what
+    keeps it from being a second look at the item: a peek needs the position, the
+    pair, or the answer, and none of them are here — nothing in the reply that
+    wasn't in the token the caller had to present to get it. `/api/next` remains
+    the only way to be told what a trial *is*.
 
     Unmetered for the same reason `/api/next` is: it mints no identity and
     records no answer, and it sits on the path to a first answer, which SPEC
@@ -665,9 +667,10 @@ def refresh_trial(r: TrialRefresh, user_id: int | None = OptionalUserId):
     try:
         token = trials.reissue(r.trial_token, r.item_id, user_id)
     except trials.InvalidTrial as e:
-        # Including expiry, which is the case this exists for: `reissue` doesn't
-        # consult the clock, so what reaches here is a token that was never ours,
-        # names another item, or names another session.
+        # Including the token's own expiry, which is the case this exists for:
+        # `reissue` skips that clock, so what reaches here is a token that was
+        # never ours, names another item or another session, or names a trial
+        # whose own day is up.
         raise HTTPException(409, f"{e} — fetch a new trial") from e
     return {"item_id": r.item_id, "trial_token": token}
 

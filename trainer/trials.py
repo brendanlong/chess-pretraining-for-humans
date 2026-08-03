@@ -53,12 +53,15 @@ the trial was served from a caller who could then choose it. What survives a
 key change is therefore the same as before: the client is told to fetch a
 trial it can answer, and this one's answer is lost.
 
-Re-signing keeps the nonce, which is what makes the whole thing safe for
-anonymous callers: the spend-once ledger is keyed on that, so every token
-naming a trial shares one slot and refreshing cannot re-arm a spent one. Past
-the ledger's window the memory is gone and a replay costs one request — which
-is what a replay costs anyway, since `/api/next` hands out a fresh trial for
-the same price.
+Two things keep re-signing from re-arming a spent anonymous trial, and both are
+load-bearing. Re-signing keeps the nonce, and the ledger is keyed on that
+rather than on the token carrying it, so every token naming one trial shares
+one slot. And the trial has a life of its own (`TRIAL_LIFE_S`) that no
+re-signing extends, so the ledger can be sized to outlive every token that can
+name it: a spend it has forgotten is a spend nothing can still be redeemed
+against. Without that second half, re-signing would be exactly the replay the
+ledger exists to stop — one held token, a fresh guest and a fresh first
+exposure against the same item for as long as the caller cared to keep asking.
 """
 
 import base64
@@ -72,15 +75,24 @@ from typing import NamedTuple
 
 log = logging.getLogger(__name__)
 
+# How long a *trial* can be answered for, measured from the moment it was
+# offered and carried in the token so that re-signing one cannot extend it. A
+# day, because the tab that comes back is the one that was slept on. This is the
+# bound the spend-once ledger is sized against, so raising it costs memory
+# there; it is not a bound on anything else, since a signed-in caller's replay
+# is caught by the row they already wrote.
+TRIAL_LIFE_S = 24 * 3600
+# How long one token stands for that trial before it has to be re-signed.
 # Generous, because a tab someone walked away from should still be answerable
-# when they come back; bounded, because a token shouldn't be a durable artifact.
+# when they come back; bounded, because it is the window in which a token that
+# somehow got loose is worth something.
 TOKEN_TTL_S = 12 * 3600
-# A token issued before its holder has any identity gets much less, because it is
-# the weaker kind: anonymous tokens are interchangeable, so the only thing
-# stopping a replay is the server remembering it, and the ledger that does the
-# remembering is sized by this. Short is affordable because expiry costs a round
-# trip and not an answer: the tab that comes back after lunch re-signs its token
-# (`reissue`) and answers the position it was looking at.
+# A token issued before its holder has any identity gets much less, because it
+# is the weaker kind: anonymous tokens are interchangeable, so the only thing
+# stopping a replay is the server remembering it. Short is affordable because
+# expiry costs a round trip and not an answer — the tab that comes back after
+# lunch re-signs its token and answers the position it was looking at — and it
+# keeps the window in which a loose one is spendable down to minutes.
 ANON_TOKEN_TTL_S = 900
 
 KEY_ENV_NAME = "TRIAL_TOKEN_SECRET"
@@ -149,7 +161,7 @@ def _sign(payload: str) -> str:
     return base64.urlsafe_b64encode(mac).decode().rstrip("=")
 
 
-FIELDS = 6  # item, user, repeat, shared, nonce, expiry — then the mac
+FIELDS = 7  # item, user, repeat, shared, nonce, offered, expiry — then the mac
 NONCE_FIELD = 4
 
 
@@ -157,19 +169,24 @@ class Trial(NamedTuple):
     """A verified token's contents, minus the parts the caller supplied."""
 
     served: Served
-    # Which offer this is, rather than which token names it: re-signing an
-    # expired token carries it over, so it identifies the trial across however
-    # many tokens have stood for it. That is what makes it the right key for a
-    # spend-once ledger.
+    # Which offer this is, rather than which token names it: re-signing carries
+    # it over, so it identifies the trial across however many tokens have stood
+    # for it. That is what makes it the right key for a spend-once ledger.
     nonce: str
+    # When the trial was first offered, and so — with TRIAL_LIFE_S — the one
+    # deadline no amount of re-signing moves.
+    offered: int
     expires: int
 
 
-def _mint(item_id: int, user_id: int | None, served: Served, nonce: str) -> str:
+def _mint(item_id: int, user_id: int | None, served: Served, nonce: str, offered: int) -> str:
     ttl = TOKEN_TTL_S if user_id else ANON_TOKEN_TTL_S
+    # Never past the trial's own deadline, which is what bounds the total life of
+    # everything signed for one trial and lets the ledger be sized to cover it.
+    expires = min(int(time.time()) + ttl, offered + TRIAL_LIFE_S)
     payload = (
         f"{item_id}.{user_id or 0}.{int(served.repeat)}.{int(served.shared)}"
-        f".{nonce}.{int(time.time()) + ttl}"
+        f".{nonce}.{offered}.{expires}"
     )
     return f"{payload}.{_sign(payload)}"
 
@@ -182,12 +199,14 @@ def issue(item_id: int, user_id: int | None, served: Served) -> str:
     # served the same item in the same second get byte-identical tokens — and a
     # spend-once ledger keyed on them would let the first of them answer and
     # refuse the second, which is two strangers colliding rather than a replay.
-    return _mint(item_id, user_id, served, secrets.token_urlsafe(8))
+    return _mint(item_id, user_id, served, secrets.token_urlsafe(8), int(time.time()))
 
 
 def _read(token: str | None, item_id: int, user_id: int | None) -> Trial:
     """Raise unless `token` is this server's proof that it offered `item_id` to
-    `user_id`; return what it says. The clock is the caller's to check.
+    `user_id` and the trial is still live; return what it says. This token's own
+    expiry is the caller's to check, being the only thing here a fresh signature
+    can fix.
 
     Every field is signed, so all of this is the server reading back its own
     claim.
@@ -202,20 +221,27 @@ def _read(token: str | None, item_id: int, user_id: int | None) -> Trial:
         raise InvalidTrial("trial token does not verify")
     try:  # the nonce is opaque, and only ever compared as part of the payload
         token_item, token_user, repeat, shared = (int(p) for p in parts[:4])
-        expires = int(parts[5])
+        offered, expires = int(parts[5]), int(parts[6])
     except ValueError as e:  # we signed it, so this is corruption, not an attack
         raise InvalidTrial("unreadable trial token") from e
     if token_item != item_id:
         raise InvalidTrial("trial token is for a different item")
     if token_user != (user_id or 0):
         raise InvalidTrial("trial token was issued to a different session")
-    return Trial(Served(repeat=bool(repeat), shared=bool(shared)), parts[NONCE_FIELD], expires)
+    # Checked here rather than beside the expiry, because it is the deadline
+    # `reissue` may not reach past either — and a trial past it is not a stale
+    # token but a finished one.
+    if time.time() >= offered + TRIAL_LIFE_S:
+        raise InvalidTrial("trial is too old to answer")
+    return Trial(
+        Served(repeat=bool(repeat), shared=bool(shared)), parts[NONCE_FIELD], offered, expires
+    )
 
 
 def redeem(token: str | None, item_id: int, user_id: int | None) -> Trial:
-    """`_read`, plus the clock. Nothing is consumed here — spending an anonymous
-    trial is the caller's job, because only it knows whether the answer went on
-    to be recorded."""
+    """`_read`, plus this token's own expiry. Nothing is consumed here —
+    spending an anonymous trial is the caller's job, because only it knows
+    whether the answer went on to be recorded."""
     trial = _read(token, item_id, user_id)
     if time.time() >= trial.expires:
         raise TrialExpired("trial token has expired")
@@ -225,12 +251,12 @@ def redeem(token: str | None, item_id: int, user_id: int | None) -> Trial:
 def reissue(token: str | None, item_id: int, user_id: int | None) -> str:
     """The same trial, signed again with a fresh expiry.
 
-    Deliberately the only thing here that ignores the clock, and deliberately
-    incapable of saying anything else: it re-signs what the old token said, so a
-    caller can only get back a trial they were already holding, offered the way
-    it was already offered. An expired token is the whole reason to call it —
-    a live one re-signs just as happily, and re-signing a live token is worth
-    nothing that holding it isn't.
+    Deliberately incapable of saying anything the old token didn't: a caller
+    gets back the trial they were already holding, offered the way it was
+    already offered, dying when it was always going to die. So the only clock
+    it skips is this token's own — an expired one is the whole reason to call
+    it, and a live one re-signs just as happily, which is worth nothing that
+    holding it isn't.
     """
     trial = _read(token, item_id, user_id)
-    return _mint(item_id, user_id, trial.served, trial.nonce)
+    return _mint(item_id, user_id, trial.served, trial.nonce, trial.offered)

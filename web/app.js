@@ -398,11 +398,16 @@ async function submitChoice(choice, responseMs) {
   }
   // Once, and only here: the token this hands back is seconds old, so a second
   // 410 is not an expiry anything could outrun and belongs to the caller.
+  //
+  // Off the body rather than off `trial`, so the item whose token is re-signed
+  // is always the item the pick was made on — nothing may load a trial while
+  // one is in flight, and this is what keeps that a rule about the app rather
+  // than a thing this function depends on.
   const fresh = await api("/api/trial/refresh", {
-    item_id: trial.item_id,
-    trial_token: trial.trial_token,
+    item_id: body.item_id,
+    trial_token: body.trial_token,
   });
-  trial.trial_token = fresh.trial_token;
+  if (trial.item_id === body.item_id) trial.trial_token = fresh.trial_token;
   return api("/api/answer", { ...body, trial_token: fresh.trial_token });
 }
 
@@ -418,14 +423,16 @@ async function choose(i) {
   } catch (err) {
     if (err.status === 409 || err.status === 410) {
       // The trial isn't ours to answer and re-signing its token can't make it
-      // ours: the session it was issued to changed under us — another tab
-      // signed in, out, or deleted the account — or the server can no longer
-      // verify what it issued, having restarted on an ephemeral signing key.
-      // Only the first of those is a different person, and from here they are
-      // indistinguishable, so the pick is dropped rather than filed under
-      // whoever holds the browser now. (A second 410 lands here too: the token
-      // `submitChoice` just fetched cannot have aged out, so whatever is wrong
-      // with it isn't the clock.)
+      // ours. Four ways to get here: the session it was issued to changed under
+      // us (another tab signed in, out, or deleted the account), the server can
+      // no longer verify what it issued (a restart on an ephemeral signing
+      // key), the trial was answered already in another tab, or it is old
+      // enough that the server has stopped holding a place for it. Only the
+      // first is a different person, and from here they are indistinguishable,
+      // so the pick is dropped rather than filed under whoever holds the
+      // browser now. (A second 410 lands here too: the token `submitChoice`
+      // just fetched cannot have aged out, so whatever is wrong with it isn't
+      // this token's clock.)
       //
       // The header is seeded per identity, so reseed it too, or it goes on
       // counting the previous session's history. Awaited before the fetch

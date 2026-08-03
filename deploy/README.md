@@ -71,10 +71,9 @@ the server offered from an item id somebody typed. It isn't a user credential
 and nothing is stored under it, so rotating it is free apart from refusing the
 trials in flight at that moment — clients fetch a fresh one. Unset, the server
 generates an ephemeral key and logs that it did: fine on a laptop, and on a
-machine that restarts it means every open tab gets one refused answer. This is
-the one thing that still costs somebody an answer they had already decided on:
-a token that has merely run out of time is re-signed and the answer goes
-through, but one signed with a key that is gone says nothing to re-sign.
+machine that restarts it means every open tab gets one refused answer — a
+token that has merely run out of time is re-signed and its answer goes through,
+but one signed with a key that is gone says nothing to re-sign.
 
 Without `LITESTREAM_BUCKET` the container still starts — it just logs that it
 has no off-machine backup and serves anyway. That's deliberate (a broken
