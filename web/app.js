@@ -391,12 +391,19 @@ async function choose(i) {
       // Our trial token is no longer redeemable: it expired, or the session it
       // was issued to changed under us — another tab signed in, out, or deleted
       // the account. Retrying the same pick would fail forever, so fetch a trial
-      // this session can actually answer, and reseed the header, which is
-      // otherwise still counting the previous session's history. The two causes
-      // are indistinguishable from here, and reseeding after a plain expiry
-      // costs one request and changes nothing.
+      // this session can actually answer.
+      //
+      // The header is seeded per identity, so reseed it too, or it goes on
+      // counting the previous session's history. The two causes can't be told
+      // apart from here, and after a plain expiry the reseed lands on the same
+      // user's own numbers. Awaited before the fetch below, so it can't lose an
+      // answer to the replacement trial by overwriting the window with a
+      // snapshot taken before it; the pick is already spent, so there is
+      // nothing on screen the wait holds up. `streak` keeps running: it is
+      // never seeded from the server, and zeroing it would cost the same user a
+      // real streak in the expiry case that dominates this branch.
       el("prompt").textContent = "That trial has expired — loading a fresh one…";
-      initStats();
+      await initStats();
       nextTrial();
       return;
     }
@@ -477,9 +484,11 @@ async function choose(i) {
 }
 
 function renderAccuracy() {
-  // An empty window reads as the placeholder rather than 0%: either nothing has
-  // been answered yet, or the seed just landed on a session with no history —
-  // and in the second case the number standing there is someone else's.
+  // An empty window reads as the placeholder rather than 0%: nothing answered
+  // yet, or a seed that landed on a session with no history of its own. After a
+  // 409 the number standing there is someone else's; at boot it can be this
+  // user's own first answer, which the seed raced (see `initStats`) and which
+  // the next one puts back.
   if (!accWindow.length) {
     el("stat-acc").textContent = "–";
     return;
@@ -492,14 +501,14 @@ async function initStats() {
   try {
     const s = await api("/api/stats");
     if (s.account) account = s.account;
-    // Overwrites, which is the point on the 409 path: the window it replaces
-    // may be another user's. At boot it overwrites too, even though boot races
-    // this fetch against the first trial (see the call site) and a slow enough
-    // one can land after an answer has already extended the window. Whether the
-    // snapshot includes that answer depends on when the request reached the
-    // server, which isn't knowable here — but the worst case is one answer of
-    // fifty going unshown, where declining to seed would leave a window of one
-    // and report 0% or 100%.
+    // Overwrites, which is the point when `choose` reseeds after a 409: the
+    // window it replaces may be another user's. At boot it overwrites too, even
+    // though boot races this fetch against the first trial (see the call site)
+    // and a slow enough one can land after an answer has already extended the
+    // window. Whether the snapshot includes that answer depends on when the
+    // request reached the server, which isn't knowable here — but the worst
+    // case is one answer of fifty going unshown, where declining to seed would
+    // leave a window of one and report 0% or 100%.
     if (s.accuracy_window) {
       accWindow = s.accuracy_window;
       renderAccuracy();
