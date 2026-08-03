@@ -265,10 +265,10 @@ chip), a "your data" section, the trial and streak counters, and the legal
 links. Download and delete share that section because they name the same
 record, and both are offered to guests; delete is two
 deliberate steps, the second behind a password field only when there is a
-password, and it collapses again whenever the drawer or the account changes —
-a destructive control should never be found already armed. A download is
-fetched rather than linked, so that a refused one can say so in the drawer
-instead of saving the refusal as a file.
+password, and it collapses again whenever the drawer opens or the account
+is re-read — a destructive control should never be found already armed. A
+download is fetched rather than linked, so that a refused one can say so in
+the drawer instead of saving the refusal as a file.
 
 `terms.html` and `privacy.html` are plain pages beside `index.html`,
 sharing its stylesheet, so they ship and version with the app instead of
