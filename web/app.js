@@ -389,9 +389,14 @@ async function choose(i) {
   } catch (err) {
     if (err.status === 409) {
       // Our trial token is no longer redeemable: it expired, or the session it
-      // was issued to changed under us. Retrying the same pick would fail
-      // forever, so fetch a trial this session can actually answer.
+      // was issued to changed under us — another tab signed in, out, or deleted
+      // the account. Retrying the same pick would fail forever, so fetch a trial
+      // this session can actually answer, and reseed the header, which is
+      // otherwise still counting the previous session's history. The two causes
+      // are indistinguishable from here, and reseeding after a plain expiry
+      // costs one request and changes nothing.
       el("prompt").textContent = "That trial has expired — loading a fresh one…";
+      initStats();
       nextTrial();
       return;
     }
@@ -472,7 +477,13 @@ async function choose(i) {
 }
 
 function renderAccuracy() {
-  if (!accWindow.length) return; // nothing answered yet: leave the placeholder
+  // An empty window reads as the placeholder rather than 0%: either nothing has
+  // been answered yet, or the seed just landed on a session with no history —
+  // and in the second case the number standing there is someone else's.
+  if (!accWindow.length) {
+    el("stat-acc").textContent = "–";
+    return;
+  }
   const right = accWindow.reduce((a, b) => a + b, 0);
   el("stat-acc").textContent = Math.round((100 * right) / accWindow.length) + "%";
 }
@@ -481,12 +492,14 @@ async function initStats() {
   try {
     const s = await api("/api/stats");
     if (s.account) account = s.account;
-    // Overwrites, even though boot races this fetch against the first trial
-    // (see the call site) and a slow enough one can land after an answer has
-    // already extended the window. Whether the snapshot includes that answer
-    // depends on when the request reached the server, which isn't knowable
-    // here — but the worst case is one answer of fifty going unshown, where
-    // declining to seed would leave a window of one and report 0% or 100%.
+    // Overwrites, which is the point on the 409 path: the window it replaces
+    // may be another user's. At boot it overwrites too, even though boot races
+    // this fetch against the first trial (see the call site) and a slow enough
+    // one can land after an answer has already extended the window. Whether the
+    // snapshot includes that answer depends on when the request reached the
+    // server, which isn't knowable here — but the worst case is one answer of
+    // fifty going unshown, where declining to seed would leave a window of one
+    // and report 0% or 100%.
     if (s.accuracy_window) {
       accWindow = s.accuracy_window;
       renderAccuracy();
