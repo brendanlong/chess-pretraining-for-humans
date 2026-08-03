@@ -28,7 +28,7 @@ frontend. Data flows one way:
   only for the two searches disagreeing at full depth, which has nothing to
   teach. Gap-range flags steer mining, but only at the *deep* gap, so an
   order lands across a spread of difficulties rather than in a band.
-  (`trainer/backfill_pvs.py` retrofits lines onto older items.) Every row a
+  Every row a
   labeler writes carries its ladder and the gap read off it, so nothing
   downstream has to cope with a bank that is only partly measured — `db.connect`
   refuses one outright rather than serving it at an older curve's difficulty.
