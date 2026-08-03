@@ -7,7 +7,7 @@ you near 80% accuracy.
 
 Play it at **[chess-pretraining.brendanlong.com](https://chess-pretraining.brendanlong.com/)**.
 
-![A chess position with two candidate moves drawn as arrows on the board, beside the question "Which move is better?" and the two choices, Bxe5 and Qb8.](web/social-preview.png)
+![A chess position with two candidate moves drawn as arrows numbered 1 and 2, beside matching numbered buttons labelled Bxe5 and Qb8 under the question "Which move is better?"](web/social-preview.png)
 
 - **[SPEC.md](SPEC.md)** — what this is trying to do, and the invariants.
 - **[DESIGN.md](DESIGN.md)** — how the app is put together.
