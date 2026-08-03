@@ -740,14 +740,177 @@ def test_a_token_we_did_not_sign_is_refused(client, db, mangle):
     assert db.execute("SELECT COUNT(*) FROM responses").fetchone()[0] == 0
 
 
-def test_an_expired_token_is_refused(client, db, monkeypatch):
-    """A tab left open for a day should ask for a fresh trial, not answer a
-    stale one — the client turns the 409 into exactly that."""
+@pytest.fixture
+def expired(monkeypatch):
+    """Issue tokens that are already stale — a tab that sat through lunch."""
     monkeypatch.setattr(trials, "TOKEN_TTL_S", -1)
     monkeypatch.setattr(trials, "ANON_TOKEN_TTL_S", -1)
+
+
+def refresh(client, trial):
+    r = client.post(
+        "/api/trial/refresh",
+        json={"item_id": trial["item_id"], "trial_token": trial["trial_token"]},
+    )
+    assert r.status_code == 200, r.text
+    return {**trial, "trial_token": r.json()["trial_token"]}
+
+
+def test_an_expired_token_is_refused_with_its_own_status(client, db, expired):
+    """Distinct from the refusals a fresh token can't fix, because the client
+    does something else with it: the trial is still this caller's, so the answer
+    they already decided on is worth a round trip rather than a replacement
+    position.
+
+    And it costs the caller nothing on the way past — in particular no identity,
+    which the refresh that follows would then find the token wasn't issued to.
+    """
     trial = next_trial(client)
-    assert client.post("/api/answer", json=answer_body(trial)).status_code == 409
+    r = client.post("/api/answer", json=answer_body(trial))
+    assert r.status_code == 410
     assert db.execute("SELECT COUNT(*) FROM responses").fetchone()[0] == 0
+    assert db.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0
+    assert auth.COOKIE_NAME not in r.cookies
+
+
+def test_a_token_that_aged_out_can_be_re_signed_and_answered(client, db, monkeypatch):
+    """The whole point: the pick survives the tab having been left open."""
+    monkeypatch.setattr(trials, "ANON_TOKEN_TTL_S", -1)
+    trial = next_trial(client)
+    assert client.post("/api/answer", json=answer_body(trial)).status_code == 410
+
+    monkeypatch.setattr(trials, "ANON_TOKEN_TTL_S", 900)  # the clock we hand back
+    answered = answer(client, refresh(client, trial))
+    assert answered["correct"] in (True, False)
+    assert db.execute("SELECT item_id FROM responses").fetchone()[0] == trial["item_id"]
+
+
+def test_a_signed_in_tab_re_signs_its_trial_the_same_way(client, db, monkeypatch):
+    """The other half of the same path: a bound token gets a longer life, not a
+    different mechanism."""
+    answer(client, next_trial(client))  # `client` now has an identity
+    monkeypatch.setattr(trials, "TOKEN_TTL_S", -1)
+    trial = next_trial(client)
+    assert client.post("/api/answer", json=answer_body(trial)).status_code == 410
+
+    monkeypatch.setattr(trials, "TOKEN_TTL_S", 12 * 3600)
+    answer(client, refresh(client, trial))
+    assert db.execute("SELECT COUNT(*) FROM responses").fetchone()[0] == 2
+
+
+def test_a_trial_past_its_own_deadline_is_finished_rather_than_stale(client, db, monkeypatch):
+    """The deadline re-signing may not reach past. Refused as the kind of
+    refusal there is no retry for, because a retry is exactly what would be
+    wrong: this is where a trial stops existing, and the ledger that remembers
+    whether it was spent stops having to."""
+    trial = next_trial(client)
+    monkeypatch.setattr(trials, "TRIAL_LIFE_S", -1)
+    assert client.post("/api/answer", json=answer_body(trial)).status_code == 409
+    assert (
+        client.post(
+            "/api/trial/refresh",
+            json={"item_id": trial["item_id"], "trial_token": trial["trial_token"]},
+        ).status_code
+        == 409
+    )
+    assert db.execute("SELECT COUNT(*) FROM responses").fetchone()[0] == 0
+
+
+def test_a_spent_anonymous_trial_is_remembered_until_it_can_no_longer_be_answered():
+    """The coupling the whole re-signing story rests on, and the one a constant
+    could silently break: a trial the ledger has forgotten must be one no token
+    can still be redeemed against. Otherwise one held token is a fresh guest and
+    a fresh first exposure against the same item, once per window, forever —
+    which is the replay the ledger exists to stop.
+
+    Reads the real limiter, so it takes none of the fixtures that swap it.
+    """
+    assert server.anonymous_trial_use.window_s >= trials.TRIAL_LIFE_S
+
+
+def test_re_signing_says_nothing_about_the_item(client, expired):
+    """It is on the pre-answer path, so it is held to the pre-answer rule: a
+    caller who presents a token gets a token back and learns nothing they
+    weren't already holding."""
+    trial = next_trial(client)
+    body = client.post(
+        "/api/trial/refresh",
+        json={"item_id": trial["item_id"], "trial_token": trial["trial_token"]},
+    ).json()
+    assert set(body) == {"item_id", "trial_token"}
+
+
+def test_re_signing_carries_over_how_the_trial_was_served(client, db, monkeypatch):
+    """Every field but the expiry, because a re-signed token is the same offer:
+    a client that could shake off the shared mark by waiting out the clock would
+    have the calibration exemption on demand."""
+    monkeypatch.setattr(trials, "ANON_TOKEN_TTL_S", -1)
+    item = db.execute("SELECT id FROM items").fetchone()[0]
+    trial = client.get(f"/api/next?item={item}").json()
+    before = trial["trial_token"].split(".")
+    monkeypatch.setattr(trials, "ANON_TOKEN_TTL_S", 900)
+    after = refresh(client, trial)["trial_token"].split(".")
+    assert before[SHARED_FIELD] == after[SHARED_FIELD] == "1"
+    assert before[:EXPIRY_FIELD] == after[:EXPIRY_FIELD]  # nonce included
+    assert int(after[EXPIRY_FIELD]) > int(before[EXPIRY_FIELD])
+
+
+@pytest.mark.parametrize(
+    "mangle",
+    [
+        pytest.param(lambda t: None, id="absent"),
+        pytest.param(lambda t: "not-a-token", id="malformed"),
+        pytest.param(lambda t: t[:-1] + ("a" if t[-1] != "a" else "b"), id="tampered-signature"),
+    ],
+)
+def test_only_a_token_we_can_read_is_re_signed(client, mangle):
+    """A token we can't verify — forged, or signed with a key this process no
+    longer holds — says nothing to carry over, and inventing the missing fields
+    would let the caller choose them."""
+    trial = next_trial(client)
+    r = client.post(
+        "/api/trial/refresh",
+        json={"item_id": trial["item_id"], "trial_token": mangle(trial["trial_token"])},
+    )
+    assert r.status_code == 409
+
+
+def test_re_signing_cannot_move_a_trial_to_another_session_or_item(client, db):
+    """The two refusals that must survive it, since the answer that follows is
+    filed under whoever presents the token: a pick made in one session may not be
+    replayed into another, and a token is still for the one item it names."""
+    answer(client, next_trial(client))  # `client` now has an identity
+    mine = next_trial(client)
+    with TestClient(server.app) as other:
+        assert (
+            other.post(
+                "/api/trial/refresh",
+                json={"item_id": mine["item_id"], "trial_token": mine["trial_token"]},
+            ).status_code
+            == 409
+        )
+    elsewhere = db.execute("SELECT id FROM items WHERE id != ?", (mine["item_id"],)).fetchone()[0]
+    assert (
+        client.post(
+            "/api/trial/refresh",
+            json={"item_id": elsewhere, "trial_token": mine["trial_token"]},
+        ).status_code
+        == 409
+    )
+
+
+def test_re_signing_cannot_re_arm_a_spent_anonymous_trial(client, db):
+    """The ledger is keyed on the trial, not on the token naming it, so however
+    many times one is re-signed they share the one slot. Otherwise refreshing
+    would be a cheaper `/api/next` for a replayer: same item, no new exposure."""
+    trial = next_trial(client)
+    with TestClient(server.app) as spender:
+        answer(spender, trial)
+    with TestClient(server.app) as replayer:
+        again = refresh(replayer, trial)
+        assert replayer.post("/api/answer", json=answer_body(again)).status_code == 409
+    assert db.execute("SELECT COUNT(*) FROM responses").fetchone()[0] == 1
+    assert db.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 1
 
 
 def test_an_anonymous_token_expires_sooner_than_a_bound_one(client):

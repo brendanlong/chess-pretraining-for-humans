@@ -146,6 +146,16 @@ automatically.
   also the first thing worth keeping — and an account is optional and, when
   created, claims the history already earned rather than starting a fresh one.
   A user's row must never be reachable by guessing a name.
+- **An answer somebody committed to is not thrown away for a reason the
+  server can fix.** The trial's token is short-lived, so a tab that sat
+  through lunch comes back holding one the clock has run out on — which says
+  nothing about who is holding it or what they were offered. That one is
+  re-signed, and the pick the user actually made is what gets recorded,
+  timed by the decision rather than by the round trip that rescued it. The
+  refusals that stand are the ones re-signing would have to guess at: a
+  trial issued to a session that has since changed, where replaying would
+  file one person's answer under another, and a token this process can no
+  longer verify, which has nothing left to carry over.
 - **Responses are research data, and the notice says so on the page that
   records them** — nothing gates the first trial, so consent can't be
   collected before it; what's owed is that a guest never has to go
