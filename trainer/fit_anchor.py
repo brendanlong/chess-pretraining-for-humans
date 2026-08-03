@@ -112,12 +112,14 @@ def elo_scored(data: np.ndarray) -> np.ndarray:
     follows rules the model under test had no part in. And any row while the
     staircase still owned the rating — including a shared answer Elo scored
     mid-calibration — carries a `user_rating_before` that is a transient, not
-    an estimate, which would smear the fit. So: keep everything after each
-    user's last staircase move. Recorded rows say which those were
-    (`calibrating` and not `shared`); rows from before the column are inferred
-    from the move size, which only the staircase (step >= CALIB_END_STEP) can
-    push past K_USER — the inference the `calibrating` column exists to retire,
-    since a clamp at a rating bound can shrink a staircase move under it.
+    an estimate, which would smear the fit. So: drop every row the recorded
+    column says was during calibration — shared ones Elo scored included —
+    and, per user, everything up to the last staircase move, which is all the
+    inference can see on rows from before the column. The inference reads the
+    move size: only the staircase (step >= CALIB_END_STEP) can push a rating
+    past K_USER. It is what the column exists to retire — a clamp at a rating
+    bound can shrink a staircase move under it, and a shared answer it scored
+    small never looked like a staircase move at all.
     """
     recorded = data["calibrating"] >= 0
     staircase = np.where(
@@ -125,7 +127,7 @@ def elo_scored(data: np.ndarray) -> np.ndarray:
         (data["calibrating"] == 1) & (data["shared"] == 0),
         np.abs(data["delta"]) > K_USER,
     )
-    keep = np.ones(len(data), bool)
+    keep = ~(recorded & (data["calibrating"] == 1))
     for user in np.unique(data["user"][staircase]):
         mine = data["user"] == user
         keep[mine & (data["id"] <= data["id"][mine & staircase].max())] = False
