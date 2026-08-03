@@ -39,6 +39,15 @@ FEN_TMPL = "rnbqkbnr/pppppppp/8/8/8/{}/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
 FEN_RANKS = ["8", "7P", "6P1"]
 
 
+def nth_fen(i: int) -> str:
+    """The i'th distinct position. The first few vary the board, because tests
+    name those fens; past them the move number does the varying, since a bank
+    of dozens only needs its rows to differ."""
+    if i < len(FEN_RANKS):
+        return FEN_TMPL.format(FEN_RANKS[i])
+    return FEN_TMPL.format("8").rsplit(" ", 1)[0] + f" {i}"
+
+
 def add_item(conn, fen: str, **overrides) -> None:
     """One item. `overrides` is for the tests that care what is in it — a bank
     with a difficulty distribution, say, rather than one of identical rows."""
@@ -93,7 +102,7 @@ def db(tmp_path, monkeypatch, item_count):
     path = tmp_path / "test.db"
     conn = connect(path, check_same_thread=False)
     for i in range(item_count):
-        add_item(conn, FEN_TMPL.format(FEN_RANKS[i]))
+        add_item(conn, nth_fen(i))
     conn.commit()
     # Writing through the returned handle means committing through it too —
     # the `auth` helpers only write, so an uncommitted statement here holds the

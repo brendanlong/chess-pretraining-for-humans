@@ -39,7 +39,11 @@ let trial = null; // current /api/next payload
 let phase = "loading"; // loading | choosing | submitting | revealed | error
 let shownAt = 0;
 let streak = 0;
-let accWindow = []; // local last-50 correctness (feedback trials only)
+// Correctness over fresh trials, seeded by /api/stats and extended here. Its
+// width has to match the server's ACCURACY_WINDOW, which is what the seed
+// arrives at.
+let accWindow = [];
+const ACC_WINDOW = 50;
 let freshLeft = null; // unseen items, seeded by /api/stats and counted down here
 
 // Reveal replay state: two engine lines, one active, stepped through on the
@@ -403,16 +407,14 @@ async function choose(i) {
   streak = result.correct ? streak + 1 : 0;
   if (!result.repeat) {
     accWindow.push(result.correct ? 1 : 0);
-    if (accWindow.length > 50) accWindow.shift();
+    if (accWindow.length > ACC_WINDOW) accWindow.shift();
     // Counted down here rather than re-read per trial: answering a fresh item
     // is exactly what consumes one, so the server needn't scan the bank to
     // tell us a number we can derive.
     if (freshLeft !== null) el("stat-remaining").textContent = --freshLeft;
   }
   el("stat-streak").textContent = streak;
-  if (accWindow.length)
-    el("stat-acc").textContent =
-      Math.round((100 * accWindow.reduce((a, b) => a + b, 0)) / accWindow.length) + "%";
+  renderAccuracy();
 
   lastResult = result;
   // Answered, so the position is now something to send on rather than
@@ -469,12 +471,26 @@ async function choose(i) {
   autoplayFrom(0);
 }
 
+function renderAccuracy() {
+  if (!accWindow.length) return; // nothing answered yet: leave the placeholder
+  const right = accWindow.reduce((a, b) => a + b, 0);
+  el("stat-acc").textContent = Math.round((100 * right) / accWindow.length) + "%";
+}
+
 async function initStats() {
   try {
     const s = await api("/api/stats");
     if (s.account) account = s.account;
-    if (s.accuracy_last_50 != null)
-      el("stat-acc").textContent = Math.round(s.accuracy_last_50 * 100) + "%";
+    // Overwrites, even though boot races this fetch against the first trial
+    // (see the call site) and a slow enough one can land after an answer has
+    // already extended the window. Whether the snapshot includes that answer
+    // depends on when the request reached the server, which isn't knowable
+    // here — but the worst case is one answer of fifty going unshown, where
+    // declining to seed would leave a window of one and report 0% or 100%.
+    if (s.accuracy_window) {
+      accWindow = s.accuracy_window;
+      renderAccuracy();
+    }
     if (s.items_remaining != null) {
       freshLeft = s.items_remaining;
       el("stat-remaining").textContent = freshLeft;

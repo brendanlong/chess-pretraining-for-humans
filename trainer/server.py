@@ -828,6 +828,10 @@ def answer(a: Answer, request: Request):
 # question ("is there an earlier answer to this item") must be answered from an
 # index covering `item_id`; a test asserts that plan, because without it this
 # reverts to quadratic. See `idx_responses_item` in `db.py`.
+#
+# Mirrored by `ACC_WINDOW` in `web/app.js`, which keeps extending this window as
+# trials are answered: seeded at one width and extended at another, the header
+# would report over neither.
 ACCURACY_WINDOW = 50
 RECENT_FIRST_EXPOSURES_SQL = f"""
     SELECT r.correct
@@ -851,7 +855,11 @@ def stats(user_id: int | None = OptionalUserId):
         # this, so counting them again asks the database a question it has
         # already written down.
         "attempts": u["attempts"] if u else 0,
-        "accuracy_last_50": round(sum(recent) / len(recent), 3) if recent else None,
+        # The window itself, oldest-first, rather than the fraction over it: the
+        # client keeps answering after this call and has to extend the same
+        # window to stay right. Handed a fraction it would have to start a fresh
+        # one, and the first answer after a page load would read 0% or 100%.
+        "accuracy_window": recent[::-1],
         "items_remaining": unseen_count(user_id),
         "account": account_payload(u),
     }
