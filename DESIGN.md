@@ -20,7 +20,9 @@ frontend. Data flows one way:
   the mean of its shallow end is the item's difficulty (`shallow_gap`),
   through the curve on `rating.difficulty_rating` — whose slope is measured
   from the strength of the humans whose errors the items are, on the half of
-  the bank that was mined without aiming at particular gaps, and whose
+  the bank that was mined without aiming at particular gaps, whose location
+  is anchored to the accuracy live users produce (re-measured offline by
+  `trainer/fit_anchor.py` from the response record), and whose
   reasoning sits beside the constants — and what was tried instead, in
   CALIBRATION.md. Nothing is dropped for being hard;
   only for the two searches disagreeing at full depth, which has nothing to

@@ -35,6 +35,7 @@ from . import auth, db, rating
 RESPONSES_SQL = """
     SELECT r.created_at, r.item_id, r.choice_uci, r.correct, r.response_ms,
            r.user_rating_before, r.user_rating_after, r.item_rating_before, r.shared,
+           r.calibrating,
            i.fen, i.best_uci, i.distractor_uci, i.game_url
       FROM responses r JOIN items i ON i.id = r.item_id
      WHERE r.user_id = ?
@@ -60,6 +61,7 @@ RESPONSE_COLUMNS = [
     "rating_after",
     "item_rating",
     "from_share_link",
+    "during_calibration",
     "best_uci",
     "best_san",
     "distractor_uci",
@@ -100,6 +102,9 @@ def response_rows(conn: db.Queryable, user_id: int) -> list[dict]:
                 "rating_after": _rating(r["user_rating_after"]),
                 "item_rating": _rating(r["item_rating_before"]),
                 "from_share_link": bool(r["shared"]),
+                # None on answers from before this was recorded, and kept as
+                # None: a blank cell is honest about it, a False would not be.
+                "during_calibration": None if r["calibrating"] is None else bool(r["calibrating"]),
                 "best_uci": r["best_uci"],
                 "best_san": _san(board, r["best_uci"]),
                 "distractor_uci": r["distractor_uci"],

@@ -63,7 +63,11 @@ automatically.
   as. It is a property of the item alone — fixed when
   the item is labeled, and never revised by anyone's answers. Still knowingly
   approximate; the correction belongs in offline analysis, which can
-  regularise it and isn't the thing choosing which items get served. Online
+  regularise it and isn't the thing choosing which items get served. Where
+  the scale *sits* is held to the same standard as its slope: measured, not
+  chosen — the slope from the strength of the players whose errors the items
+  are, the location from the accuracy real users produce against it, refit
+  offline as a constant and never nudged by any single answer. Online
   it would make every user's difficulty a function of every other user's
   answers, which costs more — in coupling, and in a feedback loop that biases
   the very estimate it produces — than the targeting accuracy is worth.

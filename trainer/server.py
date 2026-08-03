@@ -646,6 +646,13 @@ def next_item(item: str | None = None, user_id: int | None = OptionalUserId):
     }
 
 
+# Past an hour it is a parked tab, not a decision; negative is a broken clock.
+# Client-supplied timing outside this range is recorded as "not measured"
+# rather than believed or bounced — the answer itself is still real, and a 422
+# over a timestamp would throw it away.
+RESPONSE_MS_MAX = 3_600_000
+
+
 class Answer(BaseModel):
     item_id: int
     choice_uci: str
@@ -745,20 +752,26 @@ def answer(a: Answer, request: Request):
         tx.execute(
             """INSERT INTO responses
                (user_id, item_id, choice_uci, correct, response_ms,
-                user_rating_before, user_rating_after, item_rating_before, shared)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                user_rating_before, user_rating_after, item_rating_before, shared,
+                calibrating)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 u["id"],
                 item["id"],
                 a.choice_uci,
                 int(correct),
-                a.response_ms,
+                a.response_ms
+                if a.response_ms is not None and 0 <= a.response_ms <= RESPONSE_MS_MAX
+                else None,
                 u["rating"],
                 new_user_r,
                 item["rating"],
                 # Off the token, not off the request: what the client sends is
                 # the answer, not the story of how it got the question.
                 int(served.shared),
+                # The staircase's state as scored — before this answer's own
+                # update, so the last calibration answer records 1.
+                int(rating.is_calibrating(u["calib_step"])),
             ),
         )
         tx.execute(

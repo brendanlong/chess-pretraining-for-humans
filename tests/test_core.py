@@ -11,7 +11,9 @@ from trainer.rating import (
     CALIBRATED_GAP_LO,
     GAP_SLOPE,
     HARD_CEILING,
+    KNEE_DIFFICULTY,
     RATING_MAX,
+    RESPONSE_ANCHOR,
     SHALLOW_PLIES,
     TARGET_ACCURACY,
     USER_MAX,
@@ -146,7 +148,30 @@ def test_target_rating_hits_target_accuracy():
 
 def test_expected_score_bounds():
     assert expected_score(2000, 1000) > 0.95
-    assert expected_score(1000, 2000) < 0.05
+    # Two alternatives, so nobody scores below the coin flip and the model may
+    # not promise it: unfloored, Elo pays most of a K for every lucky guess on
+    # an item far above the user — a rating pump with no information in it.
+    assert expected_score(1000, 2000) == 0.5
+    win, lose = update(1000, 2000, correct=True), update(1000, 2000, correct=False)
+    assert win - 1000 == 1000 - lose  # a coin flip's wins and losses cancel
+
+
+def test_the_easy_tail_decays_to_the_anchor_not_zero():
+    """The curve's location is measured from live answers (RESPONSE_ANCHOR):
+    users the old scale served at 80% expected were scoring 64%, uniformly, so
+    the whole curve sits that much higher — including the easiest item there
+    is, which is still a real distance up the user scale."""
+    assert RESPONSE_ANCHOR < difficulty_rating(0.9) < RESPONSE_ANCHOR + 5
+    assert difficulty_rating(CALIBRATED_GAP_HI) == pytest.approx(
+        RESPONSE_ANCHOR + KNEE_DIFFICULTY  # the knee, moved without reshaping the tails
+    )
+
+
+def test_the_curve_inverts_cleanly_across_its_range():
+    """`target_gap` is the inverse read of `difficulty_rating`, so the two have
+    to agree everywhere an item can be — both tails included."""
+    for g in (-0.4, -0.1, 0.02, 0.15, 0.27, 0.5):
+        assert _gap_for_difficulty(difficulty_rating(g)) == pytest.approx(g, abs=1e-6)
 
 
 def test_calibration_climbs_fast_for_strong_players():
