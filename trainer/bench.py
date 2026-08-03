@@ -7,15 +7,14 @@ The job is to notice when a change makes a request slower, not to predict what
 production will do. So everything that doesn't have to vary is held still:
 
 * Fixed request *counts*, not a fixed duration. `/api/next` skips what the
-  caller has already answered and `/api/stats` counts what they haven't, so
-  both cost more as the history a run writes grows. A timed run therefore
-  measures a different mix of
-  database states on a fast machine than on a slow one, and stops being a
-  comparison. Counting the requests instead makes every run walk the database
-  through the same states in the same order. Repetitions of the writing
-  scenario are not identical — each leaves rows behind — but each starts with
-  fresh guests, and per-user history is what the cost depends on, so they
-  measure the same thing.
+  caller has already answered, so it costs more as the history a run writes
+  grows. A timed run therefore measures a different mix of database states on
+  a fast machine than on a slow one, and stops being a comparison. Counting
+  the requests instead makes every run walk the database through the same
+  states in the same order. Repetitions of the writing scenario are not
+  identical — each leaves rows behind — but each starts with fresh guests, and
+  per-user history is what the cost depends on, so they measure the same
+  thing.
 * A scratch copy of a cached template database, so a run never reads or writes
   `data/items.db` and always starts from the same rows.
 * The server confined to four whole physical cores, hyperthreads included.
@@ -70,12 +69,15 @@ BASELINE = _ROOT / "bench-baseline.json"
 TEMPLATE = _ROOT / "data" / "bench-template.db"
 TEMPLATE_VERSION = 3  # bumped when the seeding below changes what it writes
 
-# What the deployment serves, because `unseen_count` still walks an index
-# entry per item once per stats request — the one per-request cost left that
-# is linear in this — and a benchmark against a toy bank would understate it.
-# It is pinned rather than read from anywhere, since a baseline is only a
-# comparison if both runs measured the same amount of work — raise it when
-# the live bank grows enough to matter, and re-record.
+# What the deployment serves. No per-request cost is linear in this any more,
+# but every trial walks an index of this size, and how deep that b-tree is and
+# how much of it a run keeps in cache is exactly what a bank-sized measurement
+# has that a toy one hasn't. Far below this the walks stop being the thing
+# measured at all: at a couple of hundred items a run answers out the bank and
+# starts timing the redraw and exhausted-bank branches, which production never
+# reaches. It is pinned rather than read from anywhere, since a baseline is
+# only a comparison if both runs measured the same amount of work — raise it
+# when the live bank grows enough to matter, and re-record.
 ITEM_COUNT = 34_307
 # Accounts the login scenario spends. Its per-name limit is 10 per 15 minutes,
 # so this is what caps how many logins one run may measure.
@@ -138,7 +140,7 @@ SCENARIOS = (
     # outward from a rating — and it is reached before any of it, so a slow
     # named lookup would be a slow `/api/next` for everybody.
     Scenario("next-named", "trial a share link named, same account", 2000),
-    Scenario("stats", "drawer numbers, including the unseen-item count", 2000),
+    Scenario("stats", "rating, accuracy window, and the account behind them", 2000),
     Scenario("trial-loop", "one step = GET /api/next then POST /api/answer", 1500),
     # Fewer requests than the rest, and exactly as many users as `auth` has
     # hash slots. Argon2 is 64 MiB and deliberately slow, so on one core this

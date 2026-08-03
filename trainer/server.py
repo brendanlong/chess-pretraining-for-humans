@@ -458,19 +458,6 @@ def line_steps(fen: str, pv: str | None, fallback_uci: str) -> list[dict]:
     return steps
 
 
-# A caller who has answered nothing has no row to read a rating or a history
-# from, so both are the defaults a first trial would have used anyway: beginner
-# rating, nothing seen yet. `user_id is None` is that caller throughout.
-UNSEEN_COUNT_SQL = """SELECT COUNT(*) FROM items
-    WHERE learnable = 1
-      AND id NOT IN (SELECT item_id FROM responses WHERE user_id = ?)"""
-
-
-def unseen_count(user_id: int | None) -> int:
-    # no row means no responses, so nothing is excluded
-    return conn.execute(UNSEEN_COUNT_SQL, (user_id or 0,)).fetchone()[0]
-
-
 # The pool one trial is drawn from (`trainer.supply` reports against it too).
 SELECTION_POOL = 30
 
@@ -507,6 +494,10 @@ POOL_COUNT_SQL = f"SELECT COUNT(*) FROM ({_POOL})"
 def pick_item(user_rating: float, user_id: int | None) -> tuple[dict | None, bool]:
     """An unseen item near the target difficulty; (item, is_repeat)."""
     target = rating.target_item_rating(user_rating)
+    # A caller who has answered nothing has no row to read a rating or a history
+    # from, so both are the defaults a first trial would have used anyway:
+    # beginner rating, nothing seen yet. `user_id is None` is that caller
+    # throughout, and no user 0 exists for the filters below to match.
     who = {"target": target, "user_id": user_id or 0}
     row = conn.execute(PICK_SQL, {**who, "k": rng.randrange(SELECTION_POOL)}).fetchone()
     if row is None:
@@ -637,9 +628,6 @@ def next_item(item: str | None = None, user_id: int | None = OptionalUserId):
         # Not which *kind* of repeat: the page asked for this position or it
         # didn't, so it can tell a reopened link from an exhausted bank by
         # whether it was handed what it named.
-        #
-        # No fresh-item count: it costs a pass over the bank, and the drawer
-        # counter that reads it is seeded from /api/stats and counted down there.
         "trial_number": (u["attempts"] if u else 0) + 1,
         "user_rating": round(u["rating"] if u else rating.USER_START),
         "calibrating": rating.is_calibrating(u["calib_step"]) if u else True,
@@ -860,7 +848,6 @@ def stats(user_id: int | None = OptionalUserId):
         # window to stay right. Handed a fraction it would have to start a fresh
         # one, and the first answer after a page load would read 0% or 100%.
         "accuracy_window": recent[::-1],
-        "items_remaining": unseen_count(user_id),
         "account": account_payload(u),
     }
 
