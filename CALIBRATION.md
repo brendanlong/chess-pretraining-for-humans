@@ -9,11 +9,26 @@ a comment beside the code already owns.
 
 ## The evidence
 
-One thing, and it is thinner than it looks: **every `game`-source item is a
-mistake a real human made, and `mover_elo` says how strong they were.** That
-pair — an item's measurements against the strength of the player who got it
-wrong — is the only external signal in the project. Everything else in the
-bank is engine output, which can say what is true but not what is hard.
+Two things now, and they answer different questions.
+
+The first is what the curve's *slope* is measured from, and it is thinner
+than it looks: **every `game`-source item is a mistake a real human made, and
+`mover_elo` says how strong they were.** That pair — an item's measurements
+against the strength of the player who got it wrong — was the only external
+signal in the project before launch. Everything else in the bank is engine
+output, which can say what is true but not what is hard.
+
+The second arrived with the first users and fixes what the first never could:
+**the response record says how often people at a known rating actually get a
+served item right**, which is a rate — the thing mining's error-only sample
+has no denominator for. It is what the curve's *location* is measured from
+(`rating.RESPONSE_ANCHOR`, whose comment carries the numbers), and
+`trainer/fit_anchor.py` is the estimator. What it cannot do is reshape the
+curve: a user's rating in the record is the model's own running estimate, so
+the fit is a consistency check at the operating point — a uniform offset it
+estimates well, per-item residuals it cannot see past selection. Issue #27's
+IRT model is the tool for those, and this record is the data it was waiting
+for.
 
 Three measurements per item feed it, all from `trainer/label.py`:
 
@@ -105,6 +120,23 @@ users. Impossible: the shallow-gap axis is intrinsically taller — its
 calibrated band alone spans more than the whole of the old one — so any
 constant that lowered it far enough pushes the easy tail below zero.
 
+**Fixing the launch-week accuracy shortfall by retargeting selection** instead
+of moving the item scale (issue #82's option 1). Serves the same items, but
+leaves `expected_score` mispredicting every trial by the same fourteen points
+— and Elo updates on a fixed mismatch drift every rating down by about five
+points per answer, forever. The model had to move, not the aim.
+
+**Re-deriving the anchor under a chance-floored logistic link.** The
+psychometrically standard 2AFC form (0.5 + 0.5·logistic) would put the anchor
+near +400 rather than +131, because it disagrees with the plain logistic
+about what an aggregate accuracy means away from the operating point. Both
+packages match the data selection actually generates; they differ only where
+nothing has been measured, and the floored one asserts a scale parameter no
+fit has touched. So the plain link keeps the anchor its own measurement
+produced, and the floor survives only as a bound in `expected_score` — the
+part of the claim the task guarantees. `fit_anchor --link` is how the record
+gets to overturn this once the offsets spread out.
+
 ## Open, and what to check when changing it
 
 - **Which window.** `SHALLOW_PLIES` is a choice inside the noise, not an
@@ -115,10 +147,21 @@ constant that lowered it far enough pushes the easy tail below zero.
   bands. The remedy is mining, and README's "keeping the bank full" carries the
   measured yields — the thing to know is that mining steers the deep gap while
   difficulty is the shallow one, so an order is priced per region, not per band.
-- **Nothing here uses a single response.** Difficulty is fixed at labeling
-  time on purpose (SPEC says why), so the app's own data has never been fed
-  back. Issue #27 is the model that would, offline, and `gap_ladder` exists
-  partly so that it can be refitted without re-labeling anything.
+- **The responses have fixed the scale's location and nothing else.** The
+  anchor is one number, measured flat over seven rating bands of launch-week
+  data — re-check that flatness at ten times the sample before trusting it,
+  because a non-flat anchor is a shape error no constant fixes. The link is
+  still the assumed Elo logistic: nothing has fitted its 400-point base, and
+  `fit_anchor --link` only becomes decisive once shared answers and
+  calibration tails spread the offsets out. Difficulty stays fixed at
+  labeling time on purpose (SPEC says why); issue #27 is the model that would
+  feed responses all the way back — per-item, offline — and `gap_ladder`
+  exists partly so that it can be refitted without re-labeling anything.
+- **Answers under three seconds sit at chance** — click-through, ~5% of the
+  launch-week record, cleanly separated by `response_ms` (now range-checked
+  at the endpoint). The fits hold them out with `--min-ms`; whether rating
+  updates should too is open, and cuts both ways — it is also an exploit for
+  ducking a loss on a hard position.
 - **The whole axis explains a few percent of the variance in erring strength.**
   That is not a defect to be fixed by tuning; it is what one engine number can
   say about one human's attention. Treat a change that improves it a lot with
@@ -131,7 +174,12 @@ difficulties it selects. So a retune has to carry its own regrade: work out what
 the new scale does to the item distribution, map each user onto the position
 that serves them comparable items, and gate it on a key in `meta` so it cannot
 run twice. There is no standing code for this because the mapping
-is a property of the change, not of the app.
+is a property of the change, not of the app. The anchor is the instructive
+special case: its user map was the identity, *because* the shift was measured
+from the users' own answers — their Elo ratings were already in equilibrium
+with what they could actually do, and serving them different items was the
+point of the fix, not a side effect to be compensated. `meta.anchored_at`
+marks the boundary for analysis; only the timestamp needed gating.
 
 Re-running the fit is `uv run python -m trainer.fit_difficulty`. If it stops
 returning what `rating.GAP_SLOPE`'s comment claims, the estimator has drifted

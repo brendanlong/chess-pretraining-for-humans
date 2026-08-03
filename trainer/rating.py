@@ -25,8 +25,8 @@ K_USER = 32
 SELECTION_JITTER = 75  # rating points of noise around the target difficulty
 RATING_MIN = 0
 # Above the hardest thing the curve can name: the hard tail saturates at
-# HARD_CEILING, 2980. A guard, not a design feature — see `difficulty_rating`.
-RATING_MAX = 3000
+# HARD_CEILING, ~3111. A guard, not a design feature — see `difficulty_rating`.
+RATING_MAX = 3200
 
 # How much of the ladder difficulty is a function of. What the data settles is
 # that averaging a *window* beats any single rung and beats the gap at full
@@ -94,10 +94,10 @@ CALIBRATED_GAP_LO = 0.07
 CALIBRATED_GAP_HI = 0.27
 # Outside the calibrated band the line would run away in both directions, so
 # difficulty saturates instead, matching the line's value *and* slope at each
-# join. Past the easy end it decays toward zero; past the hard end it rises
-# toward a ceiling. Either way the gaps we know nothing about stay ordered and
-# distinct rather than collapsing onto one clamped value, which is what SPEC
-# requires — an unordered range is a range selection cannot aim inside.
+# join. Past the easy end it decays toward the anchor; past the hard end it
+# rises toward a ceiling. Either way the gaps we know nothing about stay
+# ordered and distinct rather than collapsing onto one clamped value, which is
+# what SPEC requires — an unordered range is a range selection cannot aim inside.
 #
 # This is the one number here that was chosen rather than measured, and it is
 # not cosmetic: it is the headroom the curve is allowed either side of the
@@ -108,7 +108,20 @@ CALIBRATED_GAP_HI = 0.27
 # with each tail spread over 600 points. Anyone retuning it should check both
 # ends.
 KNEE_DIFFICULTY = 600.0
-GAP_INTERCEPT = KNEE_DIFFICULTY + GAP_SLOPE * CALIBRATED_GAP_HI
+# Where the whole curve sits against the user scale. Measured, from the first
+# live responses (issue #82): over 8,430 scored answers the model expected
+# 0.796 and users scored 0.639, and the shortfall was flat across every user
+# rating band — a uniform offset, not a shape error. User ratings are learned
+# by Elo from those same answers, so they are the fixed point; it was the
+# engine-derived item curve sitting ~131 points too low (±11 at that sample
+# size). A separate constant from KNEE_DIFFICULTY because the knee sets the
+# tails' decay rate, and location has to move without touching it.
+#
+# Re-measure with `uv run python -m trainer.fit_anchor`, and read the per-band
+# table it prints before trusting one number to stay uniform — the flatness
+# was checked on 8k answers, not 80k.
+RESPONSE_ANCHOR = 131.0
+GAP_INTERCEPT = RESPONSE_ANCHOR + KNEE_DIFFICULTY + GAP_SLOPE * CALIBRATED_GAP_HI
 # Where the hard tail saturates: the line's value at the hard edge of the
 # evidence, plus the same headroom the easy tail gets.
 HARD_CEILING = GAP_INTERCEPT - GAP_SLOPE * CALIBRATED_GAP_LO + KNEE_DIFFICULTY
@@ -121,7 +134,9 @@ _TARGET_OFFSET = 400 * math.log10(1 / TARGET_ACCURACY - 1)
 def gap_difficulty(shallow_gap: float) -> float:
     """The difficulty a shallow gap maps to, before any bounds are applied."""
     if shallow_gap > CALIBRATED_GAP_HI:
-        return KNEE_DIFFICULTY * math.exp(-_DECAY * (shallow_gap - CALIBRATED_GAP_HI))
+        return RESPONSE_ANCHOR + KNEE_DIFFICULTY * math.exp(
+            -_DECAY * (shallow_gap - CALIBRATED_GAP_HI)
+        )
     if shallow_gap < CALIBRATED_GAP_LO:
         return HARD_CEILING - KNEE_DIFFICULTY * math.exp(
             -_DECAY * (CALIBRATED_GAP_LO - shallow_gap)
@@ -131,10 +146,14 @@ def gap_difficulty(shallow_gap: float) -> float:
 
 def _gap_for_difficulty(difficulty: float) -> float:
     """Inverse of `difficulty_rating`, for reading a scale position as a gap."""
-    if difficulty <= KNEE_DIFFICULTY:
-        # Clamped at the bottom: a difficulty at or below zero has no gap behind
-        # it, and the easy tail never reaches zero however wide the gap.
-        return CALIBRATED_GAP_HI - math.log(max(difficulty, 1e-9) / KNEE_DIFFICULTY) / _DECAY
+    if difficulty <= RESPONSE_ANCHOR + KNEE_DIFFICULTY:
+        # Clamped at the bottom: a difficulty at or below the anchor has no gap
+        # behind it, and the easy tail never reaches the anchor however wide
+        # the gap.
+        return (
+            CALIBRATED_GAP_HI
+            - math.log(max(difficulty - RESPONSE_ANCHOR, 1e-9) / KNEE_DIFFICULTY) / _DECAY
+        )
     if difficulty >= HARD_CEILING - KNEE_DIFFICULTY:
         # Symmetrically at the top: the hard tail approaches HARD_CEILING and
         # never arrives, so a difficulty at or past it reads as the hardest gap
@@ -176,12 +195,20 @@ def difficulty_rating(shallow_gap: float) -> float:
 USER_START = 850
 CALIB_START_STEP = 250
 CALIB_END_STEP = 40  # below this, calibration is over
-USER_MIN = 350
+# The bottom of the item scale is what the floor is really about: below here a
+# user's target sinks under the curve's easy asymptote (RESPONSE_ANCHOR) and
+# reads as a gap no position can have. 480 keeps the target the same ~110
+# points above the asymptote that the old floor kept above zero. A stored
+# rating under the floor needs no migration — the next answer's clamp lifts it,
+# and until then its target walks to the easiest items the bank has, which is
+# what the floor would have aimed at anyway.
+USER_MIN = 480
 # The top of the item scale is what a user can be aimed at, so the user scale
-# stops where its target reaches the hardest items that exist. Past that the
-# inverse of the curve runs off into gaps no position has, and every user up
-# there is aimed at the same handful.
-USER_MAX = 3200
+# stops where its target reaches the hardest items that exist (HARD_CEILING,
+# ~3111, minus the ~-241 target offset). Past that the inverse of the curve
+# runs off into gaps no position has, and every user up there is aimed at the
+# same handful.
+USER_MAX = 3350
 
 
 def target_gap(user_rating: float) -> float:
@@ -206,7 +233,23 @@ def calibrate(user_rating: float, step: float, correct: bool) -> tuple[float, fl
 
 
 def expected_score(user_rating: float, item_rating: float) -> float:
-    return 1 / (1 + 10 ** ((item_rating - user_rating) / 400))
+    """Chance of a correct answer: the Elo logistic, floored at the coin flip.
+
+    The task is two-alternative, so nobody scores below 0.5 on any item —
+    guessing does that. Unfloored, the logistic promises near-zero for an item
+    far above the user, and Elo then pays most of a K for each coin flip a
+    beginner wins on some expert's shared position: a rating pump with no
+    information in it. Floored, an impossible item is priced as the coin flip
+    it is, and wins and losses on it cancel.
+
+    The floor is the one correction the task guarantees without asserting a
+    shape nothing has fitted. Where the logistic has been checked against live
+    answers — around the selection target, see RESPONSE_ANCHOR — it is used
+    as-is; whether the whole link should instead be a chance-floored logistic,
+    and at what scale, is `trainer.fit_anchor --link`'s question to put to the
+    response record.
+    """
+    return max(0.5, 1 / (1 + 10 ** ((item_rating - user_rating) / 400)))
 
 
 def target_item_rating(user_rating: float) -> float:

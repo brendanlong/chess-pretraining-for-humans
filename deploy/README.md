@@ -191,6 +191,14 @@ published number is the thing to change first, if it should change.
   every answer. Anything a dropped column held is gone from the live file the
   first time the new server opens it, so copy it out of a Litestream restore
   beforehand if you want it.
+- **Rolling back across a difficulty-scale change strands its marker.** Item
+  ratings re-derive on every connect, so the older server quietly moves them
+  back onto its own curve — but the `meta` key the newer release stamped
+  (`anchored_at`) stays, claiming a scale the rows no longer carry, and
+  offline analysis splits rating snapshots on that key. If a rollback past
+  one has to stay up, delete the key; the newer release re-stamps it with a
+  new, again-true date when it returns. That is the one exception to "never
+  edit `meta` by hand".
 - **A database older than the current schema will not open.** Items carry the
   measurement their difficulty is derived from, and `db.connect` refuses a bank
   without it rather than serving items at whatever an older curve left behind:

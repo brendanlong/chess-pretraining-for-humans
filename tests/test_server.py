@@ -149,6 +149,32 @@ def test_first_exposure_accuracy_excludes_repeats(client):
     assert stats["accuracy_last_50"] == 1.0  # but only the two fresh ones counted
 
 
+def last_response(db):
+    return db.execute("SELECT * FROM responses ORDER BY id DESC LIMIT 1").fetchone()
+
+
+def test_the_row_says_whether_the_staircase_owned_the_rating(client, db):
+    """`calibrating` is the staircase's state as the answer was scored, so the
+    fits over `responses` can hold those moves out instead of inferring them
+    from the delta — the inference breaks where a bound clamps the move."""
+    answer(client, next_trial(client))
+    assert last_response(db)["calibrating"] == 1  # a fresh user is mid-staircase
+    with db:
+        db.execute("UPDATE users SET calib_step = 1")  # calibration over
+    answer(client, next_trial(client))
+    assert last_response(db)["calibrating"] == 0
+
+
+def test_a_clock_reading_that_cannot_be_one_is_recorded_as_none(client, db):
+    """`response_ms` is client-supplied; garbage is kept as "not measured"
+    rather than believed — or bounced, which would throw away a real answer
+    over a timestamp."""
+    for sent, kept in ((-5, None), (4_200, 4_200), (server.RESPONSE_MS_MAX + 1, None)):
+        body = {**answer_body(next_trial(client)), "response_ms": sent}
+        assert client.post("/api/answer", json=body).status_code == 200
+        assert last_response(db)["response_ms"] == kept
+
+
 # --- share links ----------------------------------------------------------
 #
 # A URL names an item, so it reaches one selection would not have offered. The

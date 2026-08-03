@@ -120,13 +120,24 @@ CREATE TABLE IF NOT EXISTS responses (
     -- other; this is for the analysis, which has to be able to hold out the
     -- rows nobody aimed. 0 for everything the app chose.
     shared INTEGER NOT NULL DEFAULT 0,
+    -- Whether the calibration staircase still owned this user's rating when
+    -- the answer was scored (`rating.is_calibrating` at that moment). The
+    -- staircase moves ratings on rules of its own, so a fit over responses has
+    -- to hold those moves out — and inferring them from the size of the rating
+    -- delta breaks where a bound clamps the move. The staircase moved this
+    -- rating iff calibrating = 1 and shared = 0, since a shared answer during
+    -- calibration is scored by Elo (see `server.answer`). NULL on rows from
+    -- before the column existed; those still need the delta inference, which
+    -- `trainer.fit_anchor` carries.
+    calibrating INTEGER,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
--- Facts about the record that aren't derivable from it. Currently one:
--- `regraded_at`, the moment every rating moved onto a new difficulty scale, so
--- that offline analysis can tell which side of it a response's rating snapshots
--- came from. Nothing in the app reads it.
+-- Facts about the record that aren't derivable from it: `regraded_at`, the
+-- moment every user rating moved onto the shallow-gap difficulty scale, and
+-- `anchored_at`, the moment item difficulty gained `rating.RESPONSE_ANCHOR` —
+-- so that offline analysis can tell which scale a response's rating snapshots
+-- came from. Nothing in the app reads either.
 CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -265,6 +276,11 @@ def connect(path: Path = DEFAULT_DB, check_same_thread: bool = True) -> sqlite3.
     # the default says — so there is nothing to backfill.
     if "shared" not in response_cols:
         conn.execute("ALTER TABLE responses ADD COLUMN shared INTEGER NOT NULL DEFAULT 0")
+    # No default here, unlike `shared`: whether the staircase owned the rating
+    # is not knowable from an old row without the delta inference, and a 0
+    # would claim it was. NULL says "recorded before the column existed".
+    if "calibrating" not in response_cols:
+        conn.execute("ALTER TABLE responses ADD COLUMN calibrating INTEGER")
     # The full rating index is subsumed by the partial one above: every query
     # that ranges or orders on rating also asks for learnable = 1, so all the
     # unfiltered index bought was a second copy of the column to keep current
@@ -300,6 +316,15 @@ def connect(path: Path = DEFAULT_DB, check_same_thread: bool = True) -> sqlite3.
             "UPDATE items SET rating = difficulty_rating(shallow_gap)"
             " WHERE rating != difficulty_rating(shallow_gap)"
         )
+    # When the anchored scale arrived (`rating.RESPONSE_ANCHOR`), because a
+    # response's `item_rating_before` on either side of that moment is a
+    # snapshot off a different scale and nothing else in the record says where
+    # the boundary is. Written only when absent, so it is one-way like the
+    # regrade it marks; on a fresh database it truthfully says there was never
+    # a pre-anchor row. A pre-anchor backup restored later arrives without the
+    # key and gets a new, equally true boundary.
+    if not conn.execute("SELECT 1 FROM meta WHERE key = 'anchored_at'").fetchone():
+        conn.execute("INSERT INTO meta (key, value) VALUES ('anchored_at', datetime('now'))")
     # `sessions` gained ON DELETE CASCADE after databases existed, and SQLite
     # can't add a constraint in place, so an old table is rebuilt once. Orphan
     # rows from before the foreign key was enforced are shed on the way — the
