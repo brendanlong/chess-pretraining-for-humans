@@ -143,16 +143,15 @@ CREATE TABLE IF NOT EXISTS meta (
     value TEXT NOT NULL
 );
 
--- Selection walks ratings outward from a target (`server.pick_item`), and the
--- unseen count only needs ids (`server.unseen_count`) — both over servable
--- items only, which is why the index is partial: it keeps every walk free of
--- entries the WHERE would discard, and it answers the count without touching
--- the wide item rows at all.
+-- Selection walks ratings outward from a target (`server.pick_item`), over
+-- servable items only, which is why the index is partial: it keeps the walk
+-- free of entries the WHERE would discard, so what bounds it is how much of
+-- the band this user has answered, not how much of the bank is unservable.
 CREATE INDEX IF NOT EXISTS idx_items_learnable_rating ON items(rating) WHERE learnable = 1;
 CREATE INDEX IF NOT EXISTS idx_responses_user ON responses(user_id, id);
 -- Both response indexes earn their keep. The one above serves "this user's
 -- answers, in order"; this one serves "has this user answered this item" — the
--- repeat probe, the unseen-item filters, and /api/stats' first-exposure filter.
+-- repeat probe, selection's unseen filter, and /api/stats' first-exposure one.
 -- That last asks it per response, so without `item_id` indexed it walks the
 -- user's whole history per row: 700ms at 5k answers.
 CREATE INDEX IF NOT EXISTS idx_responses_item ON responses(user_id, item_id, id);

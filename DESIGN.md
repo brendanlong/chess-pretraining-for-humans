@@ -261,9 +261,9 @@ then replay controls with a primary Next, then the two engine lines as
 tappable cards; secondary detail sits below the fold. Desktop places the
 same panel beside the board. A settings drawer holds replay speed, the
 account controls (sign up / sign in / sign out, reached from the header
-chip), a "your data" section, session/debug counters like the fresh-item
-count, and the legal links. Download and delete share that section because
-they name the same record, and both are offered to guests; delete is two
+chip), a "your data" section, the trial and streak counters, and the legal
+links. Download and delete share that section because they name the same
+record, and both are offered to guests; delete is two
 deliberate steps, the second behind a password field only when there is a
 password, and it collapses again whenever the drawer or the account changes —
 a destructive control should never be found already armed. A download is

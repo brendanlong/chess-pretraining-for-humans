@@ -72,6 +72,19 @@ def png_size(response) -> tuple[int, int]:
     return struct.unpack(">II", response.content[16:24])
 
 
+def unanswered(conn, client) -> int:
+    """Servable items this client has never answered — what selection has left
+    to draw from. The app itself never asks: selection filters rather than
+    counts, so a test that cares what a trial consumed asks the bank straight
+    out. Per user, because "nobody has answered it" is a different claim and
+    not the one selection acts on."""
+    return conn.execute(
+        "SELECT COUNT(*) FROM items WHERE learnable = 1"
+        " AND id NOT IN (SELECT item_id FROM responses WHERE user_id = ?)",
+        (user_row(conn, client)["id"],),
+    ).fetchone()[0]
+
+
 def user_row(conn, client):
     user = auth.session_user(conn, client.cookies[auth.COOKIE_NAME])
     assert user is not None
@@ -90,9 +103,9 @@ def test_no_repeats_until_exhausted_then_flagged(client, db):
         assert "correct" in result and "best" in result  # feedback on every trial
 
     # bank exhausted: repeats are flagged and rating-inert
+    assert unanswered(db, client) == 0
     t = next_trial(client)
     assert t["repeat"] is True
-    assert client.get("/api/stats").json()["items_remaining"] == 0
     rating_before = user_row(db, client)["rating"]
     result = answer(client, t)
     assert result["repeat"] is True
@@ -266,7 +279,7 @@ def test_an_answer_from_a_share_link_counts_like_any_other_and_is_marked(client,
     stats = client.get("/api/stats").json()
     assert stats["attempts"] == 2
     assert stats["accuracy_window"] == [1, 0]  # one right, one wrong — both counted
-    assert stats["items_remaining"] == 0  # gone from the unseen pile as well
+    assert unanswered(db, client) == 0  # and consumed, like any first exposure
 
 
 def test_a_shared_answer_is_scored_by_elo_even_during_calibration(client, db):
@@ -320,7 +333,7 @@ def test_a_url_naming_an_item_you_have_answered_reopens_it_as_a_rerun(client, db
     # Counted nowhere a fresh answer would be, either.
     stats = client.get("/api/stats").json()
     assert stats["accuracy_window"] == [1]  # the wrong rerun is not a first exposure
-    assert stats["items_remaining"] == 1  # still one item nobody has answered
+    assert unanswered(db, client) == 1  # and it consumed nothing: one still unseen
     # And still marked, which is how the analysis holds out what nobody aimed.
     row = db.execute("SELECT * FROM responses ORDER BY id DESC LIMIT 1").fetchone()
     assert (row["item_id"], row["shared"]) == (first["item_id"], 1)
@@ -398,15 +411,6 @@ def test_selection_walks_the_rating_index_instead_of_scanning_the_bank(db):
     # "SCAN items" on this SQLite; older ones say "SCAN TABLE items". Matching
     # both keeps the guard from going quiet under a different interpreter.
     assert not any(s.startswith("SCAN") and "items" in s for s in steps), steps
-
-
-def test_the_unseen_count_is_answered_without_reading_item_rows(db):
-    """Counting needs ids alone, and the partial rating index carries them for
-    exactly the servable items — so the count must come off the index, not off
-    the wide rows a bank-sized table keeps them in."""
-    steps = [row[-1] for row in db.execute("EXPLAIN QUERY PLAN " + server.UNSEEN_COUNT_SQL, (1,))]
-    items_step = next(s for s in steps if "items" in s)
-    assert "COVERING INDEX idx_items_learnable_rating" in items_step, steps
 
 
 def test_the_index_walks_merge_to_the_pool_the_distance_ordering_chose(db):
@@ -999,7 +1003,7 @@ def test_answering_your_last_unseen_item_does_not_make_its_token_replayable(clie
     last = next_trial(client)
     assert last["repeat"] is False
     answer(client, last)
-    assert client.get("/api/stats").json()["items_remaining"] == 0  # bank now empty
+    assert unanswered(db, client) == 0  # bank now empty
 
     for _ in range(3):
         assert client.post("/api/answer", json=answer_body(last)).status_code == 409

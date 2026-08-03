@@ -44,7 +44,6 @@ let streak = 0;
 // arrives at.
 let accWindow = [];
 const ACC_WINDOW = 50;
-let freshLeft = null; // unseen items, seeded by /api/stats and counted down here
 
 // Reveal replay state: two engine lines, one active, stepped through on the
 // main board. lines[i] = {mv, tag, cls, brush, steps}
@@ -408,10 +407,6 @@ async function choose(i) {
   if (!result.repeat) {
     accWindow.push(result.correct ? 1 : 0);
     if (accWindow.length > ACC_WINDOW) accWindow.shift();
-    // Counted down here rather than re-read per trial: answering a fresh item
-    // is exactly what consumes one, so the server needn't scan the bank to
-    // tell us a number we can derive.
-    if (freshLeft !== null) el("stat-remaining").textContent = --freshLeft;
   }
   el("stat-streak").textContent = streak;
   renderAccuracy();
@@ -490,10 +485,6 @@ async function initStats() {
     if (s.accuracy_window) {
       accWindow = s.accuracy_window;
       renderAccuracy();
-    }
-    if (s.items_remaining != null) {
-      freshLeft = s.items_remaining;
-      el("stat-remaining").textContent = freshLeft;
     }
   } catch (e) {
     // Fall through to setAccount anyway: the drawer's account sections start
