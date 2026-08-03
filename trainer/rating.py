@@ -195,6 +195,33 @@ def difficulty_rating(shallow_gap: float) -> float:
 USER_START = 850
 CALIB_START_STEP = 250
 CALIB_END_STEP = 40  # below this, calibration is over
+# The step also shrinks a little on every *win*, because in a two-alternative
+# task a win is weak evidence: above their level a user still takes every
+# other trial by guessing, and a full-price climb per coin flip let seven
+# straight lucky ones ride 1,750 points up — odds a bit under 1%, which the
+# first day's 1,235 users turned into a handful of fake experts. The decay
+# caps the whole staircase at CALIB_START_STEP / (1 - CALIB_WIN_DECAY) =
+# 1,250 points of climb and ends calibration inside nine straight wins.
+# Anyone the cap holds back is genuinely strong, and finishing their climb is
+# what the provisional K below is for — at that point every answer is real
+# evidence, so Elo reading real difficulties beats a ladder that only knows
+# the step it took last.
+CALIB_WIN_DECAY = 0.8
+# Elo's K, provisionally large while a rating rests on a handful of answers.
+# The staircase can end six answers in, and what it hands over is a guess:
+# corrected at a flat K_USER, the guesser it left at 2600 faced ~180 answers
+# of impossible items before the rating told the truth again, and the expert
+# three early misses parked at 600 was owed the mirror image. Decaying K with
+# the answer count is the standard remedy (provisional periods, Glicko's RD):
+# certainty is earned by evidence, not by surviving three misses. The boost
+# halves every K_HALF_LIFE answers — a tenth of itself left at a hundred —
+# which walks that 2600 fluke home in ~64 answers against the flat K's ~146,
+# and carries a real expert from the staircase's cap to 2800 in ~67. Faster
+# would mean single answers swinging a shown rating by 120+ points; slower
+# leaves the fluke serving impossible items for another session.
+# `attempts` counts repeats too, which only hurries the decay a little.
+K_BOOST = 96.0  # a brand-new rating moves at K_USER + K_BOOST = 128
+K_HALF_LIFE = 30.0
 # The bottom of the item scale is what the floor is really about: below here a
 # user's target sinks under the curve's easy asymptote (RESPONSE_ANCHOR) and
 # reads as a gap no position can have. 480 keeps the target the same ~110
@@ -226,10 +253,16 @@ def calibrate(user_rating: float, step: float, correct: bool) -> tuple[float, fl
     """One staircase move; returns (new_rating, new_step)."""
     if correct:
         new = user_rating + step
+        step *= CALIB_WIN_DECAY
     else:
         new = user_rating - step
         step /= 2
     return max(USER_MIN, min(USER_MAX, new)), step
+
+
+def k_factor(attempts: int) -> float:
+    """Elo's K for a user with this many answers behind their rating."""
+    return K_USER + K_BOOST * 2 ** (-attempts / K_HALF_LIFE)
 
 
 def expected_score(user_rating: float, item_rating: float) -> float:
@@ -257,13 +290,16 @@ def target_item_rating(user_rating: float) -> float:
     return user_rating + _TARGET_OFFSET + random.uniform(-SELECTION_JITTER, SELECTION_JITTER)
 
 
-def update(user_rating: float, item_rating: float, correct: bool) -> float:
+def update(user_rating: float, item_rating: float, correct: bool, k: float = K_USER) -> float:
     """The user's new rating after one answer against a fixed-difficulty item.
+
+    `k` is `k_factor(attempts)` for a live answer — the server passes it in —
+    and defaults to the settled K for callers reasoning about the long run.
 
     Bounded like the staircase is, because Elo on its own has no floor: a run
     of misses walks a rating off the bottom of the scale, and past the end of
     it every target picks out the same easiest handful of items the bank has.
     """
     s = 1.0 if correct else 0.0
-    moved = user_rating + K_USER * (s - expected_score(user_rating, item_rating))
+    moved = user_rating + k * (s - expected_score(user_rating, item_rating))
     return max(USER_MIN, min(USER_MAX, moved))

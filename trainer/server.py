@@ -747,7 +747,13 @@ def answer(a: Answer, request: Request):
         elif rating.is_calibrating(u["calib_step"]) and not served.shared:
             new_user_r, new_step = rating.calibrate(u["rating"], u["calib_step"], correct)
         else:
-            new_user_r = rating.update(u["rating"], item["rating"], correct)
+            # At the K the answer count has earned: large while the rating
+            # rests on a staircase's handful of answers, the settled K_USER
+            # once a history stands behind it. `attempts` as read, before this
+            # answer joins the count.
+            new_user_r = rating.update(
+                u["rating"], item["rating"], correct, rating.k_factor(u["attempts"])
+            )
 
         tx.execute(
             """INSERT INTO responses
