@@ -97,6 +97,16 @@ that would otherwise notice the replay. The threat model — who a replayed
 token serves, what a pre-commit peek is worth, and why enforcement stops
 where it does — is spelled out in `trainer/trials.py`'s docstring.
 
+A token that has only run out of time is re-signed rather than refused, since
+otherwise a tab left open long enough loses the answer its holder had already
+decided on. `/api/answer` says so with a status of its own, the client posts
+the stale token to `/api/trial/refresh` and submits the same pick again, and
+the timing recorded is still the original decision's. The re-signing carries
+every other field over unchanged and hands back nothing but a token, so it can
+neither relabel how the trial was served nor say anything about the item. The
+refusals that remain refusals are the ones a fresh token can't honestly fix: a
+token naming another session, and one this process can no longer verify.
+
 The signing key comes from `TRIAL_TOKEN_SECRET` (a Fly secret); what rotating
 or leaving it unset costs is in `deploy/README.md`.
 

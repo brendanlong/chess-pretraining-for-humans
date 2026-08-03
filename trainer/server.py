@@ -163,8 +163,10 @@ answer_limiter = auth.RateLimiter(
 )
 # Not a rate limit — a spend-once ledger, which is the same data structure. It
 # is what keeps a spent anonymous trial spent, for the reasons in the `trials`
-# docstring. Per-process and lost on restart, costing at most one extra replay
-# per token; the short anonymous token life keeps the set small.
+# docstring. Keyed on the trial's nonce rather than on the token carrying it, so
+# that re-signing an expired token (`/api/trial/refresh`) shares the slot instead
+# of getting a fresh one. Per-process and lost on restart, costing at most one
+# extra replay per trial; the short anonymous token life keeps the set small.
 anonymous_trial_use = auth.RateLimiter(
     limit=1,
     window_s=trials.ANON_TOKEN_TTL_S,
@@ -634,6 +636,42 @@ def next_item(item: str | None = None, user_id: int | None = OptionalUserId):
     }
 
 
+class TrialRefresh(BaseModel):
+    item_id: int
+    trial_token: str | None = None
+
+
+@app.post("/api/trial/refresh")
+def refresh_trial(r: TrialRefresh, user_id: int | None = OptionalUserId):
+    """Re-sign a trial this caller is already holding, so that a token which
+    outlived its expiry costs a round trip instead of the answer.
+
+    The alternative — fetching a replacement trial — throws away a decision
+    somebody had already made about a position they were still looking at, and
+    the moment it does that most often is a first-time visitor's first answer,
+    which is the one there is least reason to lose.
+
+    It hands back a token and nothing else. That is what keeps it from being a
+    second look at the item: a peek needs the position, the pair, or the answer,
+    and none of them are here — everything in the reply was already in the token
+    that had to be presented to get it. `/api/next` remains the only way to be
+    told what a trial *is*.
+
+    Unmetered for the same reason `/api/next` is: it mints no identity and
+    records no answer, and it sits on the path to a first answer, which SPEC
+    says nothing may gate. The answer it leads to is metered where every answer
+    is.
+    """
+    try:
+        token = trials.reissue(r.trial_token, r.item_id, user_id)
+    except trials.InvalidTrial as e:
+        # Including expiry, which is the case this exists for: `reissue` doesn't
+        # consult the clock, so what reaches here is a token that was never ours,
+        # names another item, or names another session.
+        raise HTTPException(409, f"{e} — fetch a new trial") from e
+    return {"item_id": r.item_id, "trial_token": token}
+
+
 # Past an hour it is a parked tab, not a decision; negative is a broken clock.
 # Client-supplied timing outside this range is recorded as "not measured"
 # rather than believed or bounced — the answer itself is still real, and a 422
@@ -672,16 +710,25 @@ def answer(a: Answer, request: Request):
         # sequential integers, so nothing here may reflect one back without proof
         # that we served it.
         try:
-            served = trials.redeem(a.trial_token, a.item_id, u["id"] if u else None)
+            trial = trials.redeem(a.trial_token, a.item_id, u["id"] if u else None)
+        except trials.TrialExpired as e:
+            # The one refusal that isn't the end of this answer: the trial is
+            # still this caller's, so `/api/trial/refresh` will re-sign it and
+            # the same pick can be submitted again. Its own status, because the
+            # client must not do that with any of the others — replaying a pick
+            # against a session that changed under it files one person's answer
+            # under another.
+            raise HTTPException(410, f"{e} — refresh it and answer again") from e
         except trials.InvalidTrial as e:
             raise HTTPException(409, f"{e} — fetch a new trial") from e
+        served = trial.served
         if u is None:
             # An anonymous token is the one kind a replay can profit from, because
             # the row that would notice the repeat doesn't exist yet. Answered as a
             # 409 rather than the limiter's 429: "this trial is spent" is the same
             # thing the client already knows how to recover from by fetching another.
             try:
-                anonymous_trial_use.consume(a.trial_token or "")
+                anonymous_trial_use.consume(trial.nonce)
             except auth.RateLimited as e:
                 raise HTTPException(409, str(e)) from e
 

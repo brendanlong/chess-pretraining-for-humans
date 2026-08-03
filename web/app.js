@@ -368,6 +368,44 @@ function nextTrial(itemId) {
   loadTrial(itemId).catch(showLoadError);
 }
 
+// Submit a pick, re-signing the trial token first if the server says it aged
+// out.
+//
+// A 410 means the trial is still ours and still this item's — only its clock
+// ran out, which is what a tab that sat through lunch has done. Fetching a
+// fresh *trial* there would throw away a decision the user had already made
+// about the position in front of them; re-signing the token and resubmitting
+// gets them the reveal they were waiting for. Every other refusal is left to
+// the caller, because none of the rest are ours to retry.
+//
+// `responseMs` is measured once by the caller and passed through both attempts:
+// what is recorded is how long the decision took, not how long the round trip
+// that carried it did.
+async function submitChoice(choice, responseMs) {
+  const body = {
+    item_id: trial.item_id,
+    // The server's own proof that it offered us this item. Answering is also
+    // what mints the identity, so on a first visit this is the request that
+    // gets us a cookie — nothing before it wrote anything.
+    trial_token: trial.trial_token,
+    choice_uci: choice.uci,
+    response_ms: responseMs,
+  };
+  try {
+    return await api("/api/answer", body);
+  } catch (err) {
+    if (err.status !== 410) throw err;
+  }
+  // Once, and only here: the token this hands back is seconds old, so a second
+  // 410 is not an expiry anything could outrun and belongs to the caller.
+  const fresh = await api("/api/trial/refresh", {
+    item_id: trial.item_id,
+    trial_token: trial.trial_token,
+  });
+  trial.trial_token = fresh.trial_token;
+  return api("/api/answer", { ...body, trial_token: fresh.trial_token });
+}
+
 async function choose(i) {
   if (phase !== "choosing") return;
   phase = "submitting";
@@ -376,32 +414,29 @@ async function choose(i) {
 
   let result;
   try {
-    result = await api("/api/answer", {
-      item_id: trial.item_id,
-      // The server's own proof that it offered us this item. Answering is also
-      // what mints the identity, so on a first visit this is the request that
-      // gets us a cookie — nothing before it wrote anything.
-      trial_token: trial.trial_token,
-      choice_uci: choice.uci,
-      response_ms: Math.round(performance.now() - shownAt),
-    });
+    result = await submitChoice(choice, Math.round(performance.now() - shownAt));
   } catch (err) {
-    if (err.status === 409) {
-      // Our trial token is no longer redeemable: it expired, or the session it
-      // was issued to changed under us — another tab signed in, out, or deleted
-      // the account. Retrying the same pick would fail forever, so fetch a trial
-      // this session can actually answer.
+    if (err.status === 409 || err.status === 410) {
+      // The trial isn't ours to answer and re-signing its token can't make it
+      // ours: the session it was issued to changed under us — another tab
+      // signed in, out, or deleted the account — or the server can no longer
+      // verify what it issued, having restarted on an ephemeral signing key.
+      // Only the first of those is a different person, and from here they are
+      // indistinguishable, so the pick is dropped rather than filed under
+      // whoever holds the browser now. (A second 410 lands here too: the token
+      // `submitChoice` just fetched cannot have aged out, so whatever is wrong
+      // with it isn't the clock.)
       //
       // The header is seeded per identity, so reseed it too, or it goes on
-      // counting the previous session's history. The two causes can't be told
-      // apart from here, and after a plain expiry the reseed lands on the same
-      // user's own numbers. Awaited before the fetch below, so it can't lose an
-      // answer to the replacement trial by overwriting the window with a
-      // snapshot taken before it; the pick is already spent, so there is
-      // nothing on screen the wait holds up. `streak` keeps running: it is
-      // never seeded from the server, and zeroing it would cost the same user a
-      // real streak in the expiry case that dominates this branch.
-      el("prompt").textContent = "That trial has expired — loading a fresh one…";
+      // counting the previous session's history. Awaited before the fetch
+      // below, so it can't lose an answer to the replacement trial by
+      // overwriting the window with a snapshot taken before it; the pick is
+      // already gone, so there is nothing on screen the wait holds up.
+      // `streak` keeps running: it is never seeded from the server, so there is
+      // no value here to replace it with, and it counts what the user has been
+      // getting right rather than anything in the record.
+      el("prompt").textContent =
+        "Couldn't record that answer — loading a fresh position…";
       await initStats();
       nextTrial();
       return;
