@@ -828,6 +828,10 @@ def answer(a: Answer, request: Request):
 # question ("is there an earlier answer to this item") must be answered from an
 # index covering `item_id`; a test asserts that plan, because without it this
 # reverts to quadratic. See `idx_responses_item` in `db.py`.
+#
+# Mirrored by `ACC_WINDOW` in `web/app.js`, which keeps extending this window as
+# trials are answered: seeded at one width and extended at another, the header
+# would report over neither.
 ACCURACY_WINDOW = 50
 RECENT_FIRST_EXPOSURES_SQL = f"""
     SELECT r.correct

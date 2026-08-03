@@ -149,6 +149,23 @@ def test_first_exposure_accuracy_excludes_repeats(client):
     assert stats["accuracy_window"] == [1, 1]  # but only the two fresh ones counted
 
 
+@pytest.mark.parametrize("item_count", [server.ACCURACY_WINDOW + 5])
+def test_the_accuracy_window_is_the_newest_answers_oldest_first(client, item_count):
+    """The client extends this window as it answers, so both ends of it are a
+    contract: it has to arrive capped at the width the client keeps trimming
+    to, and ordered so that appending is what adds the newest answer."""
+    wrong_at = {3, item_count - 1}  # one that falls out of the window, one that can't
+    for i in range(item_count):
+        trial = next_trial(client)
+        uci = ITEM["distractor_uci"] if i in wrong_at else ITEM["best_uci"]
+        answer(client, trial, choice_index_of(trial, uci))
+
+    window = client.get("/api/stats").json()["accuracy_window"]
+    assert len(window) == server.ACCURACY_WINDOW  # the five oldest dropped out
+    assert window[-1] == 0  # newest last: the miss just answered
+    assert sum(window) == server.ACCURACY_WINDOW - 1  # and only that one: the early miss fell out
+
+
 def last_response(db):
     return db.execute("SELECT * FROM responses ORDER BY id DESC LIMIT 1").fetchone()
 
