@@ -138,7 +138,7 @@ def test_first_exposure_accuracy_excludes_repeats(client):
 
     for _ in range(2):  # the whole bank, answered correctly
         answer_with(next_trial(client), ITEM["best_uci"])
-    assert client.get("/api/stats").json()["accuracy_last_50"] == 1.0
+    assert client.get("/api/stats").json()["accuracy_window"] == [1, 1]
 
     for _ in range(2):  # now repeats, answered wrongly
         t = next_trial(client)
@@ -146,7 +146,7 @@ def test_first_exposure_accuracy_excludes_repeats(client):
         answer_with(t, ITEM["distractor_uci"])
     stats = client.get("/api/stats").json()
     assert stats["attempts"] == 4  # all four were recorded
-    assert stats["accuracy_last_50"] == 1.0  # but only the two fresh ones counted
+    assert stats["accuracy_window"] == [1, 1]  # but only the two fresh ones counted
 
 
 def last_response(db):
@@ -248,7 +248,7 @@ def test_an_answer_from_a_share_link_counts_like_any_other_and_is_marked(client,
     # Counted where every other first exposure is, too.
     stats = client.get("/api/stats").json()
     assert stats["attempts"] == 2
-    assert stats["accuracy_last_50"] == 0.5  # one right, one wrong — both counted
+    assert stats["accuracy_window"] == [1, 0]  # one right, one wrong — both counted
     assert stats["items_remaining"] == 0  # gone from the unseen pile as well
 
 
@@ -302,7 +302,7 @@ def test_a_url_naming_an_item_you_have_answered_reopens_it_as_a_rerun(client, db
     assert user_row(db, client)["rating"] == before  # and a rating that didn't move
     # Counted nowhere a fresh answer would be, either.
     stats = client.get("/api/stats").json()
-    assert stats["accuracy_last_50"] == 1.0  # the wrong rerun is not a first exposure
+    assert stats["accuracy_window"] == [1]  # the wrong rerun is not a first exposure
     assert stats["items_remaining"] == 1  # still one item nobody has answered
     # And still marked, which is how the analysis holds out what nobody aimed.
     row = db.execute("SELECT * FROM responses ORDER BY id DESC LIMIT 1").fetchone()

@@ -39,7 +39,11 @@ let trial = null; // current /api/next payload
 let phase = "loading"; // loading | choosing | submitting | revealed | error
 let shownAt = 0;
 let streak = 0;
-let accWindow = []; // local last-50 correctness (feedback trials only)
+// Last-50 correctness over fresh trials, seeded by /api/stats and extended
+// here. Seeded rather than recomputed per answer so the number spans a career
+// and not a page load, and extended rather than refetched because answering a
+// fresh trial is exactly what changes it.
+let accWindow = [];
 let freshLeft = null; // unseen items, seeded by /api/stats and counted down here
 
 // Reveal replay state: two engine lines, one active, stepped through on the
@@ -410,9 +414,7 @@ async function choose(i) {
     if (freshLeft !== null) el("stat-remaining").textContent = --freshLeft;
   }
   el("stat-streak").textContent = streak;
-  if (accWindow.length)
-    el("stat-acc").textContent =
-      Math.round((100 * accWindow.reduce((a, b) => a + b, 0)) / accWindow.length) + "%";
+  renderAccuracy();
 
   lastResult = result;
   // Answered, so the position is now something to send on rather than
@@ -469,12 +471,20 @@ async function choose(i) {
   autoplayFrom(0);
 }
 
+function renderAccuracy() {
+  if (!accWindow.length) return; // nothing answered yet: leave the placeholder
+  const right = accWindow.reduce((a, b) => a + b, 0);
+  el("stat-acc").textContent = Math.round((100 * right) / accWindow.length) + "%";
+}
+
 async function initStats() {
   try {
     const s = await api("/api/stats");
     if (s.account) account = s.account;
-    if (s.accuracy_last_50 != null)
-      el("stat-acc").textContent = Math.round(s.accuracy_last_50 * 100) + "%";
+    if (s.accuracy_window) {
+      accWindow = s.accuracy_window;
+      renderAccuracy();
+    }
     if (s.items_remaining != null) {
       freshLeft = s.items_remaining;
       el("stat-remaining").textContent = freshLeft;

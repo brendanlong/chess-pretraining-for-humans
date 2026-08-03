@@ -851,7 +851,11 @@ def stats(user_id: int | None = OptionalUserId):
         # this, so counting them again asks the database a question it has
         # already written down.
         "attempts": u["attempts"] if u else 0,
-        "accuracy_last_50": round(sum(recent) / len(recent), 3) if recent else None,
+        # The window itself, oldest-first, rather than the fraction over it: the
+        # client keeps answering after this call and has to extend the same
+        # window to stay right. Handed a fraction it would have to start a fresh
+        # one, and the first answer after a page load would read 0% or 100%.
+        "accuracy_window": recent[::-1],
         "items_remaining": unseen_count(user_id),
         "account": account_payload(u),
     }
