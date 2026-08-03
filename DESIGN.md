@@ -73,8 +73,13 @@ one rates and counts like any other, except that during calibration it is
 scored by Elo rather than by the staircase, for the reason beside that branch
 in `answer`. Reopening a link to one already answered serves it as a repeat,
 which rates and counts nothing.
-New users run a calibration staircase first (start low, big steps, halve on
-miss). All responses are recorded with timing and the rating snapshots that
+New users run a calibration staircase first (start low, big steps that
+shrink a little on every win and halve on a miss, so a lucky streak is
+capped), then hand off to an Elo whose K starts large and decays with the
+answer count — a rating calibration got wrong by luck, in either direction,
+is corrected in tens of answers rather than hundreds. The reasoning for both
+sits on the constants in `trainer/rating.py`. All responses are recorded
+with timing and the rating snapshots that
 make each trial reconstructible on its own.
 
 An answer is only accepted for a trial the server actually offered, which

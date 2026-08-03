@@ -165,6 +165,21 @@ def test_the_row_says_whether_the_staircase_owned_the_rating(client, db):
     assert last_response(db)["calibrating"] == 0
 
 
+def test_a_young_rating_moves_at_the_provisional_k(client, db):
+    """A rating resting on a staircase's handful of answers has to move by
+    more than the settled K, or a calibration exit luck got wrong takes
+    hundreds of answers to walk back."""
+    t = next_trial(client)
+    answer(client, t, choice_index_of(t, ITEM["best_uci"]))  # mints the user
+    with db:
+        db.execute("UPDATE users SET calib_step = 1")  # calibration over, one answer old
+    t = next_trial(client)
+    r = answer(client, t, choice_index_of(t, ITEM["distractor_uci"]))
+    # A miss at the settled K can cost at most K_USER; only k_factor's boost
+    # reaches past it.
+    assert r["rating_delta"] < -rating.K_USER
+
+
 def test_a_clock_reading_that_cannot_be_one_is_recorded_as_none(client, db):
     """`response_ms` is client-supplied; garbage is kept as "not measured"
     rather than believed — or bounced, which would throw away a real answer
@@ -245,7 +260,8 @@ def test_a_shared_answer_is_scored_by_elo_even_during_calibration(client, db):
     first = next_trial(client)
     answer(client, first, choice_index_of(first, ITEM["best_uci"]))
     calibrating = user_row(db, client)
-    assert calibrating["calib_step"] == rating.CALIB_START_STEP  # still on the staircase
+    # Still on the staircase, one win in: the step shrank but didn't halve.
+    assert calibrating["calib_step"] == rating.CALIB_START_STEP * rating.CALIB_WIN_DECAY
     # The staircase's own move, for comparison: the full step, whatever the item.
     assert calibrating["rating"] == rating.USER_START + rating.CALIB_START_STEP
 
@@ -254,9 +270,10 @@ def test_a_shared_answer_is_scored_by_elo_even_during_calibration(client, db):
     answer(client, shared, choice_index_of(shared, ITEM["best_uci"]))
     after = user_row(db, client)
 
-    # The fixture item is far above a calibrating user, so Elo pays nearly the
-    # whole K for beating it — and nothing like the step it would have paid.
-    assert 0 < after["rating"] - before <= rating.K_USER
+    # Elo's move at the one-answer-old provisional K — still nothing like the
+    # step the staircase would have paid for an item nobody aimed.
+    assert 0 < after["rating"] - before <= rating.k_factor(1)
+    assert after["rating"] - before < calibrating["calib_step"]
     # The staircase is where it was: a trial it didn't choose doesn't advance it.
     assert after["calib_step"] == calibrating["calib_step"]
 

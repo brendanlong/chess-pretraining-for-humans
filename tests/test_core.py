@@ -7,10 +7,13 @@ from trainer.rating import (
     _TARGET_OFFSET,
     CALIB_END_STEP,
     CALIB_START_STEP,
+    CALIB_WIN_DECAY,
     CALIBRATED_GAP_HI,
     CALIBRATED_GAP_LO,
     GAP_SLOPE,
     HARD_CEILING,
+    K_BOOST,
+    K_USER,
     KNEE_DIFFICULTY,
     RATING_MAX,
     RESPONSE_ANCHOR,
@@ -23,6 +26,8 @@ from trainer.rating import (
     calibrate,
     difficulty_rating,
     expected_score,
+    is_calibrating,
+    k_factor,
     shallow_gap_of,
     target_gap,
     target_item_rating,
@@ -175,12 +180,58 @@ def test_the_curve_inverts_cleanly_across_its_range():
 
 
 def test_calibration_climbs_fast_for_strong_players():
-    r, step = USER_START, CALIB_START_STEP
-    trials = 0
-    while r < 2200:
+    """An expert answers everything right and has to reach expert territory in
+    a session's first minutes. The staircase no longer does that alone — its
+    climb is capped, because the cap is what stops a lucky guesser — so the
+    provisional K owns the rest, and the two together are what SPEC's
+    'climb fast' promise is made of."""
+    r, step, trials = USER_START, CALIB_START_STEP, 0
+    while is_calibrating(step):
         r, step = calibrate(r, step, correct=True)
         trials += 1
-    assert trials <= 10  # an expert reaches expert territory within ~10 trials
+    assert trials <= 10  # a win streak ends calibration by itself now
+    while r < 2200:
+        r = update(r, r + _TARGET_OFFSET, correct=True, k=k_factor(trials))
+        trials += 1
+    assert trials <= 30
+
+
+def test_the_staircase_alone_cannot_mint_an_expert():
+    """Above their level a user still wins every other trial by guessing, so
+    seven lucky coin flips used to end calibration near 2600 — odds just
+    under 1%, a real population at launch scale. The win decay bounds the
+    whole ride."""
+    r, step = USER_START, CALIB_START_STEP
+    while is_calibrating(step):
+        r, step = calibrate(r, step, correct=True)
+    assert r <= USER_START + CALIB_START_STEP / (1 - CALIB_WIN_DECAY)
+
+
+def test_provisional_k_starts_high_decays_and_never_undercuts_the_floor():
+    assert k_factor(0) == K_USER + K_BOOST
+    ks = [k_factor(n) for n in range(0, 301, 10)]
+    assert all(a > b for a, b in pairwise(ks))
+    assert all(k > K_USER for k in ks)
+    assert k_factor(300) == pytest.approx(K_USER, abs=1)  # effectively settled
+
+
+def test_a_lucky_rating_is_corrected_in_tens_of_answers_not_hundreds():
+    """The fluke the provisional K exists for: a legacy staircase left a
+    guesser at 2600, where every answer is a coin flip. Alternating wins and
+    misses is that coin flip with the luck averaged out; the provisional K
+    has to walk it back several times faster than the settled K did."""
+
+    def answers_until_home(k_of) -> int:
+        r, n = 2600.0, 8  # a staircase exit: eight answers of history
+        while r > 1200:
+            r = update(r, target_item_rating(r), correct=n % 2 == 0, k=k_of(n))
+            n += 1
+        return n - 8
+
+    provisional = answers_until_home(k_factor)
+    settled = answers_until_home(lambda n: K_USER)
+    assert provisional < 80 < settled
+    assert provisional < settled * 0.6
 
 
 def test_calibration_settles_fast_for_beginners():
