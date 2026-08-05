@@ -17,6 +17,11 @@ small.
 
     uv run python -m trainer.supply [--db data/items.db] [--floor 1000]
 
+The bank is opened read-only, so this can be pointed at a live one — beside a
+running server, or a labeler holding the write lock — without migrating it or
+waiting for a lock. The cost is that it cannot regrade a bank whose ratings
+predate a curve change, and refuses one rather than reporting the old scale.
+
 `--gaps` prints the same bank against the *deep* gap, which is the only thing
 mining and labeling can steer with, next to the difficulties each gap bin
 actually produced. Difficulty is a function of the shallow gap, so steering the
@@ -28,7 +33,7 @@ import argparse
 from pathlib import Path
 
 from . import label
-from .db import DEFAULT_DB, connect
+from .db import DEFAULT_DB, connect_readonly
 from .rating import (
     _TARGET_OFFSET,
     SELECTION_JITTER,
@@ -160,7 +165,7 @@ def main() -> None:
     ap.add_argument("--gap-step", type=float, default=0.02)
     args = ap.parse_args()
 
-    conn = connect(args.db)
+    conn = connect_readonly(args.db)
     total, learnable = conn.execute("SELECT COUNT(*), SUM(learnable) FROM items").fetchone()
     print(f"{total} items, {learnable or 0} learnable\n")
 

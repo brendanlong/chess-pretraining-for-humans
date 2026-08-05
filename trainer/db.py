@@ -351,3 +351,32 @@ def connect(path: Path = DEFAULT_DB, check_same_thread: bool = True) -> sqlite3.
         )
     conn.commit()  # migrations include a write; don't leave the file locked
     return conn
+
+
+def connect_readonly(path: Path = DEFAULT_DB) -> sqlite3.Connection:
+    """Open a bank for reading only, refusing one the current curve disowns.
+
+    A report has no business migrating a bank or taking a write lock: it may be
+    pointed at a deployment, or run beside a labeler that holds one. But
+    `connect` is also where `items.rating` is re-derived, so reading without it
+    would quietly report the previous curve's scale — and a retune is exactly
+    when someone reads these numbers. Hence the check: the report's bands are
+    either current or an error, never stale.
+
+    The regrade itself stays in `connect`, because it is a property of the bank
+    and not of whoever happened to look at it.
+    """
+    conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
+    conn.create_function("difficulty_rating", 1, difficulty_rating, deterministic=True)
+    conn.create_function("shallow_gap_of", 1, shallow_gap_of, deterministic=True)
+    if conn.execute(
+        "SELECT 1 FROM items WHERE rating != difficulty_rating(shallow_gap) LIMIT 1"
+    ).fetchone():
+        raise RuntimeError(
+            f"{path} holds ratings the current difficulty curve does not produce. "
+            "Open it once with anything that writes — the server, a labeler, "
+            "`push_items` — to regrade it, then re-run this."
+        )
+    return conn

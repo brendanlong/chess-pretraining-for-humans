@@ -7,8 +7,12 @@ can't: how much of a band is made of items whose surface actively misleads, and
 where the deep gap — the only thing mining can steer — actually lands.
 """
 
+import sqlite3
+
+import pytest
+
 from tests.conftest import ITEM, add_item
-from trainer.db import connect
+from trainer.db import connect, connect_readonly
 from trainer.rating import _TARGET_OFFSET, _gap_for_difficulty, difficulty_rating
 from trainer.supply import SELECTION_POOL, band, band_misleading, by_gap, pool_drift
 
@@ -113,6 +117,33 @@ def test_a_gap_range_nobody_has_mined_is_still_a_row(tmp_path):
 
     assert max(row["hi"] for row in rows) > 0.6
     assert any(row["items"] == 0 for row in rows)
+
+
+def test_the_report_cannot_write_to_the_bank_it_reads(tmp_path):
+    """The point of opening read-only: this can be aimed at a live bank, beside
+    a server or a labeler holding the write lock."""
+    bank(tmp_path, [0.20] * 3).close()
+    conn = connect_readonly(tmp_path / "supply.db")
+
+    assert band(conn, difficulty_rating(0.20)) == 3
+    with pytest.raises(sqlite3.OperationalError, match="readonly"):
+        conn.execute("UPDATE items SET rating = 0")
+
+
+def test_a_bank_on_the_previous_curve_is_refused_not_reported(tmp_path):
+    """`connect` regrades on open and this cannot, so the stale scale would be
+    invisible — and a retune is exactly when someone reads these bands."""
+    conn = bank(tmp_path, [0.20] * 3)
+    conn.execute("UPDATE items SET rating = rating + 131")  # what an anchor shift looks like
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(RuntimeError, match="does not produce"):
+        connect_readonly(tmp_path / "supply.db")
+
+    # And the regrade that fixes it is still `connect`'s job, not the report's.
+    connect(tmp_path / "supply.db").close()
+    assert band(connect_readonly(tmp_path / "supply.db"), difficulty_rating(0.20)) == 3
 
 
 def test_the_fixture_is_the_shape_the_report_reads(tmp_path):
