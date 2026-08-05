@@ -286,10 +286,9 @@ the drawer instead of saving the refusal as a file.
 
 `terms.html` and `privacy.html` are plain pages beside `index.html`,
 sharing its stylesheet, so they ship and version with the app instead of
-living in a CMS. They are reachable three ways, because the
+living in a CMS. They are reachable two ways, because the
 notice has to reach a guest who never opens either: a page footer that
-says what the answers are for, the signup form's agreement line, and the
-drawer's About row.
+says what the answers are for, and the signup form's agreement line.
 
 The icons and the social-card image are committed files in `web/`, generated
 by `scripts/generate_assets.py` screenshotting Chromium, so the art has a
