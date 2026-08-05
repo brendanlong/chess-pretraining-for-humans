@@ -68,19 +68,30 @@ shallow one. The two correlate imperfectly, so a window lands across a
 spread of difficulties rather than in a band — `trainer.supply --gaps` prints
 where each window's items actually went, which is what to aim with.
 
-The easy end is the thin one, and it is the reachable one. A position a shallow
-look settles at a glance is one humans rarely got wrong, so the bank was never
-stocked there: it holds 7,300 items below a 0.10 deep gap, which land in a
-beginner's band 0.1% of the time, against 4,200 above 0.40, which land there
-about 65% of the time. Mining `--min-gap-wp 0.30 --max-gap-wp 0.60` puts
-roughly half of what it labels somewhere in the ten bands users from 550 to
-1850 are aimed at; those bands are about 3,000 items short of a thousand
-apiece, so the order is around 6,000 candidates — a couple of hours of
-labeling, not a re-mine.
+The easy end used to be the thin one, and it is the reachable one: a position a
+shallow look settles at a glance is one humans rarely got wrong, so the bank was
+never stocked there until it was aimed at deliberately. Every band a user from
+480 to 2280 is aimed at now holds over 5,000 items, so the next order is a
+top-up rather than a fill, and `trainer.supply --floor` is what says where.
 
-The top band (a user at 3150) is the expensive one: about 4% of a window lands
-there, so filling it costs more than the rest combined. It is also the band
-almost nobody occupies, which is the order in which to care about them.
+Two things that run taught, both worth more than the counts:
+
+- **Pick the window by measuring where bins land, not by reasoning about it.**
+  A window spread evenly across a target range is the wrong mental model —
+  `0.30–0.60` piled into the easy end (taking a beginner's band past 10,000)
+  while leaving the middle short, because a bin's *landing* distribution is
+  nothing like uniform. `supply --gaps`, or a count of items per bin already in
+  the band you want, picks the window in one query and saves a pass.
+- **Aimed mining cannot reach the hard end at all.** What makes an item hard is
+  a negative *shallow* gap, which only the labeler's shallow search discovers;
+  mining filters on the deep gap and cannot see it. The top band is bought in
+  labeled volume or not at all — see CALIBRATION.md.
+
+Yield is high enough that mining is never the constraint: 55,000 candidates in
+about eight minutes from five months streamed at once, then 99.8% of what gets
+labeled becomes an item, at 4–5 candidates a second on 18 workers. Large-gap
+windows sit at the slow end of that, because the played blunder more often
+falls outside the top two and a second deep search fires.
 
 Mining is cheap next to labeling, so mine a window generously and label what
 the shortfall asks for. Months are independent streams and can be mined at
