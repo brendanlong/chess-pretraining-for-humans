@@ -143,10 +143,12 @@ gets to overturn this once the offsets spread out.
   argmax, and its comment says so. `--windows` prints every window against two
   metrics that disagree about the answer; expect the metric you pick to matter
   more than the value you land on.
-- **The easy end is thin and the top is thinner.** `trainer.supply` names the
-  bands. The remedy is mining, and README's "keeping the bank full" carries the
-  measured yields — the thing to know is that mining steers the deep gap while
-  difficulty is the shallow one, so an order is priced per region, not per band.
+- **The top is the thin end now.** The easy end was filled on 2026-08-05 —
+  every band a user from 480 to 2280 is aimed at holds over 5,000 items, and a
+  beginner's holds 10,925. `trainer.supply` names what is left. The remedy is
+  mining, and README's "keeping the bank full" carries the measured yields —
+  the thing to know is that mining steers the deep gap while difficulty is the
+  shallow one, so an order is priced per region, not per band.
   The top band is a different problem from the easy end and not fixable by
   aiming: it is every item with a negative shallow gap, so it already collects
   100% of the hardest positions the curve can name, and `HARD_CEILING` is an

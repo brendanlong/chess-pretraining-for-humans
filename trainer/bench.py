@@ -78,7 +78,7 @@ TEMPLATE_VERSION = 3  # bumped when the seeding below changes what it writes
 # reaches. It is pinned rather than read from anywhere, since a baseline is
 # only a comparison if both runs measured the same amount of work — raise it
 # when the live bank grows enough to matter, and re-record.
-ITEM_COUNT = 34_307
+ITEM_COUNT = 112_185
 # Accounts the login scenario spends. Its per-name limit is 10 per 15 minutes,
 # so this is what caps how many logins one run may measure.
 LOGIN_ACCOUNTS = 192
