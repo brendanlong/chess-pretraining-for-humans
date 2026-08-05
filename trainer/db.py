@@ -194,6 +194,24 @@ def open_connection(
     return conn
 
 
+def require_shallow_gap(conn: sqlite3.Connection, path: Path) -> None:
+    """One precondition instead of a guard on every read.
+
+    Every row a labeler writes carries a shallow gap, so a NULL means this
+    database predates the measurement — a restore from far enough back. Saying
+    so once, plainly, is better than degrading quietly everywhere that reads it.
+
+    Checked before anything derives a difficulty, so `difficulty_rating` never
+    sees the NULL and reports it as a failure inside a SQL function instead.
+    """
+    if conn.execute("SELECT 1 FROM items WHERE shallow_gap IS NULL LIMIT 1").fetchone():
+        raise RuntimeError(
+            f"{path} has items with no shallow_gap, so their difficulty cannot be "
+            "derived. It predates the measurement; push a labeled bank over it "
+            "(deploy/README.md, 'Refreshing the item bank')."
+        )
+
+
 def connect(path: Path = DEFAULT_DB, check_same_thread: bool = True) -> sqlite3.Connection:
     """Open a database and bring its schema up to date."""
     conn = open_connection(path, check_same_thread)
@@ -291,16 +309,7 @@ def connect(path: Path = DEFAULT_DB, check_same_thread: bool = True) -> sqlite3.
     # a merge that has to land a new difficulty without waiting for a restart.
     conn.create_function("difficulty_rating", 1, difficulty_rating, deterministic=True)
     conn.create_function("shallow_gap_of", 1, shallow_gap_of, deterministic=True)
-    # One precondition instead of a guard on every read. Every row a labeler
-    # writes carries a shallow gap, so a NULL means this database predates the
-    # measurement — a restore from far enough back. Saying so once, plainly, is
-    # better than degrading quietly everywhere that reads it.
-    if conn.execute("SELECT 1 FROM items WHERE shallow_gap IS NULL LIMIT 1").fetchone():
-        raise RuntimeError(
-            f"{path} has items with no shallow_gap, so their difficulty cannot be "
-            "derived. It predates the measurement; push a labeled bank over it "
-            "(deploy/README.md, 'Refreshing the item bank')."
-        )
+    require_shallow_gap(conn, path)
     # Item difficulty is re-derived, because "a pure function of `shallow_gap`"
     # has to be true of the rows and not just of the code that writes new ones —
     # a labeler and a server can be different releases with different curves.
@@ -350,4 +359,34 @@ def connect(path: Path = DEFAULT_DB, check_same_thread: bool = True) -> sqlite3.
             """
         )
     conn.commit()  # migrations include a write; don't leave the file locked
+    return conn
+
+
+def connect_readonly(path: Path = DEFAULT_DB) -> sqlite3.Connection:
+    """Open a bank for reading only, refusing one the current curve disowns.
+
+    A report has no business migrating a bank or taking a write lock: it may be
+    pointed at a deployment, or run beside a labeler that holds one. But
+    `connect` is also where `items.rating` is re-derived, so reading without it
+    would quietly report the previous curve's scale — and a retune is exactly
+    when someone reads these numbers. Hence the check: the report's bands are
+    either current or an error, never stale.
+
+    The regrade itself stays in `connect`, because it is a property of the bank
+    and not of whoever happened to look at it.
+    """
+    conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
+    conn.create_function("difficulty_rating", 1, difficulty_rating, deterministic=True)
+    conn.create_function("shallow_gap_of", 1, shallow_gap_of, deterministic=True)
+    require_shallow_gap(conn, path)
+    if conn.execute(
+        "SELECT 1 FROM items WHERE rating != difficulty_rating(shallow_gap) LIMIT 1"
+    ).fetchone():
+        raise RuntimeError(
+            f"{path} holds ratings the current difficulty curve does not produce. "
+            "Open it once with anything that writes — the server, a labeler, "
+            "`push_items` — to regrade it, then re-run this."
+        )
     return conn

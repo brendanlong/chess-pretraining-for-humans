@@ -147,6 +147,12 @@ gets to overturn this once the offsets spread out.
   bands. The remedy is mining, and README's "keeping the bank full" carries the
   measured yields — the thing to know is that mining steers the deep gap while
   difficulty is the shallow one, so an order is priced per region, not per band.
+  The top band is a different problem from the easy end and not fixable by
+  aiming: it is every item with a negative shallow gap, so it already collects
+  100% of the hardest positions the curve can name, and `HARD_CEILING` is an
+  asymptote the tail approaches by halving. Deepening it is paid for in labeled
+  volume at a yield of a few percent, and no user is near it — so price it
+  against who it serves before ordering.
 - **The responses have fixed the scale's location and nothing else.** The
   anchor is one number, measured flat over seven rating bands of launch-week
   data — re-check that flatness at ten times the sample before trusting it,
@@ -179,7 +185,9 @@ special case: its user map was the identity, *because* the shift was measured
 from the users' own answers — their Elo ratings were already in equilibrium
 with what they could actually do, and serving them different items was the
 point of the fix, not a side effect to be compensated. `meta.anchored_at`
-marks the boundary for analysis; only the timestamp needed gating.
+marks the boundary for analysis; only the timestamp needed gating. Reopen the
+bank with a writer before reading `trainer.supply`: it opens read-only, so it
+refuses a bank still on the old scale rather than reporting bands off it.
 
 Re-running the fit is `uv run python -m trainer.fit_difficulty`. If it stops
 returning what `rating.GAP_SLOPE`'s comment claims, the estimator has drifted
