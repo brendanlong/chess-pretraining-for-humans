@@ -15,6 +15,6 @@
     "chessground": "9.2.1",
     "esbuild": "0.28.1",
     "eslint": "^10.8.0",
-    "globals": "^17.7.0"
+    "globals": "^17.8.0"
   }
 }
