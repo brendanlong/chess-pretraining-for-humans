@@ -10,7 +10,7 @@ import sqlite3
 import pytest
 
 from trainer import account, auth
-from trainer.db import connect
+from trainer.db import connect, connect_readonly
 from trainer.rating import difficulty_rating
 
 from .conftest import FEN_RANKS, FEN_TMPL, add_item
@@ -122,6 +122,10 @@ def test_a_bank_with_no_shallow_gap_refuses_to_open_and_says_why(tmp_path):
 
     with pytest.raises(RuntimeError, match="predates the measurement"):
         connect(path)
+    # The same answer to a reader that cannot repair it, rather than the NULL
+    # surfacing as a failure inside `difficulty_rating`.
+    with pytest.raises(RuntimeError, match="predates the measurement"):
+        connect_readonly(path)
 
 
 def test_migration_is_idempotent_and_takes_no_write_lock_when_current(tmp_path):
