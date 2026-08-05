@@ -588,6 +588,7 @@ def test_our_own_pages_open_in_the_app(client, name):
 
 
 AUTHOR = "https://www.brendanlong.com/pages/about-me.html"
+WRITEUP = "https://www.brendanlong.com/a-chess-training-app-for-imitation-learning.html"
 SOURCE = "https://github.com/brendanlong/chess-pretraining-for-humans"
 
 
@@ -602,17 +603,18 @@ def is_the_authors(href: str) -> bool:
 
 @pytest.mark.parametrize("name", WEB_PAGES)
 def test_every_page_credits_the_author_at_one_address(client, name):
-    """Every page says who made it and where the source is, and the author
-    link is the same address everywhere: it is hand-copied into each footer
-    and into the drawer, so the drift is a page pointing somewhere else on
-    the same site — a home page or a stale path — which reads as working."""
+    """Every page says who made it, where the source is, and where the
+    write-up explaining the app is. Each of those is one address, hand-copied
+    into every footer, so the drift is a page pointing somewhere else on the
+    same site — a home page or a stale path — which reads as working."""
     path = "/" if name == "index.html" else f"/{name}"
     hrefs = [a["href"] for a in Head.of(client.get(path).text).anchors]
 
     assert AUTHOR in hrefs, f"{name} doesn't credit the author"
+    assert WRITEUP in hrefs, f"{name} doesn't link the write-up"
     assert SOURCE in hrefs, f"{name} hides the source"
-    strays = [h for h in hrefs if is_the_authors(h) and h != AUTHOR]
-    assert not strays, f"{name} links the author at {strays}"
+    strays = [h for h in hrefs if is_the_authors(h) and h not in (AUTHOR, WRITEUP)]
+    assert not strays, f"{name} links the author's site at {strays}"
 
 
 def test_every_referenced_icon_is_served_at_its_declared_size(client):
