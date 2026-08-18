@@ -8,21 +8,21 @@ dependencies = [
     "argon2-cffi>=25.1.0",
     "brotli>=1.2.0",
     "chess>=1.11.2",
-    "fastapi>=0.140.13",
-    "uvicorn[standard]>=0.51.0",
+    "fastapi>=0.141.1",
+    "uvicorn[standard]>=0.52.1",
 ]
 
 [dependency-groups]
 assets = [
-    "playwright>=1.61.0",
+    "playwright>=1.62.0",
 ]
 dev = [
     # `trainer.fit_difficulty` needs it, and nothing the server does. The image
     # builds with `--no-dev`, so it stays out of the deployment; CI installs the
     # default groups, so the tests that check the fit still run there.
-    "numpy>=2.3.5",
+    "numpy>=2.5.2",
     "pytest>=9.1.1",
-    "ruff>=0.16.0",
+    "ruff>=0.16.2",
     "pyright>=1.1.407",
     "httpx>=0.28.1",
 ]
