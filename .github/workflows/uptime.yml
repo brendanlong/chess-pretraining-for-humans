@@ -20,7 +20,7 @@ permissions: {}
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - name: Probe the live site and report
         env:
@@ -35,8 +35,13 @@ jobs:
         run: |
           set -u
           : "${PING_URL:?the HEALTHCHECK_PING_URL repository secret is unset}"
+          # A pasted URL often carries one. It costs nothing on the success
+          # ping and turns every failure ping into a 404 — the site down and
+          # the check never told, which is the outage this exists to catch.
+          PING_URL="${PING_URL%/}"
 
           body="$(mktemp)"
+          report="$(mktemp)"
           # A ping that doesn't land is the one failure this workflow can have
           # that healthchecks.io cannot describe, so it is the one that turns
           # the run red. (The check still alerts, on the missed ping.)
@@ -55,14 +60,20 @@ jobs:
             [ "$code" = 200 ] && grep -q '"item_id"' "$body"
           }
 
-          # Retried in-run because a single dropped connection is not an
-          # outage, and /fail alerts immediately — the retries are what make
-          # that immediacy trustworthy rather than jumpy.
+          # /fail alerts immediately, so the retries are what make that
+          # immediacy trustworthy — and they have to outlast a deploy, not just
+          # a dropped connection. Main deploys on every green build and there
+          # is one machine, so a restart (kill_timeout, boot, health-check
+          # grace) is a routine minute of refusals that must not page. Three
+          # minutes of trying is comfortably past it.
           ok=""
-          for attempt in 1 2 3; do
+          for attempt in 1 2 3 4 5; do
             if probe; then ok=1; break; fi
             echo "attempt $attempt: HTTP $code"
-            [ "$attempt" = 3 ] || sleep 20
+            # The first attempt that got a response says more about the outage
+            # than the last, which is often a bare connection error.
+            [ -s "$report" ] || cp "$body" "$report"
+            [ "$attempt" = 5 ] || sleep 45
           done
 
           if [ -n "$ok" ]; then
@@ -73,8 +84,8 @@ jobs:
 
           # The response body goes with the /fail ping so the healthchecks.io
           # notification says what happened, not just that something did.
-          head -c 2000 "$body" > "$body.short"
-          ping --data-binary @"$body.short" "$PING_URL/fail"
+          head -c 2000 "$report" > "$report.short"
+          ping --data-binary @"$report.short" "$PING_URL/fail"
           # Annotated, not failed: healthchecks.io is the alerting channel we
           # chose, and a red run here would page a second time — and through a
           # channel that is supposed to mean "the repository is broken".

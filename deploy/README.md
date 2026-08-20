@@ -114,13 +114,19 @@ or arrives as a failure.
 Set the check's **period to 10 minutes and its grace to at least 25** — the
 schedule is GitHub's to honour and it runs late under load, so a tighter grace
 alerts about the runner rather than the site. Put the check's ping URL in the
-`HEALTHCHECK_PING_URL` repository secret; without it the workflow fails loudly
-instead of pinging, and the check alerts on the silence.
+`HEALTHCHECK_PING_URL` repository secret.
 
-There is no equivalent watching the parts a probe can't see. Litestream
-replicating into nothing, a `FLY_API_TOKEN` about to expire, and a bank running
-low all look like a healthy site — the first two are checked by reading the
-boot log and `fly tokens list` (above), the third by `trainer.supply`.
+A down site annotates its run rather than failing it, so the Actions tab stays
+green through an outage: healthchecks.io is the alerting channel, and a red run
+should keep meaning the repository is broken. Read the annotation, not the tick.
+
+When the alert is silence rather than a failure, suspect the workflow before
+the site — a missing secret, or GitHub disabling the schedule, which it does to
+a public repository after 60 days without activity.
+
+Nothing watches what a probe can't see: Litestream replicating into nothing, a
+`FLY_API_TOKEN` about to expire, and a bank running low all look like a healthy
+site. The checks for those are above, and `trainer.supply` for the last.
 
 ## Refreshing the item bank
 
