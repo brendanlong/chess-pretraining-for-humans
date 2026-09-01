@@ -1,7 +1,7 @@
 # The server only reads the item bank and writes responses; Stockfish and zstd
 # belong to the offline pipeline and are deliberately not installed here.
 
-FROM litestream/litestream:0.5.15 AS litestream
+FROM litestream/litestream:0.5.17 AS litestream
 
 # Bundles and minifies web/ into web-dist/. Node lives only in this stage: the
 # runtime serves the output and has no idea it was built.
