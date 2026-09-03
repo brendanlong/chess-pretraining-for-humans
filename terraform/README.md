@@ -14,11 +14,6 @@ snapshot older than the delete. `snapshot_retention_days` (which must match
 `deploy/litestream.yml`) plus `noncurrent_version_days` is that real lifetime,
 and a validation fails the plan if the two exceed what the policy promises.
 
-Its listings cost more than its contents, but that is tuned in
-`deploy/litestream.yml`, not here. What is here is the alarm: setting
-`budget_notification_email` creates a monthly S3 budget against
-`s3_budget_usd`, and unset there is no budget at all.
-
 Fly itself is not in here: its Terraform provider is archived, and `fly.toml`
 plus `flyctl` is the supported path. See [../deploy/README.md](../deploy/README.md).
 

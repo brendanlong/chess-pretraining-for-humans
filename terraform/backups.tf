@@ -50,11 +50,9 @@ resource "aws_s3_bucket_lifecycle_configuration" "backups" {
       noncurrent_days = var.noncurrent_version_days
     }
     # Every one of those retirements leaves a delete marker behind. A
-    # ListObjectsV2 result never contains one, but S3 still walks past them
-    # while filling a page, so a prefix thick with tombstones is enumerated in
-    # more, shorter pages. Litestream enumerates whole level prefixes on a
-    # timer (deploy/litestream.yml explains which timers, and why they are the
-    # bill), so page count here is a recurring cost, not a one-off.
+    # ListObjectsV2 result never contains one, but S3 walks past them while
+    # filling a page, so a prefix thick with tombstones takes more requests to
+    # enumerate — and Litestream enumerates constantly.
     expiration {
       expired_object_delete_marker = true
     }
@@ -103,38 +101,4 @@ resource "aws_iam_user_policy" "litestream" {
 
 resource "aws_iam_access_key" "litestream" {
   user = aws_iam_user.litestream.name
-}
-
-# Storage in this bucket is a couple of dollars a month; the request traffic
-# against it is not, and no storage metric shows that. This watches the number
-# that moves.
-#
-# Both thresholds, because neither is sufficient alone. S3's free egress
-# allowance suppresses cost early in a month, so an actual-spend trip arrives
-# late — and AWS needs roughly five weeks of history before it will forecast at
-# all, so the forecast half is inert until then.
-resource "aws_budgets_budget" "s3" {
-  count = var.budget_notification_email == "" ? 0 : 1
-
-  name         = "${var.backup_bucket}-s3"
-  budget_type  = "COST"
-  limit_amount = var.s3_budget_usd
-  limit_unit   = "USD"
-  time_unit    = "MONTHLY"
-
-  cost_filter {
-    name   = "Service"
-    values = ["Amazon Simple Storage Service"]
-  }
-
-  dynamic "notification" {
-    for_each = ["FORECASTED", "ACTUAL"]
-    content {
-      notification_type          = notification.value
-      comparison_operator        = "GREATER_THAN"
-      threshold                  = 100
-      threshold_type             = "PERCENTAGE"
-      subscriber_email_addresses = [var.budget_notification_email]
-    }
-  }
 }

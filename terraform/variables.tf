@@ -87,25 +87,3 @@ variable "promised_deletion_days" {
   type        = number
   default     = 30
 }
-
-# Cost. Nothing here changes what the bucket does; it changes whether a change
-# in what it costs is noticed before the invoice.
-
-variable "budget_notification_email" {
-  description = <<-EOT
-    Where the S3 budget mails. Empty means no budget at all — and this
-    bucket's cost is dominated by request traffic, which nothing else watches.
-  EOT
-  type        = string
-  default     = ""
-}
-
-variable "s3_budget_usd" {
-  description = <<-EOT
-    Monthly S3 spend that trips the budget. This bucket costs a few dollars in
-    storage, so the point of the number is to sit well under a runaway and
-    well over the steady state — not to be an accurate forecast.
-  EOT
-  type        = number
-  default     = 10
-}
