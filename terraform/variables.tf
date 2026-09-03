@@ -93,8 +93,8 @@ variable "promised_deletion_days" {
 
 variable "budget_notification_email" {
   description = <<-EOT
-    Where the S3 budget mails. Empty means no budget at all, which is the
-    state that let a replication timer bill $57 in a month unremarked.
+    Where the S3 budget mails. Empty means no budget at all — and this
+    bucket's cost is dominated by request traffic, which nothing else watches.
   EOT
   type        = string
   default     = ""

@@ -27,25 +27,28 @@ snapshot:
   retention: 504h
 
 # Litestream's S3 client applies its seek client-side: every listing walks a
-# whole level prefix and the whole XML response leaves the region, which on Fly
-# is billed egress. Two timers do nearly all of that walking, and both default
-# far finer than replication here needs.
+# whole level prefix, and the whole XML body leaves the region, which on Fly is
+# billed egress. Cost is objects-per-prefix times listings-per-day, and both
+# defaults below are set for a busier database than this one.
 #
-# The expensive one is the L0 sweep. Each pass first enumerates all of L1 to
-# learn how far compaction got, so at its 15s default it reads a 21-day L1
-# prefix four times a minute forever, whether or not anything was written —
-# ~12 GB/day and $44/month before this was pinned. Sweeping no more often than
+# The L0 sweep is the expensive listing. Each pass first enumerates all of L1
+# to learn how far compaction got, so at the stock 15s it reads a 21-day L1
+# prefix four times a minute whether or not anything was written — ~12 GB/day
+# of billed egress against ~$2/month of storage. Sweeping no more often than
 # the window it enforces costs only that a deletable L0 file waits a few extra
-# minutes.
+# minutes. 5m is also the stock retention; it is pinned so the two stay a pair
+# if that default moves.
 l0-retention: 5m
 l0-retention-check-interval: 5m
 
-# The other enumerator is compaction itself: a level reads all of the level
-# below on every run. Stretching the intervals (defaults 30s / 5m / 1h) cuts
-# both how often that happens and how many objects 21 days of L1 can hold.
-# Durability is unaffected — that comes from the raw L0 files the replica
-# writes at its 1s sync interval, not from compaction — so what this trades is
-# a longer L0 tail to replay at restore. A `levels` block replaces the defaults
+# Compaction is the other enumerator: each level reads all of the level below
+# on every run, and a successful L1 compaction sweeps L0 as well — so the L1
+# interval sets a second listing rate on top of the one above. Stretching the
+# levels (stock 30s / 5m / 1h) cuts how often that happens and caps how many
+# objects 21 days of L1 can hold, which is what keeps this flat as traffic
+# grows. Durability is untouched: it comes from the raw L0 files the replica
+# writes at the 1s sync interval, not from compaction. The trade is a longer L0
+# tail to replay at restore. A `levels` block replaces the stock levels
 # outright rather than merging, so all three are listed; L0 is implicit.
 levels:
   - interval: 5m # L1

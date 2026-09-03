@@ -105,15 +105,14 @@ resource "aws_iam_access_key" "litestream" {
   user = aws_iam_user.litestream.name
 }
 
-# Storage in this bucket is a couple of dollars a month. What took the account
-# from that to $70 in August 2026 was traffic — ListObjectsV2 responses leaving
-# the region — which no storage metric would have shown. This watches the
-# number that actually moves.
+# Storage in this bucket is a couple of dollars a month; the request traffic
+# against it is not, and no storage metric shows that. This watches the number
+# that moves.
 #
-# The forecast threshold is the useful one: S3's 100 GB/month free egress
-# allowance means a runaway listing loop bills nothing until partway through
-# the month and then bills five times as much per day on the same usage, so an
-# actual-spend trip arrives late and a bill arrives later still.
+# Both thresholds, because neither is sufficient alone. S3's free egress
+# allowance suppresses cost early in a month, so an actual-spend trip arrives
+# late — and AWS needs roughly five weeks of history before it will forecast at
+# all, so the forecast half is inert until then.
 resource "aws_budgets_budget" "s3" {
   count = var.budget_notification_email == "" ? 0 : 1
 
