@@ -216,6 +216,10 @@ published number is the thing to change first, if it should change.
 - **Litestream adds `_litestream_seq` and `_litestream_lock` tables** to the
   database. They're expected; nothing in the app enumerates tables, but a
   schema diff against a local copy will show them.
+- **The replica costs money by being listed, not by being large.** Litestream
+  enumerates whole level prefixes on a timer, and from Fly each response is
+  billed egress; `litestream.yml` pins the timers that bound it. The tell is
+  `Requests-Tier1` and `DataTransfer-Out-Bytes` rising while GETs stay flat.
 - **Replication is asynchronous** (1s). Losing the host loses about a second of
   answers. A clean stop syncs, which is what `kill_timeout = 30` protects.
 - **The page counter's settings live in its dashboard, not here.** Leave

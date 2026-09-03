@@ -25,3 +25,20 @@ dbs:
 snapshot:
   interval: 24h
   retention: 504h
+
+# Every listing walks a whole level prefix (the S3 client seeks client-side)
+# and from Fly the response body is billed egress. The L0 sweep enumerates all
+# of L1 on each pass, so at the stock 15s it costs ~12 GB/day; matching the
+# window it enforces only makes a deletable L0 file wait a few more minutes.
+l0-retention: 5m
+l0-retention-check-interval: 5m
+
+# Compaction enumerates too, and a successful L1 compaction sweeps L0 as well,
+# so the L1 interval is a second listing rate — and a cap on how many objects
+# 21 days of L1 can hold. Durability is unaffected: it comes from the raw L0
+# files written at the 1s sync interval. A `levels` block replaces the stock
+# 30s/5m/1h outright, so all three are listed.
+levels:
+  - interval: 5m # L1
+  - interval: 1h # L2
+  - interval: 6h # L3

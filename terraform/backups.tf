@@ -49,9 +49,10 @@ resource "aws_s3_bucket_lifecycle_configuration" "backups" {
     noncurrent_version_expiration {
       noncurrent_days = var.noncurrent_version_days
     }
-    # Every one of those retirements leaves a delete marker behind, and
-    # Litestream lists this prefix on every sync. Without this the listing
-    # slowly fills with tombstones for objects that no longer exist.
+    # Every one of those retirements leaves a delete marker behind. A
+    # ListObjectsV2 result never contains one, but S3 walks past them while
+    # filling a page, so a prefix thick with tombstones takes more requests to
+    # enumerate — and Litestream enumerates constantly.
     expiration {
       expired_object_delete_marker = true
     }
