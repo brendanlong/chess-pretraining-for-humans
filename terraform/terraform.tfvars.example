@@ -6,3 +6,7 @@ backup_bucket = "chess-pretraining-backups"
 
 # Only if `fly certs check <hostname>` asks for a DNS challenge.
 # acme_challenge_target = "<value>.flydns.net"
+
+# Uncomment to get mailed when S3 spend crosses `s3_budget_usd`. Storage here
+# is a couple of dollars; traffic is what has gone wrong before.
+# budget_notification_email = "you@example.com"

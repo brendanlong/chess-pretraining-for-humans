@@ -49,9 +49,12 @@ resource "aws_s3_bucket_lifecycle_configuration" "backups" {
     noncurrent_version_expiration {
       noncurrent_days = var.noncurrent_version_days
     }
-    # Every one of those retirements leaves a delete marker behind, and
-    # Litestream lists this prefix on every sync. Without this the listing
-    # slowly fills with tombstones for objects that no longer exist.
+    # Every one of those retirements leaves a delete marker behind. A
+    # ListObjectsV2 result never contains one, but S3 still walks past them
+    # while filling a page, so a prefix thick with tombstones is enumerated in
+    # more, shorter pages. Litestream enumerates whole level prefixes on a
+    # timer (deploy/litestream.yml explains which timers, and why they are the
+    # bill), so page count here is a recurring cost, not a one-off.
     expiration {
       expired_object_delete_marker = true
     }
@@ -100,4 +103,39 @@ resource "aws_iam_user_policy" "litestream" {
 
 resource "aws_iam_access_key" "litestream" {
   user = aws_iam_user.litestream.name
+}
+
+# Storage in this bucket is a couple of dollars a month. What took the account
+# from that to $70 in August 2026 was traffic — ListObjectsV2 responses leaving
+# the region — which no storage metric would have shown. This watches the
+# number that actually moves.
+#
+# The forecast threshold is the useful one: S3's 100 GB/month free egress
+# allowance means a runaway listing loop bills nothing until partway through
+# the month and then bills five times as much per day on the same usage, so an
+# actual-spend trip arrives late and a bill arrives later still.
+resource "aws_budgets_budget" "s3" {
+  count = var.budget_notification_email == "" ? 0 : 1
+
+  name         = "${var.backup_bucket}-s3"
+  budget_type  = "COST"
+  limit_amount = var.s3_budget_usd
+  limit_unit   = "USD"
+  time_unit    = "MONTHLY"
+
+  cost_filter {
+    name   = "Service"
+    values = ["Amazon Simple Storage Service"]
+  }
+
+  dynamic "notification" {
+    for_each = ["FORECASTED", "ACTUAL"]
+    content {
+      notification_type          = notification.value
+      comparison_operator        = "GREATER_THAN"
+      threshold                  = 100
+      threshold_type             = "PERCENTAGE"
+      subscriber_email_addresses = [var.budget_notification_email]
+    }
+  }
 }

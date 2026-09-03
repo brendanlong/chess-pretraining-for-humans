@@ -14,6 +14,16 @@ snapshot older than the delete. `snapshot_retention_days` (which must match
 `deploy/litestream.yml`) plus `noncurrent_version_days` is that real lifetime,
 and a validation fails the plan if the two exceed what the policy promises.
 
+The bucket's contents cost a couple of dollars a month; its *listings* have
+cost twenty times that, because Litestream enumerates whole level prefixes on a
+timer and from Fly each response body is billed egress (`deploy/litestream.yml`
+carries the detail). Setting `budget_notification_email` creates a monthly S3
+budget that mails when spend crosses `s3_budget_usd`, on the forecast as well
+as the actual — there is no sensible default address, so with it unset there is
+no budget. The forecast is the half that matters: the free egress allowance
+resets on the 1st, so a runaway bills nothing early in a month and five times
+as much per day late in it, on identical usage.
+
 Fly itself is not in here: its Terraform provider is archived, and `fly.toml`
 plus `flyctl` is the supported path. See [../deploy/README.md](../deploy/README.md).
 

@@ -216,6 +216,15 @@ published number is the thing to change first, if it should change.
 - **Litestream adds `_litestream_seq` and `_litestream_lock` tables** to the
   database. They're expected; nothing in the app enumerates tables, but a
   schema diff against a local copy will show them.
+- **The replica costs money by being listed, not by being large.** Litestream
+  enumerates a whole level prefix at a time — its S3 client applies the seek
+  client-side — and from Fly every response body is billed as egress. At the
+  stock 15s L0-retention check that was ~12 GB/day, $44 in a month against $2
+  of storage. `litestream.yml` pins the timers that drive it and says why;
+  loosening them, or letting the L1 prefix grow, puts it straight back. The
+  tell in Cost Explorer is `Requests-Tier1` and `DataTransfer-Out-Bytes` rising
+  together while GETs stay flat — and S3's 100 GB/month free egress hides the
+  first few weeks, so a fresh month always looks fine.
 - **Replication is asynchronous** (1s). Losing the host loses about a second of
   answers. A clean stop syncs, which is what `kill_timeout = 30` protects.
 - **The page counter's settings live in its dashboard, not here.** Leave
