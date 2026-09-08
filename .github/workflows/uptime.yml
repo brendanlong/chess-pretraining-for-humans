@@ -1,0 +1,92 @@
+name: Uptime
+
+# healthchecks.io is a dead man's switch — it receives pings and complains when
+# one doesn't arrive, and probes nothing itself. This is the thing that probes.
+#
+# It runs from a runner rather than from the machine on purpose: the request
+# goes through DNS, the certificate and Fly's proxy, which is the path a user
+# takes and the part the app can't see from the inside. The cost is that GitHub
+# owes this schedule nothing — a run can be minutes late, or skipped when the
+# hosted fleet is busy — so the check's grace period in healthchecks.io has to
+# be well over the interval. deploy/README.md carries the number.
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+# Nothing here reads the repository.
+permissions: {}
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Probe the live site and report
+        env:
+          # A ping URL is a capability: whoever holds it can report this site
+          # healthy while it is down. Public repo, so it lives in a secret.
+          PING_URL: ${{ secrets.HEALTHCHECK_PING_URL }}
+          # /api/next rather than /healthz, which is deliberately free of the
+          # database: this asks the question a visitor asks, so it also fails
+          # on a bank the server won't serve (503) — an outage that leaves
+          # /healthz answering happily.
+          TARGET: https://chess-pretraining.brendanlong.com/api/next
+        run: |
+          set -u
+          : "${PING_URL:?the HEALTHCHECK_PING_URL repository secret is unset}"
+          # A pasted URL often carries one. It costs nothing on the success
+          # ping and turns every failure ping into a 404 — the site down and
+          # the check never told, which is the outage this exists to catch.
+          PING_URL="${PING_URL%/}"
+
+          body="$(mktemp)"
+          report="$(mktemp)"
+          # A ping that doesn't land is the one failure this workflow can have
+          # that healthchecks.io cannot describe, so it is the one that turns
+          # the run red. (The check still alerts, on the missed ping.)
+          ping() {
+            curl -fsS -m 10 --retry 3 "$@" -o /dev/null || {
+              echo "::error::could not reach healthchecks.io"
+              exit 1
+            }
+          }
+
+          probe() {
+            code="$(curl -sS -m 15 -o "$body" -w '%{http_code}' "$TARGET")" || code=000
+            # An item id is what a trial is; a Fly error page returning 200
+            # would otherwise pass. Nothing here inspects which move is better,
+            # and the payload is symmetric anyway.
+            [ "$code" = 200 ] && grep -q '"item_id"' "$body"
+          }
+
+          # /fail alerts immediately, so the retries are what make that
+          # immediacy trustworthy — and they have to outlast a deploy, not just
+          # a dropped connection. Main deploys on every green build and there
+          # is one machine, so a restart (kill_timeout, boot, health-check
+          # grace) is a routine minute of refusals that must not page. Three
+          # minutes of trying is comfortably past it.
+          ok=""
+          for attempt in 1 2 3 4 5; do
+            if probe; then ok=1; break; fi
+            echo "attempt $attempt: HTTP $code"
+            # The first attempt that got a response says more about the outage
+            # than the last, which is often a bare connection error.
+            [ -s "$report" ] || cp "$body" "$report"
+            [ "$attempt" = 5 ] || sleep 45
+          done
+
+          if [ -n "$ok" ]; then
+            ping "$PING_URL"
+            echo "site is up; pinged"
+            exit 0
+          fi
+
+          # The response body goes with the /fail ping so the healthchecks.io
+          # notification says what happened, not just that something did.
+          head -c 2000 "$report" > "$report.short"
+          ping --data-binary @"$report.short" "$PING_URL/fail"
+          # Annotated, not failed: healthchecks.io is the alerting channel we
+          # chose, and a red run here would page a second time — and through a
+          # channel that is supposed to mean "the repository is broken".
+          echo "::error::$TARGET is down (last HTTP $code) — reported to healthchecks.io"
