@@ -1036,6 +1036,16 @@ def test_the_beacon_posts_where_the_csp_lets_it(client):
     assert endpoint.startswith("https://")
 
 
+def test_the_uptime_probe_watches_the_name_that_is_served():
+    """The scheduled probe in `.github/workflows/uptime.yml` spells the public
+    hostname out, and a monitor pointed at a name nobody serves reports the
+    rename as an outage, forever."""
+    workflow = Path(__file__).parent.parent / ".github/workflows/uptime.yml"
+    target = re.search(r"^\s*TARGET: (\S+)", workflow.read_text(), re.M)
+    assert target, "uptime.yml no longer sets TARGET"
+    assert target.group(1).startswith(PROD + "/")
+
+
 def test_the_csp_allowlists_nothing_beyond_the_page_counter(client):
     """Enumerated, not grepped: a substring assertion still passes with
     `'unsafe-inline'` bolted on, which is how an allowlist rots."""

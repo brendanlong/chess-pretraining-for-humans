@@ -13,6 +13,7 @@ the pipeline; `responses` is not, which is why there's a backup story at all.
 | `push-items.sh` | ship a locally labeled bank to the deployment |
 | `../terraform/` | Route 53 record, backup bucket, Litestream's IAM user |
 | `../.github/workflows/deploy.yml` | `flyctl deploy` after CI goes green on main |
+| `../.github/workflows/uptime.yml` | probes the live site on a schedule, pings healthchecks.io |
 
 ## Behind a reverse proxy (Fly's, or your own)
 
@@ -102,6 +103,30 @@ prints the expiry.
 
 **5. Fill the bank.** A fresh deployment has no items and `/api/next` answers
 503 until it does — see below.
+
+## Knowing when it's down
+
+Fly's `/healthz` check decides routing, not whether anyone finds out. That's
+`uptime.yml`: every 10 minutes a runner fetches a trial from the public
+hostname and pings a healthchecks.io check, which alerts when the ping stops
+or arrives as a failure.
+
+Set the check's **period to 10 minutes and its grace to at least 25** — the
+schedule is GitHub's to honour and it runs late under load, so a tighter grace
+alerts about the runner rather than the site. Put the check's ping URL in the
+`HEALTHCHECK_PING_URL` repository secret.
+
+A down site annotates its run rather than failing it, so the Actions tab stays
+green through an outage: healthchecks.io is the alerting channel, and a red run
+should keep meaning the repository is broken. Read the annotation, not the tick.
+
+When the alert is silence rather than a failure, suspect the workflow before
+the site — a missing secret, or GitHub disabling the schedule, which it does to
+a public repository after 60 days without activity.
+
+Nothing watches what a probe can't see: Litestream replicating into nothing, a
+`FLY_API_TOKEN` about to expire, and a bank running low all look like a healthy
+site. The checks for those are above, and `trainer.supply` for the last.
 
 ## Refreshing the item bank
 
