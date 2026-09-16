@@ -122,9 +122,11 @@ is counted — a minute in which the probe gets a connection failure or the
 proxy's 502. A monitor that opens an incident on one failed check opens one on
 every deploy.
 
-Add certificate and domain expiry monitors there too. Fly renews the
-certificate itself and Route 53 holds the record, so both are somebody else's
-job right up until they aren't, and nothing else here would notice.
+Turn on the certificate and domain expiry checks in that monitor's advanced
+settings — they ride along on it rather than being monitors of their own. Fly
+renews the certificate itself and Route 53 holds the record, so both are
+somebody else's job right up until they aren't, and nothing else here would
+notice.
 
 Nothing watches what a probe can't see: Litestream replicating into nothing, a
 `FLY_API_TOKEN` about to expire, and a bank running low all look like a healthy
