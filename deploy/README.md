@@ -105,21 +105,24 @@ prints the expiry.
 
 ## Knowing when it's down
 
-Fly's `/healthz` check decides routing, not whether anyone finds out. An
-external uptime monitor does that — a keyword check against `/api/next` on the
-public hostname, requiring `item_id` in the body.
+Fly's `/healthz` check decides routing, not whether anyone finds out. A Better
+Stack monitor does that — a keyword check against `/api/next` on the public
+hostname, requiring `item_id` in the body. Which alerts go where is settled in
+that dashboard; what follows is the part the app dictates.
 
 `/api/next` rather than `/healthz`, because `/healthz` is deliberately free of
 the database: a bank the server refuses to serve answers 503 there while
 `/healthz` goes on saying 200. And a keyword rather than the status code,
 because a proxy's error page arrives as one.
 
-**Set the monitor's confirmation to outlast a restart.** There is one machine
-and main deploys on every green build, so a deploy is a routine minute of
-refusals — `kill_timeout`, boot, then the health check's own grace. A monitor
-that alerts on a single failed check alerts on every deploy.
+**Set the monitor's confirmation period to outlast a restart.** There is one
+machine and main deploys on every green build, and `kill_timeout` plus the
+health check's own grace put a floor of a minute under every deploy before boot
+is counted — a minute in which the probe gets a connection failure or the
+proxy's 502. A monitor that opens an incident on one failed check opens one on
+every deploy.
 
-Add certificate and domain expiry monitors on the same account. Fly renews the
+Add certificate and domain expiry monitors there too. Fly renews the
 certificate itself and Route 53 holds the record, so both are somebody else's
 job right up until they aren't, and nothing else here would notice.
 
