@@ -245,13 +245,13 @@ labels in the arrow's colour and repeated as a badge on the control it
 pairs with: the choice buttons while choosing, the line cards after the
 reveal. A move keeps its number and its place through the reveal, so the
 discs always agree with what pressing 1 and 2 does and nothing the user
-was reading moves. The number is
-the channel that survives two arrows crossing or landing on the same
-square, where no pair of colours would have separated them — except when
-they arrive along the same ray, a battery recapturing on one square, which
-puts both discs at the same point and is not solved here. The drawer can
-turn the discs off for an unmarked board; the badges stay, so the numbers
-are still there to name a move by and to say what the keys do.
+was reading moves under them. The number is the channel that survives two
+arrows crossing or landing on the same square, where no pair of colours
+would have separated them — except when they arrive along the same ray, a
+battery recapturing on one square, which puts both discs at the same point
+and is not solved here. The drawer can turn the discs off for an unmarked
+board; the badges stay, so the numbers are still there to name a move by
+and to say what the keys do.
 
 Colour is still what the eye reads first, so it carries the full weight.
 The candidate pair is blue against orange, which sits on the

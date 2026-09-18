@@ -475,13 +475,12 @@ async function choose(i) {
   // reveal that reordered them would move a move the user was looking at, and
   // then its number and its place on screen would be telling them the answer
   // instead of the colour and the tag — which are the only things that change.
-  const pickedIdx = trial.moves.findIndex((m) => m.uci === choice.uci);
-  lines = trial.moves.map((m, i) => {
+  lines = trial.moves.map((m, idx) => {
     const isBest = m.uci === result.best.uci;
     const mv = isBest ? result.best : result.distractor;
     return {
       mv,
-      tag: i === pickedIdx ? "your pick" : isBest ? "best move" : "alternative",
+      tag: idx === i ? "your pick" : isBest ? "best move" : "alternative",
       steps: mv.line,
       brush: isBest ? "best" : "worse",
       cls: isBest ? "good" : "bad",
@@ -520,7 +519,7 @@ async function choose(i) {
   el("ask").hidden = true;
   el("feedback").hidden = false;
   phase = "revealed";
-  activeLine = pickedIdx; // the reveal opens on what they played
+  activeLine = i; // the reveal opens on what they played
   stepIdx = -1;
   renderStep();
   autoplayFrom(0);
