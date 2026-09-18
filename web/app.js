@@ -130,9 +130,9 @@ function stopAutoplay() {
 function renderStep() {
   const line = lines[activeLine];
   if (stepIdx < 0) {
-    // Back at the decision point: show both candidate arrows again. They are
-    // numbered by line, not by the button they were picked from, so the discs
-    // agree with the line cards and with what keys 1 and 2 now do.
+    // Back at the decision point: show both candidate arrows again, carrying
+    // the numbers they had before the answer — same discs, same line cards,
+    // same keys, only the colours have changed.
     setBoard(
       trial.fen,
       trial.side_to_move,
@@ -470,17 +470,22 @@ async function choose(i) {
   // something to be served: the address bar becomes the link to it.
   nameTrialInUrl();
 
-  // Replay lines: your pick first (it auto-plays), the other switchable.
-  const mkLine = (mv, isBest, tag) => ({
-    mv,
-    tag,
-    steps: mv.line,
-    brush: isBest ? "best" : "worse",
-    cls: isBest ? "good" : "bad",
+  // Replay lines keep the order the buttons were in: line 1 is the move button
+  // 1 offered, whichever one was picked and whichever one turned out better. A
+  // reveal that reordered them would move a move the user was looking at, and
+  // then its number and its place on screen would be telling them the answer
+  // instead of the colour and the tag — which are the only things that change.
+  lines = trial.moves.map((m, idx) => {
+    const isBest = m.uci === result.best.uci;
+    const mv = isBest ? result.best : result.distractor;
+    return {
+      mv,
+      tag: idx === i ? "your pick" : isBest ? "best move" : "alternative",
+      steps: mv.line,
+      brush: isBest ? "best" : "worse",
+      cls: isBest ? "good" : "bad",
+    };
   });
-  lines = result.correct
-    ? [mkLine(result.best, true, "your pick"), mkLine(result.distractor, false, "alternative")]
-    : [mkLine(result.distractor, false, "your pick"), mkLine(result.best, true, "best move")];
   lines.forEach((l, idx) => {
     const card = el(`tab-${idx}`);
     card.classList.remove("good", "bad", "active");
@@ -514,7 +519,7 @@ async function choose(i) {
   el("ask").hidden = true;
   el("feedback").hidden = false;
   phase = "revealed";
-  activeLine = 0;
+  activeLine = i; // the reveal opens on what they played
   stepIdx = -1;
   renderStep();
   autoplayFrom(0);
