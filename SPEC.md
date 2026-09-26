@@ -21,7 +21,6 @@ automatically.
 - Pace is meant to be fast — first-instinct answers, with attention spent
   on the reveals that surprise you, not on pre-answer calculation.
 
-
 ## Invariants
 
 Each is stated as a rule with the short reason it holds. The longer
@@ -58,11 +57,11 @@ reasoning lives where DESIGN.md and CALIBRATION.md point.
   whose surface recommends the losing move — a negative shallow gap — must
   rate as the hardest kind there is.
 - **An item's difficulty is fixed when it is labeled** and never revised by
-  anyone's answers. The curve's slope and location are measured offline —
-  from the strength of the players who made these errors, on the half of the
-  bank that wasn't mined at chosen gaps, and from the accuracy users
-  produce — and refit as constants; online correction would couple
-  every user's difficulty to every other user's answers.
+  anyone's answers. The curve's slope and location are measured, not
+  chosen — from the strength of the players who made these errors, on the
+  half of the bank that wasn't mined at chosen gaps, and from the accuracy
+  users produce — and refit offline as constants; online correction would
+  couple every user's difficulty to every other user's answers.
 - **Lookahead is part of what adapts, not a cutoff.** Measurement runs as
   deep as the ground-truth search, and it is the rating, not a filter, that
   keeps a hard item from someone who couldn't have seen it.
@@ -72,10 +71,11 @@ reasoning lives where DESIGN.md and CALIBRATION.md point.
   approximate but never flat, and saturates rather than stops outside the
   range the evidence covers: a wrong ordering is recoverable, no ordering is
   not.
-- **An item the engine can't rank consistently is never served.** If the
-  search that picked the best move and a search restricted to the two
-  candidates disagree at full depth, the item has nothing to teach. That
-  reading is taken on a fresh engine and must be reproducible.
+- **An item whose full-depth verdict the engine won't hold is never
+  served.** If the search that picked the best move and a search restricted
+  to the two candidates disagree at full depth, the item has nothing to
+  teach. That reading is taken from a cleared hash and must be
+  reproducible.
 
 ### Selection
 
@@ -111,16 +111,18 @@ reasoning lives where DESIGN.md and CALIBRATION.md point.
   session that has since changed, and one this process can no longer verify.
 - **Responses are research data, and the page that records them says so.**
   Consent can't precede the first trial, so a guest must never have to go
-  looking. The published record is per-user random ids, answers and timing,
-  and (with Lichess linking) a rating band — never usernames, emails, or a
-  rating number. The privacy policy constrains what analysis may export.
+  looking. The published record is per-user random ids, answers, timing and
+  rating snapshots, plus (with Lichess linking) a Lichess rating band, never
+  the number — and never usernames or emails. The privacy policy constrains
+  what analysis may export.
 - **The page counter learns only that a page was opened.** It is sent a
   path from a closed list of pages — never the URL, query, title, or
-  same-origin referrer — and no third-party script runs on the origin.
+  same-origin referrer — and a page missing from the list counts as
+  nothing. No externally hosted script runs on the origin.
 - **What is held is downloadable, and it is the same set deletion erases**,
   so the two can't drift apart. The exceptions are the password hash and
-  internal bookkeeping like row ids. Being signed in is the whole
-  authorization.
+  internal bookkeeping like row ids. Holding the session is the whole
+  authorization, guests included; no password is asked.
 - **Deletion erases the responses too**, and is reachable from inside the
   app by whoever the record belongs to, guests included — holding the
   session is the proof of ownership. Accounts also confirm with their

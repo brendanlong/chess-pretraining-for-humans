@@ -93,6 +93,11 @@ concrete: the most lopsided positions in the bank, worth half a game, include
 ones a shallow search gets *backwards*, and it rated those among the easiest
 items there are.
 
+**The deep gap as a second term beside the shallow one.** The shallow gap
+does not quite subsume it — the deep gap still carries a little signal of its
+own — but that signal has no consistent direction, flipping sign from band to
+band, so there is nothing to add it as.
+
 **Required lookahead, as a second axis beside the gap.** The shallowest depth
 from which the pair stays correctly ordered — still computed, because it is what
 decides whether an item is learnable, but no longer a difficulty. Rejected on
