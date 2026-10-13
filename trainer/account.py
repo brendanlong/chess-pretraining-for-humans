@@ -72,10 +72,11 @@ def delete(conn: sqlite3.Connection, user: dict, assume_yes: bool) -> int:
         if typed.lower() != user["name"].lower():
             print("not confirmed; nothing deleted", file=sys.stderr)
             return 1
-    with conn:  # all three deletes land together, or none of them do
+    with conn:  # all the deletes land together, or none of them do
         counts = auth.delete_user(conn, user["id"])
     print(
         f"deleted {user['name']}: {counts['responses']} responses, "
+        f"{counts['lichess_ratings']} lichess rating snapshots, "
         f"{counts['sessions']} sessions, {counts['users']} user row"
     )
     return 0
@@ -98,9 +99,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "list":
         for row in conn.execute(
-            "SELECT name, attempts, password_hash IS NOT NULL AS claimed FROM users ORDER BY id"
+            "SELECT name, attempts, password_hash, lichess_username FROM users ORDER BY id"
         ):
-            kind = "account" if row["claimed"] else "guest"
+            kind = "account" if row["password_hash"] else "guest"
+            if row["lichess_username"]:
+                kind += f", lichess {row['lichess_username']}"
             print(f"{row['name']:<40} {row['attempts']:>6} trials  {kind}")
         return 0
 

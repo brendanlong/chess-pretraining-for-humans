@@ -2,7 +2,7 @@ import { Chessground } from "./vendor/chessground.min.js";
 
 // Identity lives entirely in an HttpOnly session cookie, minted by the first
 // answer — there is nothing to type and nothing here to spoof.
-let account = { username: null, guest: true };
+let account = { username: null, guest: true, password: false, lichess: null };
 
 const BRUSHES = ["choice-1", "choice-2"]; // arrow colors matching the two buttons
 // Custom brush set: chessground's own colors include a yellow that is
@@ -580,12 +580,18 @@ function setAccount(a) {
   el("account-guest").hidden = !a.guest;
   el("account-user").hidden = a.guest;
   if (!a.guest) el("account-name").textContent = a.username;
-  // A guest has no password, so the field an account confirms with is absent
-  // rather than empty — and the button names the record it erases, which for a
-  // guest isn't an account.
+  el("lichess-linked").hidden = !a.lichess;
+  el("lichess-name").textContent = a.lichess || "";
+  el("lichess-link").hidden = Boolean(a.lichess);
+  // An account made through Lichess has no other way in, so it can't unlink.
+  el("lichess-unlink").hidden = !a.password;
+  el("lichess-unlink-note").hidden = !a.password;
+  // Without a password — a guest, or an account made through Lichess — the
+  // field an account confirms with is absent rather than empty. The button
+  // names the record it erases, which for a guest isn't an account.
   el("delete-btn").textContent = a.guest ? "Delete my data" : "Delete account";
-  el("delete-password").hidden = a.guest;
-  el("delete-password").required = !a.guest;
+  el("delete-password").hidden = !a.password;
+  el("delete-password").required = a.password;
   showDeleteConfirm(false); // a just-claimed account shouldn't open on this
 }
 
@@ -604,7 +610,7 @@ function showDeleteConfirm(open) {
   el("delete-form").hidden = !open;
   el("delete-btn").hidden = open;
   el("delete-password").value = "";
-  if (open) el(account.guest ? "delete-cancel" : "delete-password").focus();
+  if (open) el(account.password ? "delete-password" : "delete-cancel").focus();
   // Collapsing the form out from under the focused control drops focus to the
   // body, which sends a keyboard user back to the top of the drawer.
   else if (insideForm) el("delete-btn").focus();
@@ -702,6 +708,31 @@ el("login-form").addEventListener("submit", (e) => {
     location.reload();
   });
 });
+
+el("lichess-unlink").addEventListener("click", (e) => {
+  submitAuth(e.currentTarget, async () => setAccount(await api("/api/lichess/unlink", {})));
+});
+
+// Coming back from lichess.org, the server says how it went in `?lichess=`.
+// Taken straight back out so a reload or a share doesn't repeat it, and only
+// what didn't work is announced: a sign-in that did shows in the header.
+const LICHESS_TROUBLE = {
+  denied: "Lichess sign-in was cancelled.",
+  expired: "That Lichess sign-in expired or didn't start in this browser. Try again.",
+  failed: "Couldn't reach Lichess to finish signing in. Try again in a moment.",
+  busy: "Too many Lichess sign-ins from here. Try again in a few minutes.",
+};
+
+function takeLichessOutcome() {
+  const outcome = new URLSearchParams(location.search).get("lichess");
+  if (outcome === null) return;
+  history.replaceState(null, "", location.pathname);
+  const trouble = LICHESS_TROUBLE[outcome];
+  if (trouble) {
+    openSettings(false);
+    showAuthError(trouble);
+  }
+}
 
 el("logout-btn").addEventListener("click", (e) => {
   submitAuth(e.currentTarget, async () => {
@@ -850,6 +881,8 @@ el("ctl-fwd").addEventListener("click", () => stepLine(1));
 el("prompt").addEventListener("click", () => {
   if (phase === "error") nextTrial();
 });
+
+takeLichessOutcome();
 
 // What the URL names, if anything: a link somebody sent, or this tab's own
 // last trial coming back on a reload. Every trial after it is named the same

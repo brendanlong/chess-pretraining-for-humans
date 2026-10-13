@@ -151,6 +151,8 @@
       <span class="setting-label">Account</span>
       <div id="account-guest" hidden>
         <p class="setting-note">You're playing as a guest — everything you've answered is already saved, but only to this browser. Claim it to keep your history and pick up on another device.</p>
+        <a class="lichess-btn" href="/api/lichess/login">Sign in with Lichess</a>
+        <p class="setting-note">Keeps this guest's progress, unless that Lichess account is already linked to a record here — then it signs you in to that one instead.</p>
         <div id="auth-tabs">
           <button id="tab-signup" class="auth-tab active" type="button">Sign up</button>
           <button id="tab-login" class="auth-tab" type="button">Sign in</button>
@@ -172,6 +174,13 @@
       </div>
       <div id="account-user" hidden>
         <p class="setting-note">Signed in as <b id="account-name"></b>. Your rating and history follow this account.</p>
+        <div id="lichess-linked" hidden>
+          <p class="setting-note">Linked to Lichess as <b id="lichess-name"></b>.</p>
+          <button id="lichess-unlink" type="button">Unlink Lichess</button>
+          <p id="lichess-unlink-note" class="setting-note">Unlinking also erases the Lichess ratings recorded so far.</p>
+        </div>
+        <a id="lichess-link" class="lichess-btn" href="/api/lichess/login" hidden>Link your Lichess account</a>
+        <p class="setting-note">A linked account's Lichess ratings are recorded for the research — whether practice here carries over to real games. They never decide what you're shown here.</p>
         <button id="logout-btn">Sign out</button>
       </div>
       <p id="auth-error" role="alert" hidden></p>
@@ -182,10 +191,10 @@
         <button id="export-json">Download JSON</button>
         <button id="export-csv">Download CSV</button>
       </div>
-      <p class="setting-note">Everything this site holds about you: your rating, every answer with its timing, the position it was about and a link to the game — plus your username and email if you've made an account. The JSON file is the whole record; the CSV is the answers alone, for usage in spreadsheets.</p>
+      <p class="setting-note">Everything this site holds about you: your rating, every answer with its timing, the position it was about and a link to the game — plus your username and email if you've made an account, and your Lichess ratings if you've linked one. The JSON file is the whole record; the CSV is the answers alone, for usage in spreadsheets.</p>
       <button id="delete-btn" class="danger">Delete my data</button>
       <form id="delete-form" class="auth-form" hidden>
-        <p class="setting-note">This erases the same record those buttons download: every answer you've given and its timing, your rating, and the account and the email on it if you have one. There's no undo, and the answers are gone from the research data too &mdash; a copy you downloaded first is the only one that survives. Encrypted backups expire on their own within 30 days.</p>
+        <p class="setting-note">This erases the same record those buttons download: every answer you've given and its timing, your rating, and the account, the email and any linked Lichess ratings if you have them. There's no undo, and the answers are gone from the research data too &mdash; a copy you downloaded first is the only one that survives. Encrypted backups expire on their own within 30 days.</p>
         <input id="delete-password" type="password" placeholder="Password" aria-label="Password, to confirm deletion" autocomplete="current-password" required>
         <button id="delete-confirm" type="submit" class="danger">Delete everything</button>
         <button id="delete-cancel" type="button">Cancel</button>

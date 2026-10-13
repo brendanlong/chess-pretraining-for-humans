@@ -29,6 +29,7 @@ DEFAULT_DB = Path(os.environ.get("TRAINER_DB", "data/items.db"))
 # failing an answer because an operator was mid-runbook is worse than a pause.
 BUSY_TIMEOUT_MS = 10_000
 USERS_NAME_INDEX = "idx_users_name_nocase"
+USERS_LICHESS_INDEX = "idx_users_lichess_id"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS items (
@@ -90,7 +91,13 @@ CREATE TABLE IF NOT EXISTS users (
     attempts INTEGER NOT NULL DEFAULT 0,
     password_hash TEXT,  -- NULL means guest
     email TEXT,          -- optional and unverified; only ever used for password reset
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    -- A linked Lichess account: its permanent id (the lowercased username,
+    -- which is what a sign-in matches on), the username as Lichess spells it,
+    -- and when it was linked. All NULL when nothing is linked.
+    lichess_id TEXT,
+    lichess_username TEXT,
+    lichess_linked_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -133,6 +140,18 @@ CREATE TABLE IF NOT EXISTS responses (
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- The linked Lichess account's ratings, as they stood at `taken_at`: the
+-- external outcome a transfer analysis sets in-app rating movement against.
+-- Analysis data only — nothing in the trial flow reads this table. No ON DELETE
+-- CASCADE, for the reason `responses` has none.
+CREATE TABLE IF NOT EXISTS lichess_ratings (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    lichess_id TEXT NOT NULL,
+    perfs TEXT NOT NULL,  -- JSON: Lichess's `perfs` object, every perf whole
+    taken_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- Facts about the record that aren't derivable from it: `regraded_at`, the
 -- moment every user rating moved onto the shallow-gap difficulty scale, and
 -- `anchored_at`, the moment item difficulty gained `rating.RESPONSE_ANCHOR` —
@@ -156,6 +175,7 @@ CREATE INDEX IF NOT EXISTS idx_responses_user ON responses(user_id, id);
 -- user's whole history per row: 700ms at 5k answers.
 CREATE INDEX IF NOT EXISTS idx_responses_item ON responses(user_id, item_id, id);
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_lichess_ratings_user ON lichess_ratings(user_id, id);
 """
 
 
@@ -226,6 +246,9 @@ def connect(path: Path = DEFAULT_DB, check_same_thread: bool = True) -> sqlite3.
         # No datetime('now') default: SQLite rejects non-constant defaults in
         # ALTER TABLE, and pre-auth rows have no signup date to record anyway.
         ("created_at", "TEXT"),
+        ("lichess_id", "TEXT"),
+        ("lichess_username", "TEXT"),
+        ("lichess_linked_at", "TEXT"),
     ):
         if col not in user_cols:
             conn.execute(f"ALTER TABLE users ADD COLUMN {col} {decl}")
@@ -257,6 +280,14 @@ def connect(path: Path = DEFAULT_DB, check_same_thread: bool = True) -> sqlite3.
                 USERS_NAME_INDEX,
                 e,
             )
+    # One row per Lichess account, which is what lets a sign-in find its row.
+    # Created here rather than in SCHEMA because the column may be new on this
+    # connection, and unlike the name index nothing old can collide with it.
+    if not any(row[1] == USERS_LICHESS_INDEX for row in conn.execute("PRAGMA index_list(users)")):
+        conn.execute(
+            f"CREATE UNIQUE INDEX {USERS_LICHESS_INDEX} ON users(lichess_id)"
+            " WHERE lichess_id IS NOT NULL"
+        )
     item_cols = {row[1] for row in conn.execute("PRAGMA table_info(items)")}
     for col in ("pv_best", "pv_distractor"):
         if col not in item_cols:

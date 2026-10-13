@@ -38,7 +38,7 @@
 <main>
   <article>
     <h1>Privacy policy</h1>
-    <p class="updated">Last updated 1 August 2026</p>
+    <p class="updated">Last updated 12 October 2026</p>
 
     <p>Chess Pretraining is a small research project run by
     <a href="https://www.brendanlong.com/pages/about-me.html">Brendan Long</a>. This page
@@ -66,10 +66,18 @@
       <li><b>A session cookie</b>: one opaque token, HttpOnly, good for a
       year. The server stores only a hash of it. That cookie is the whole of
       how the site knows who you are.</li>
-      <li><b>Your Lichess username and rating history</b>, if and when you
-      choose to link a Lichess account. That feature isn't built yet; this
-      page will be updated before it ships, and linking will always be
-      optional.</li>
+      <li><b>Your Lichess username and ratings</b>, only if you sign in with
+      or link a Lichess account, which is always optional: the username, when
+      you linked it, and snapshots of your Lichess ratings — every rating
+      Lichess shows on your profile, with its game count — taken each time you
+      sign in with Lichess and about weekly otherwise. They are read from
+      Lichess's public data; the permission Lichess hands us when you sign in
+      is used once to learn your username and then handed straight back, so we
+      hold no way to act on your Lichess account. Your Lichess rating never
+      affects which positions you're shown or your rating here; it is research
+      data, for measuring whether practice here carries over to real games.
+      Lichess, of course, learns that you signed in to this site; its own
+      privacy policy covers that.</li>
     </ul>
 
     <p>Settings like replay speed live in your browser's local storage and are
@@ -161,7 +169,9 @@
     <p><b>Settings &rarr; Your data</b> downloads everything listed above that
     belongs to you: your rating and how many trials you've answered, the
     username and email if you made an account, and every answer with its
-    timing, the position it was about, and a link to the game it came from.
+    timing, the position it was about, and a link to the game it came from —
+    plus your Lichess username and every rating snapshot if you've linked
+    one.
     The JSON file is the whole of it; the CSV is the answers alone, one row
     each, for a spreadsheet. Held back are only the hash of your
     password — which exists precisely so that nobody, us included, holds the
@@ -184,13 +194,17 @@
     <p>You can delete it yourself, account or not: <b>Settings &rarr; Your
     data</b>. That erases your rating, every response you ever gave, every
     session you have open, and — if you have one — the account and the email
-    on it. Out of the research data too, not just out of your view, and it is
+    on it, and any linked Lichess username and rating snapshots. Unlinking
+    Lichess on its own, from the same drawer, erases the snapshots and the
+    link and leaves the rest. An account made by signing in with Lichess has
+    no password to unlink to, so deleting it is how to withdraw that. Out of the research data too, not just out of your view, and it is
     exactly the set the download hands you.</p>
     <p>Holding the session is how you prove the record is yours, which is why
     the button is the main route: the optional email is never verified, so for
-    most accounts there is no address a request could come from. An account is
-    asked for its password as well, because a browser someone has walked away
-    from still holds the session. A guest has no password to ask for and none
+    most accounts there is no address a request could come from. An account with a
+    password is asked for it as well, because a browser someone has walked
+    away from still holds the session; one made through Lichess, like a guest,
+    has none to ask for. A guest has no password to ask for and none
     is invented: this browser's cookie is the only handle on that record, for
     you and for us, so it has to be enough — otherwise the guest half of what
     we hold would have no delete button at all.</p>

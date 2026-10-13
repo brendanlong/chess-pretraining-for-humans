@@ -162,6 +162,21 @@ fly ssh console -a chess-pretraining
 It opens the live database under the same locking the server uses, so the
 machine stays up while it runs.
 
+An account made through Lichess has an opaque `guest_…` row name; `list`
+shows its Lichess username beside it, and that row name is what `delete`
+takes.
+
+## Lichess sign-in
+
+Nothing to configure: Lichess OAuth needs no client secret or registered app.
+The redirect URI is built from the host the browser used, so sign-in works on
+whatever name serves the app — as long as the proxy's scheme headers are
+trusted (they are, above). The server needs outbound HTTPS to lichess.org,
+both for sign-in and for the rating refresher, which runs shortly after boot
+and then daily. `LICHESS_REFRESH_HOURS=0` turns the refresher off; a failed
+round only logs, and the next one catches up. `LICHESS_CLIENT_ID` changes the
+name shown on Lichess's consent screen (default `chess-pretraining`).
+
 ## Restoring
 
 Litestream restores on boot only when the database is missing, so recovering

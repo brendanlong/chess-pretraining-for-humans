@@ -94,6 +94,8 @@ def no_real_database(monkeypatch):
     database, and the one test that supplies its own connection still may.
     """
     monkeypatch.setattr(server, "conn", _NoDatabase())
+    # Nor may a test's server reach out to lichess.org on its own clock.
+    monkeypatch.setattr(server, "LICHESS_REFRESH_S", 0)
 
 
 @pytest.fixture
@@ -129,6 +131,7 @@ def db(tmp_path, monkeypatch, item_count):
         # bulk on purpose. The real limit gets its own test.
         ("answer_limiter", auth.RateLimiter(100_000, 900)),
         ("anonymous_trial_use", auth.RateLimiter(1, 900)),
+        ("lichess_limiter", auth.RateLimiter(200, 900)),
     ):
         monkeypatch.setattr(server, name, limiter)
     return conn

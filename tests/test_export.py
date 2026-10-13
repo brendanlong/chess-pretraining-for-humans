@@ -38,6 +38,8 @@ def test_export_carries_the_account_and_every_answer(client, db):
         "username": CREDS["username"],
         "guest": False,
         "email": CREDS["email"],
+        "lichess_username": None,
+        "lichess_linked_at_utc": None,
         "rating": round(stored["rating"], 1),
         "calibrating": result["calibrating"],
         "answers": 1,

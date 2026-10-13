@@ -20,7 +20,7 @@ import time
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
 
-from . import db
+from . import db, lichess
 
 COOKIE_NAME = "sid"
 SESSION_DAYS = 365
@@ -155,13 +155,22 @@ def get_user(conn: db.Queryable, user_id: int) -> dict:
     return dict(row)
 
 
+def has_password(user: dict) -> bool:
+    return bool(user["password_hash"])
+
+
 def is_guest(user: dict) -> bool:
-    return not user["password_hash"]
+    """No way back in but this browser's cookie: neither a password nor a
+    linked Lichess account."""
+    return not has_password(user) and not user["lichess_id"]
 
 
 def display_name(user: dict) -> str | None:
-    """What the header chip shows — guests have no name worth showing."""
-    return None if is_guest(user) else user["name"]
+    """What the header chip shows — guests have no name worth showing, and an
+    account made through Lichess goes by its Lichess name."""
+    if has_password(user):
+        return user["name"]
+    return user["lichess_username"]
 
 
 def find_by_username(conn: db.Queryable, name: str) -> dict | None:
@@ -256,23 +265,120 @@ def delete_user(conn: db.Queryable, user_id: int) -> dict[str, int]:
     data a user believes is gone — cheaper to lose the rows than to redefine
     the word.
 
-    `responses` deliberately has no ON DELETE CASCADE — erasing the record must
-    be this explicit act, never a side effect — so it goes before the `users`
-    row it references, inside the caller's transaction. Sessions would cascade;
-    deleting them explicitly is what gets their count into the report.
+    `responses` and `lichess_ratings` deliberately have no ON DELETE CASCADE —
+    erasing the record must be this explicit act, never a side effect — so they
+    go before the `users` row they reference, inside the caller's transaction.
+    Sessions would cascade; deleting them explicitly is what gets their count
+    into the report.
     """
     counts = {
         "responses": conn.execute("DELETE FROM responses WHERE user_id = ?", (user_id,)).rowcount,
+        "lichess_ratings": conn.execute(
+            "DELETE FROM lichess_ratings WHERE user_id = ?", (user_id,)
+        ).rowcount,
         "sessions": conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,)).rowcount,
     }
     counts["users"] = conn.execute("DELETE FROM users WHERE id = ?", (user_id,)).rowcount
     return counts
 
 
+# --- Lichess --------------------------------------------------------------
+
+
+def find_by_lichess(conn: db.Queryable, lichess_id: str) -> dict | None:
+    row = conn.execute("SELECT * FROM users WHERE lichess_id = ?", (lichess_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def record_lichess_ratings(conn: db.Queryable, user_id: int, lichess_user: dict) -> None:
+    conn.execute(
+        "INSERT INTO lichess_ratings (user_id, lichess_id, perfs) VALUES (?, ?, ?)",
+        (user_id, lichess_user["id"], lichess.perfs(lichess_user)),
+    )
+
+
+def sign_in_with_lichess(
+    conn: db.Queryable,
+    current_id: int | None,
+    lichess_user: dict,
+    start_rating: float,
+    calib_step: float,
+) -> tuple[dict, str]:
+    """The row a completed Lichess sign-in lands on, and what happened:
+    'signed-in', 'linked' or 'created'.
+
+    One button is both "sign in" and "link", decided in that order:
+
+    - A row already linked to this Lichess account is signed into, like a
+      password login — a guest left behind stays behind.
+    - Otherwise the row this browser is on is linked, if it has no Lichess
+      account yet. For a guest that is what claiming its history means; for a
+      password account it adds the link.
+    - Otherwise a fresh row, the Lichess equivalent of signing up before
+      answering anything. Also where a browser signed in to a row linked to
+      *another* Lichess account ends up, because re-pointing that row's link
+      would silently swap whose ratings sit beside its answers.
+
+    A snapshot of the account's ratings is taken every time, since the account
+    record that proves who signed in carries them anyway.
+    """
+    lichess_id = lichess_user["id"]
+    username = lichess_user["username"]
+    user = find_by_lichess(conn, lichess_id)
+    outcome = "signed-in"
+    if user is None:
+        current = get_user(conn, current_id) if current_id is not None else None
+        if current is not None and not current["lichess_id"]:
+            conn.execute(
+                """UPDATE users SET lichess_id = ?, lichess_username = ?,
+                       lichess_linked_at = datetime('now') WHERE id = ?""",
+                (lichess_id, username, current["id"]),
+            )
+            user, outcome = get_user(conn, current["id"]), "linked"
+        else:
+            # The row's own name stays opaque: the Lichess name is shown
+            # instead, and keeping it out of `name` keeps it out of the
+            # namespace password logins are looked up in.
+            name = GUEST_PREFIX + secrets.token_hex(8)
+            cur = conn.execute(
+                """INSERT INTO users (name, rating, calib_step, created_at,
+                       lichess_id, lichess_username, lichess_linked_at)
+                   VALUES (?, ?, ?, datetime('now'), ?, ?, datetime('now'))""",
+                (name, start_rating, calib_step, lichess_id, username),
+            )
+            user, outcome = get_user(conn, cur.lastrowid), "created"  # pyright: ignore[reportArgumentType]
+    elif user["lichess_username"] != username:
+        # Lichess only ever changes a username's capitalisation.
+        conn.execute("UPDATE users SET lichess_username = ? WHERE id = ?", (username, user["id"]))
+        user = get_user(conn, user["id"])
+    record_lichess_ratings(conn, user["id"], lichess_user)
+    return user, outcome
+
+
+def unlink_lichess(conn: db.Queryable, user_id: int) -> int:
+    """Drop the link and every rating snapshot taken through it. Returns how
+    many snapshots went.
+
+    The snapshots go too because unlinking is withdrawing that data, and the
+    privacy policy says so. Only a row with a password can unlink — for one
+    made through Lichess the link is the only way back in, and deletion is
+    what withdraws everything there.
+    """
+    if not has_password(get_user(conn, user_id)):
+        raise AuthError("This account signs in through Lichess, so it can't be unlinked.")
+    dropped = conn.execute("DELETE FROM lichess_ratings WHERE user_id = ?", (user_id,)).rowcount
+    conn.execute(
+        """UPDATE users SET lichess_id = NULL, lichess_username = NULL,
+               lichess_linked_at = NULL WHERE id = ?""",
+        (user_id,),
+    )
+    return dropped
+
+
 def credential_for(user: dict | None) -> str | None:
-    """The hash to check a login against — None for unknown or guest rows,
-    which `verify_password` still spends a full verify on."""
-    return None if user is None or is_guest(user) else user["password_hash"]
+    """The hash to check a login against — None for unknown rows and rows with
+    no password, which `verify_password` still spends a full verify on."""
+    return None if user is None else user["password_hash"]
 
 
 # --- sessions -------------------------------------------------------------

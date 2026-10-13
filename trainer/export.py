@@ -129,6 +129,8 @@ def account_row(user: dict) -> dict:
         "username": auth.display_name(user),  # null while this is still a guest
         "guest": auth.is_guest(user),
         "email": user["email"],
+        "lichess_username": user["lichess_username"],
+        "lichess_linked_at_utc": user["lichess_linked_at"],
         "rating": _rating(user["rating"]),
         "calibrating": rating.is_calibrating(user["calib_step"]),
         "answers": user["attempts"],
@@ -136,12 +138,29 @@ def account_row(user: dict) -> dict:
     }
 
 
-def as_json(user: dict, responses: list[dict], now: datetime) -> bytes:
+def lichess_rating_rows(conn: db.Queryable, user_id: int) -> list[dict]:
+    """Every snapshot of the linked account's ratings, oldest first, each as
+    Lichess reported it."""
+    return [
+        {
+            "taken_at_utc": r["taken_at"],
+            "lichess_id": r["lichess_id"],
+            "perfs": json.loads(r["perfs"]),
+        }
+        for r in conn.execute(
+            "SELECT taken_at, lichess_id, perfs FROM lichess_ratings WHERE user_id = ? ORDER BY id",
+            (user_id,),
+        )
+    ]
+
+
+def as_json(user: dict, responses: list[dict], lichess_ratings: list[dict], now: datetime) -> bytes:
     return json.dumps(
         {
             "exported_at_utc": now.strftime("%Y-%m-%d %H:%M:%S"),
             "account": account_row(user),
             "responses": responses,
+            "lichess_ratings": lichess_ratings,
         },
         indent=2,
     ).encode()
@@ -175,4 +194,5 @@ def build(conn: db.Queryable, user: dict, fmt: str) -> tuple[bytes, str, str]:
     responses = response_rows(conn, user["id"])
     if fmt == "csv":
         return as_csv(responses), "text/csv; charset=utf-8", filename("csv", now)
-    return as_json(user, responses, now), "application/json", filename("json", now)
+    lichess_ratings = lichess_rating_rows(conn, user["id"])
+    return as_json(user, responses, lichess_ratings, now), "application/json", filename("json", now)

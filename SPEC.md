@@ -128,9 +128,14 @@ reasoning lives where DESIGN.md and CALIBRATION.md point.
   authorization, guests included; no password is asked.
 - **Deletion erases the responses too**, and is reachable from inside the
   app by whoever the record belongs to, guests included — holding the
-  session is the proof of ownership. Accounts also confirm with their
-  password. Nothing derived from responses survives; the remaining caveats
+  session is the proof of ownership. Accounts with a password also confirm
+  with it. Nothing derived from responses survives; the remaining caveats
   are the backup window and analysis already published.
+- **A linked Lichess rating is analysis data, never an input.** Nothing it
+  says reaches selection, the user's rating, or the trial, so linking can't
+  change what anyone is served. The grant is used once, to learn who signed
+  in, and revoked; no Lichess credential is kept, since the ratings are
+  public. Unlinking erases the snapshots taken through the link.
 - **Explanations are grounded in engine output.** The engine lines are the
   authority; any prose sits next to them, never replaces them.
 - **The record outlives the deployment.** Responses are replicated off the
@@ -144,12 +149,10 @@ reasoning lives where DESIGN.md and CALIBRATION.md point.
 - Automatic LLM narration of the engine lines.
 - Password reset (the optional email is stored for it but nothing sends
   mail yet).
-- Lichess account linking; what it would add to the published record — a
-  rating band, never a number — is already committed to above and in the
-  privacy policy.
 - Transfer measurement: in-app accuracy shares the item generator's
   biases; the real test is external (rated games, or items from a
-  deliberately different distribution).
+  deliberately different distribution). Linked accounts' Lichess ratings
+  are recorded for it; the analysis isn't built.
 - A learning-rate measure that survives adaptive difficulty. Selection
   holds accuracy near 80% by design, so raw accuracy is flat whatever the
   user is doing; the rate has to come from the difficulty being sustained,

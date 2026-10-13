@@ -9,16 +9,17 @@ import hashlib
 import logging
 import os
 import random
+import secrets
 import sqlite3
 import threading
 from pathlib import Path
 
 import chess
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel
 
-from . import assets, auth, db, export, rating, trials
+from . import assets, auth, db, export, lichess, rating, trials
 from .db import DEFAULT_DB, connect
 
 log = logging.getLogger(__name__)
@@ -50,7 +51,19 @@ WEB_DIR = _web_dir()
 # CSPRNG costs nothing here and removes the question entirely.
 rng = random.SystemRandom()
 
-app = FastAPI(title="Chess Pretraining")
+
+@contextlib.asynccontextmanager
+async def lifespan(_app: FastAPI):
+    stop = threading.Event()
+    if LICHESS_REFRESH_S > 0:
+        threading.Thread(
+            target=lichess_refresher, args=(stop,), name="lichess-refresh", daemon=True
+        ).start()
+    yield
+    stop.set()
+
+
+app = FastAPI(title="Chess Pretraining", lifespan=lifespan)
 
 # Which database the per-thread connections below open. A module-level name
 # rather than a constant so the tests can point a whole server at a scratch file.
@@ -160,6 +173,14 @@ answer_limiter = auth.RateLimiter(
     limit=1200,
     window_s=900,
     message="Answers are coming in faster than we can count. Try again in a moment.",
+)
+# Finishing a Lichess sign-in costs three requests to lichess.org on a pool
+# thread, so it is rationed per address like the other endpoints that buy work.
+# Nobody signs in thirty times in fifteen minutes by hand.
+lichess_limiter = auth.RateLimiter(
+    limit=30,
+    window_s=900,
+    message="Too many Lichess sign-ins from here. Try again in a few minutes.",
 )
 # Not a rate limit — a spend-once ledger, which is the same data structure. It
 # is what keeps a spent anonymous trial spent, for the reasons in the `trials`
@@ -426,13 +447,19 @@ def start_identity(tx: Transaction, request: Request) -> dict:
     return user
 
 
-GUEST_ACCOUNT = {"username": None, "guest": True}
+GUEST_ACCOUNT = {"username": None, "guest": True, "password": False, "lichess": None}
 
 
 def account_payload(user: dict | None) -> dict:
     if user is None:
         return dict(GUEST_ACCOUNT)
-    return {"username": auth.display_name(user), "guest": auth.is_guest(user)}
+    return {
+        "username": auth.display_name(user),
+        "guest": auth.is_guest(user),
+        # Whether deletion asks for one, and whether Lichess can be unlinked.
+        "password": auth.has_password(user),
+        "lichess": user["lichess_username"],
+    }
 
 
 def san(fen: str, uci: str) -> str:
@@ -1054,6 +1081,11 @@ def delete_account(body: Deletion, request: Request):
     gone, and the responses would stay in the research data the privacy policy
     promises deletion takes them out of.
 
+    An account made through Lichess has no password either, and is treated the
+    same way. Sending it back through Lichess to confirm would prove only that
+    this browser can reach a Lichess session — which a shared browser usually
+    holds just as firmly as it holds ours.
+
     Alone among the endpoints, this one resolves the session itself instead of
     taking `CurrentUserId`. Minting a guest is what that dependency does for a
     request without a cookie, and here it would mean writing two rows for a
@@ -1068,7 +1100,7 @@ def delete_account(body: Deletion, request: Request):
                 "There's nothing here to delete yet — answering a question is "
                 "what starts a record.",
             )
-        guest = auth.is_guest(u)
+        has_password = auth.has_password(u)
         # Per user, both ways round, and never per address: erasure is the one
         # promise the privacy policy makes that a user might need urgently, so
         # nobody else may be able to spend the budget it needs. An address is
@@ -1077,7 +1109,7 @@ def delete_account(body: Deletion, request: Request):
         # exist at all, so the volume that mints these rows is already metered
         # upstream. What this bounds is retries against one row.
         spend(delete_limiter, f"delete:{u['id']}")
-        if not guest:
+        if has_password:
             # The password check is metered like login's on top, because it is
             # one, and an unmetered argon2 is a denial-of-service primitive
             # whether or not the guess is right. Charged before the verify, for
@@ -1119,7 +1151,7 @@ def delete_account(body: Deletion, request: Request):
                     400,
                     "This browser signed in to an account while the request was in "
                     "flight, so nothing was deleted. Try again."
-                    if guest
+                    if not has_password
                     else "Wrong password.",
                 )
             counts = auth.delete_user(tx, u["id"])
@@ -1132,7 +1164,7 @@ def delete_account(body: Deletion, request: Request):
         # took the row's own secret — its password, or for a guest the cookie
         # that is the only one it has — so clearing it helps nobody else.
         delete_limiter.clear(f"delete:{u['id']}")
-        if not guest:
+        if has_password:
             login_limiter.clear(login_key(u["name"]))
     except auth.AuthError as e:
         raise auth_error(e) from e
@@ -1175,6 +1207,179 @@ def export_account(request: Request, format: str = "json"):
         # form is the whole story — no RFC 5987 encoding to get wrong.
         headers={"Content-Disposition": f'attachment; filename="{name}"'},
     )
+
+
+# --- Lichess --------------------------------------------------------------
+#
+# Sign-in and linking are one flow (`auth.sign_in_with_lichess` decides which
+# happened), and everything it learns about the user's Lichess strength is
+# written to `lichess_ratings` for analysis and read by nothing here: SPEC's
+# new users start as beginners and the rating climbs, linked or not.
+
+# The flow's state and PKCE verifier, between sending the browser to Lichess
+# and its coming back. A cookie rather than a row so that starting a sign-in
+# writes nothing, and HttpOnly and scoped to these endpoints because the
+# verifier is the half of the exchange an eavesdropper must not have. Lax is
+# what lets it ride along on the top-level navigation back from lichess.org.
+LICHESS_COOKIE = "lichess_oauth"
+LICHESS_COOKIE_PATH = "/api/lichess/"
+LICHESS_FLOW_S = 600
+
+
+def lichess_redirect_uri(request: Request) -> str:
+    """Off the request rather than configured: a caller who lies about the host
+    only redirects their own sign-in, and the proxy headers already make the
+    scheme honest (see the Dockerfile)."""
+    return str(request.url_for("lichess_callback"))
+
+
+@app.get("/api/lichess/login")
+def lichess_login(request: Request):
+    state, verifier = lichess.new_flow()
+    response = RedirectResponse(
+        lichess.authorize_url(lichess_redirect_uri(request), state, verifier), status_code=303
+    )
+    response.set_cookie(
+        LICHESS_COOKIE,
+        f"{state}.{verifier}",
+        max_age=LICHESS_FLOW_S,
+        httponly=True,
+        samesite="lax",
+        secure=request.url.scheme == "https",
+        path=LICHESS_COOKIE_PATH,
+    )
+    return response
+
+
+def back_to_app(outcome: str) -> RedirectResponse:
+    """Home, with what happened in the query for the page to say. The page
+    takes it straight back out of the address bar."""
+    response = RedirectResponse(f"/?lichess={outcome}", status_code=303)
+    response.delete_cookie(LICHESS_COOKIE, path=LICHESS_COOKIE_PATH)
+    return response
+
+
+@app.get("/api/lichess/callback")
+def lichess_callback(
+    request: Request, code: str | None = None, state: str | None = None, error: str | None = None
+):
+    """Where Lichess sends the browser back. Always answers with a redirect
+    home, because a person is looking at it — never a JSON error page.
+
+    The state check comes first and is what makes this safe to expose: without
+    it anyone could send a victim here with a code for the attacker's own
+    Lichess account and link it to the victim's history.
+    """
+    expected, _, verifier = request.cookies.get(LICHESS_COOKIE, "").partition(".")
+    if not (expected and verifier and state and secrets.compare_digest(state, expected)):
+        return back_to_app("expired")
+    if error or not code:
+        return back_to_app("denied")
+    try:
+        lichess_limiter.consume(client_key(request))
+    except auth.RateLimited:
+        return back_to_app("busy")
+    try:
+        token = lichess.exchange(code, verifier, lichess_redirect_uri(request))
+        try:
+            who = lichess.account(token)
+        finally:
+            # Nothing kept needs the grant (see `trainer.lichess`), so it is
+            # handed back however the read went. A failed revoke leaves a
+            # scopeless token nobody holds, which Lichess expires on its own.
+            with contextlib.suppress(lichess.LichessError):
+                lichess.revoke(token)
+    except lichess.LichessError as e:
+        log.warning("lichess sign-in failed: %s", e)
+        return back_to_app("failed")
+    with writing() as tx:
+        current = auth.session_user(tx, request.cookies.get(auth.COOKIE_NAME))
+        user, outcome = auth.sign_in_with_lichess(
+            tx,
+            current["id"] if current else None,
+            who,
+            rating.USER_START,
+            rating.CALIB_START_STEP,
+        )
+        reissue_session(tx, request, user["id"])
+    return back_to_app(outcome)
+
+
+class Unlink(BaseModel):
+    """Empty, but required: every write takes a JSON body (see
+    `set_session_cookie`), and this one erases data."""
+
+
+@app.post("/api/lichess/unlink")
+def lichess_unlink(_body: Unlink, request: Request):
+    with writing() as tx:
+        u = auth.session_user(tx, request.cookies.get(auth.COOKIE_NAME))
+        if u is None or not u["lichess_id"]:
+            raise HTTPException(400, "No Lichess account is linked.")
+        try:
+            auth.unlink_lichess(tx, u["id"])
+        except auth.AuthError as e:
+            raise auth_error(e) from e
+        u = auth.get_user(tx, u["id"])
+    return account_payload(u)
+
+
+# Linked ratings are snapshotted at every Lichess sign-in, and on this clock
+# between them, so that someone who links once and never signs in again still
+# has a series. Weekly is enough because Lichess publishes each account's daily
+# history (`/api/user/{name}/rating-history`) for analysis to fill gaps from;
+# what only a snapshot records is the account's state as it stood, games
+# counts and provisional flags included. The check runs daily and shortly after
+# boot — deploys restart the process more often than a day, so a timer that
+# only ever ran a day after boot might never run at all — and is cheap when
+# nothing is due.
+LICHESS_REFRESH_S = float(os.environ.get("LICHESS_REFRESH_HOURS", "24")) * 3600
+LICHESS_REFRESH_FIRST_S = 60
+LICHESS_SNAPSHOT_DAYS = 7
+LICHESS_DUE_SQL = """
+    SELECT id, lichess_id FROM users
+     WHERE lichess_id IS NOT NULL
+       AND NOT EXISTS (SELECT 1 FROM lichess_ratings r
+                        WHERE r.user_id = users.id AND r.taken_at > datetime('now', ?))
+     ORDER BY id"""
+
+
+def refresh_lichess_ratings() -> int:
+    """Snapshot every linked account that is due. Returns how many were taken.
+
+    Network outside the transaction; each batch's writes re-check the link,
+    since it may have been dropped or replaced while the request was out.
+    Closed accounts are skipped rather than unlinked: whether to keep a link
+    is the user's call, and the account may reopen.
+    """
+    due = conn.execute(LICHESS_DUE_SQL, (f"-{LICHESS_SNAPSHOT_DAYS} days",)).fetchall()
+    taken = 0
+    for start in range(0, len(due), lichess.BATCH):
+        owners = {row["lichess_id"]: row["id"] for row in due[start : start + lichess.BATCH]}
+        records = lichess.users(list(owners))
+        with writing() as tx:
+            for record in records:
+                user_id = owners.get(record["id"])
+                if user_id is None or record.get("disabled"):
+                    continue
+                if tx.execute(
+                    "SELECT 1 FROM users WHERE id = ? AND lichess_id = ?", (user_id, record["id"])
+                ).fetchone():
+                    auth.record_lichess_ratings(tx, user_id, record)
+                    taken += 1
+    return taken
+
+
+def lichess_refresher(stop: threading.Event) -> None:
+    wait = LICHESS_REFRESH_FIRST_S
+    while not stop.wait(wait):
+        wait = LICHESS_REFRESH_S
+        try:
+            refresh_lichess_ratings()
+        except Exception:
+            # Including Lichess being down: the next round picks up whoever
+            # this one missed, because due-ness is read off the table.
+            log.exception("lichess rating refresh failed")
 
 
 # Read once at startup: the tree is a few hundred KB, and holding it means the

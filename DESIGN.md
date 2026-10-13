@@ -174,6 +174,22 @@ already show, so the session cookie is the whole authorization, and the
 limiter in front of it rations work rather than guesses — this is the only
 endpoint whose cost grows with how much somebody has played.
 
+Lichess (`trainer/lichess.py`) is the one outside sign-in: OAuth2 with PKCE
+as a public client, so there is no secret and no registration, and the
+redirect URI is read off the request. The state and verifier wait in a short,
+path-scoped cookie rather than a row, so starting a sign-in writes nothing,
+and the state check is the callback's CSRF defence. One button both signs in
+and links: an existing link wins, then the row this browser is on, then a
+fresh row — the order and its reasons are on `auth.sign_in_with_lichess`. A
+row is a guest only while it has neither a password nor a link; without a
+password, deletion takes the cookie alone, for the guest's reason.
+
+Each sign-in snapshots the account's ratings into `lichess_ratings`, and a
+daemon thread in the server tops up anyone not snapshotted in a week from the
+public batch endpoint. The token is revoked as soon as it has named its owner
+— why nothing needs it afterwards is in the module's docstring — and nothing
+in the trial flow reads the snapshots.
+
 Two ordering constraints are easy to get wrong. Identity resolution is a
 dependency, but it yields a user *id*: FastAPI finishes dependencies before
 the endpoint body — possibly on another thread, and so another connection —
@@ -309,7 +325,9 @@ can't ship without it.
 ## Storage
 
 One SQLite database: `items` (positions, moves, evals, lines, difficulty),
-`users` (rating, calibration state, optional credentials), `sessions`
+`users` (rating, calibration state, optional credentials, an optional
+Lichess link), `lichess_ratings` (the linked account's ratings over time,
+for analysis only), `sessions`
 (hashed cookie tokens), `responses` (every answer, timed, with rating
 snapshots and whether the trial was asked for by item id rather than chosen by
 selection), `meta` (facts about the record that aren't derivable from it —

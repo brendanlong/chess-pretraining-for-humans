@@ -22,7 +22,12 @@ def test_arriving_writes_nothing_and_answering_is_what_earns_an_identity(client,
     forbids. So a visitor who has answered nothing has no row, and the trial
     they are looking at rides in a signed token instead.
     """
-    assert client.get("/api/account").json() == {"username": None, "guest": True}
+    assert client.get("/api/account").json() == {
+        "username": None,
+        "guest": True,
+        "password": False,
+        "lichess": None,
+    }
     trial = next_trial(client)  # answerable immediately, nothing typed
     assert trial["item_id"] and trial["trial_token"]
     assert auth.COOKIE_NAME not in client.cookies
@@ -54,6 +59,8 @@ def test_signup_claims_the_guest_row_and_keeps_history(client, db):
     assert client.post("/api/account/signup", json=CREDS).json() == {
         "username": "tester",
         "guest": False,
+        "password": True,
+        "lichess": None,
     }
 
     after = client.get("/api/stats").json()
@@ -180,7 +187,12 @@ def test_delete_clears_the_cookie_and_lands_on_a_fresh_guest(client):
     # header: without it this test would pass with the cookie clearing removed.
     assert "Max-Age=0" in r.headers["set-cookie"]
     assert auth.COOKIE_NAME not in client.cookies
-    assert client.get("/api/account").json() == {"username": None, "guest": True}
+    assert client.get("/api/account").json() == {
+        "username": None,
+        "guest": True,
+        "password": False,
+        "lichess": None,
+    }
     assert client.get("/api/stats").json()["attempts"] == 0
     # The name is free again, and claiming it inherits nothing from before.
     assert client.post("/api/account/signup", json=CREDS).status_code == 200
@@ -1012,6 +1024,8 @@ def test_signing_up_before_answering_anything_creates_the_row(client, db):
     assert client.post("/api/account/signup", json=CREDS).json() == {
         "username": "tester",
         "guest": False,
+        "password": True,
+        "lichess": None,
     }
     assert row_counts(db) == (1, 1, 0)  # a real account, no history yet
     assert client.get("/api/account").json()["username"] == "tester"
