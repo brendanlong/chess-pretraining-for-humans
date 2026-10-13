@@ -31,6 +31,7 @@
 <meta name="theme-color" content="#211f1c">
 <link rel="stylesheet" href="board.css">
 <link rel="stylesheet" href="style.css">
+<script src="theme.js"></script>
 <!-- Page counter; privacy.html says what it collects. First-party on
      purpose: see the reasoning at the top of count.js. -->
 <script type="module" src="count.js"></script>
@@ -135,6 +136,16 @@
         <button data-value="off">off</button>
       </div>
       <p class="setting-note">The numbered disc each arrow carries on the board.</p>
+    </div>
+    <div class="setting">
+      <span class="setting-label">Theme</span>
+      <div id="theme-menu">
+        <button data-value="auto">auto</button>
+        <button data-value="light">light</button>
+        <button data-value="dark">dark</button>
+        <button data-value="epaper">e-paper</button>
+      </div>
+      <p class="setting-note">Auto follows this device's light or dark setting. E-paper is black on white, for e-ink screens.</p>
     </div>
     <div class="setting">
       <span class="setting-label">Account</span>

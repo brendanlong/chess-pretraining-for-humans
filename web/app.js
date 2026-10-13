@@ -11,23 +11,30 @@ const BRUSHES = ["choice-1", "choice-2"]; // arrow colors matching the two butto
 // its :root comment) so an arrow can never disagree with its button.
 // The fallbacks are only reached if the stylesheet failed to load, where an
 // empty color would make chessground draw no arrow at all.
-const ROOT_STYLE = getComputedStyle(document.documentElement);
-const BRUSH_DEFS = Object.fromEntries(
-  [
-    ["choice-1", "--arrow-1", "#1550c8"],
-    ["choice-2", "--arrow-2", "#b3520a"],
-    ["best", "--arrow-good", "#15781b"],
-    ["worse", "--arrow-bad", "#b3117a"],
-  ].map(([key, varName, fallback]) => [
-    key,
-    {
-      key,
-      color: ROOT_STYLE.getPropertyValue(varName).trim() || fallback,
-      opacity: 0.8,
-      lineWidth: 10,
-    },
-  ]),
-);
+//
+// Each theme gets its own brush keys because chessground caches a drawn arrow
+// and its arrowhead by brush key: recolouring a key in place would leave the
+// arrows on the board in the old theme's colours.
+const BRUSH_VARS = [
+  ["choice-1", "--arrow-1", "#1550c8"],
+  ["choice-2", "--arrow-2", "#b3520a"],
+  ["best", "--arrow-good", "#15781b"],
+  ["worse", "--arrow-bad", "#b3117a"],
+];
+const brushDefs = {};
+let theme = "";
+
+function loadBrushes() {
+  theme = document.documentElement.dataset.theme || "";
+  const style = getComputedStyle(document.documentElement);
+  const opacity = +style.getPropertyValue("--arrow-opacity") || 0.8;
+  for (const [name, varName, fallback] of BRUSH_VARS) {
+    const key = `${name}@${theme}`;
+    const color = style.getPropertyValue(varName).trim() || fallback;
+    brushDefs[key] = { key, color, opacity, lineWidth: 10 };
+  }
+}
+loadBrushes();
 
 const el = (id) => document.getElementById(id);
 const boardEl = el("board");
@@ -64,16 +71,16 @@ let lastResult = null; // /api/answer payload for the current reveal
 // alone can't carry that pairing: the two arrows often cross or share a square,
 // and a viewer who can't separate the hues has nothing else to go on.
 function arrow(uci, brush, num) {
-  const shape = { orig: uci.slice(0, 2), dest: uci.slice(2, 4), brush };
+  const shape = { orig: uci.slice(0, 2), dest: uci.slice(2, 4), brush: `${brush}@${theme}` };
   if (arrowNumbers) shape.label = { text: String(num) };
   return shape;
 }
 
 const candidateArrows = () => trial.moves.map((m, i) => arrow(m.uci, BRUSHES[i], i + 1));
 
-// Redraw whatever the board is currently showing. Only the settings drawer
-// needs this — every other change of what's on the board goes through the
-// call that changed it.
+// Redraw whatever the board is currently showing. Only a change of setting or
+// theme needs this — every other change of what's on the board goes through
+// the call that changed it.
 function redrawBoard() {
   if (phase === "choosing" || phase === "submitting")
     setBoard(trial.fen, trial.side_to_move, candidateArrows());
@@ -114,7 +121,7 @@ function setBoard(fen, orientation, shapes, opts = {}) {
     coordinates: true,
     animation: { enabled: opts.animate ?? false, duration: 250 },
     lastMove: opts.lastMove,
-    drawable: { autoShapes: shapes, brushes: BRUSH_DEFS },
+    drawable: { autoShapes: shapes, brushes: brushDefs },
   };
   if (!cg) cg = Chessground(boardEl, config);
   else cg.set(config);
@@ -780,6 +787,16 @@ segmented("speed-menu", "stepMs", String(stepMs), (v) => {
 
 segmented("numbers-menu", "arrowNumbers", arrowNumbers ? "on" : "off", (v) => {
   arrowNumbers = v === "on";
+  redrawBoard();
+});
+
+// theme.js owns applying the theme; this only records the pick and says so.
+segmented("theme-menu", "theme", localStorage.getItem("theme") || "auto", () => {
+  document.dispatchEvent(new Event("themepick"));
+});
+
+document.addEventListener("themechange", () => {
+  loadBrushes();
   redrawBoard();
 });
 

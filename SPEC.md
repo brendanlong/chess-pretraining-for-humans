@@ -41,6 +41,9 @@ reasoning lives where DESIGN.md and CALIBRATION.md point.
   off — so it has to survive red-green colour blindness and warm night-mode
   filters. The reveal's best-against-worse pair meets the same standard as
   far as a light board allows.
+  That holds in every theme (light, dark, and e-paper); e-paper must also
+  keep each pair apart on a greyscale e-ink screen, using nothing but white,
+  black, and e-ink grey levels or colours that convert to one.
 - **The correct answer is the position's best move** by full-strength
   engine analysis — never a weakened engine, and never "the less bad of two
   bad moves".
