@@ -4,6 +4,8 @@ Colours are read out of the stylesheet, pushed through the Machado (2009)
 dichromacy matrices and the channel gains a warm night-mode filter applies,
 and the two that have to stay apart are checked for a minimum CIELAB
 separation. See DESIGN.md for which pair is held to what and why they differ.
+The light theme is held to the same floors on its own panel; the e-paper theme
+is held to grey levels instead, which is what an e-ink screen actually shows.
 """
 
 import re
@@ -79,11 +81,26 @@ def separation(a, b, vision, warmth):
     return sum((x - y) ** 2 for x, y in zip(la, lb, strict=True)) ** 0.5
 
 
+def colors(block):
+    return dict(re.findall(r"(--[\w-]+):\s*(#[0-9a-fA-F]{6})", block))
+
+
+def themed(theme):
+    """The dark `:root` with a theme's own block laid over it."""
+    css = STYLE.read_text()
+    root = re.search(r":root\s*\{(.*?)\}", css, re.S)
+    assert root, "no :root block in style.css"
+    found = colors(root.group(1))
+    if theme:
+        block = re.search(rf':root\[data-theme="{theme}"\]\s*\{{(.*?)\}}', css, re.S)
+        assert block, f"no {theme} block in style.css"
+        found |= colors(block.group(1))
+    return found
+
+
 @pytest.fixture(scope="module")
 def palette():
-    root = re.search(r":root\s*\{(.*?)\}", STYLE.read_text(), re.S)
-    assert root, "no :root block in style.css"
-    return dict(re.findall(r"(--[\w-]+):\s*(#[0-9a-fA-F]{6})", root.group(1)))
+    return themed(None)
 
 
 ALL_VISION = ("normal", *DICHROMACY)
@@ -123,3 +140,68 @@ def test_the_pairs_this_replaced_would_fail(palette):
     old = {"a": "#1a56c4", "b": "#8a2be2", "good": "#15781b", "bad": "#b02323"}
     assert worst(old, "a", "b", BOARD, ARROW_ALPHA, warmths=["day"]) < 10
     assert worst(old, "good", "bad", BOARD, ARROW_ALPHA, warmths=["day"]) < 10
+
+
+# The light theme keeps the cream board, so its arrows are the dark theme's and
+# already covered; what changes is the panel the buttons sit on.
+def test_light_buttons_survive_everything():
+    light = themed("light")
+    assert worst(light, "--accent-1", "--accent-2", (light["--panel"],), 1.0) > 40
+    assert worst(light, "--good", "--bad", (light["--panel"],), 1.0, warmths=["day"]) > 35
+
+
+def luma(hex_color):
+    """The grey a greyscale e-ink screen shows a colour as (Rec. 601, on the
+    gamma-encoded values, as e-readers and Pillow convert)."""
+    r, g, b = (int(hex_color[i : i + 2], 16) for i in (1, 3, 5))
+    return 0.299 * r + 0.587 * g + 0.114 * b
+
+
+def grey_level(hex_color):
+    """Which of the sixteen e-ink greys (0 black .. 15 white) a colour lands on."""
+    level = luma(hex_color) / 0x11
+    assert abs(level - round(level)) < 0.1, f"{hex_color} falls between two e-ink greys"
+    return round(level)
+
+
+def epaper_rules():
+    css = STYLE.read_text()
+    return "".join(re.findall(r'\[data-theme="epaper"\][^{]*\{[^}]*\}', css))
+
+
+def test_epaper_uses_only_eink_greys():
+    rules = epaper_rules()
+    assert "rgba" not in rules
+    for color in re.findall(r"#[0-9a-fA-F]{6}\b", rules):
+        grey_level(color)
+
+
+EPAPER_BOARD = ("#ffffff", "#bbbbbb")
+
+
+def test_epaper_pairs_stay_levels_apart():
+    paper = themed("epaper")
+    for first, second in (("--arrow-1", "--arrow-2"), ("--arrow-good", "--arrow-bad")):
+        assert abs(grey_level(paper[first]) - grey_level(paper[second])) >= 3
+        for color in (paper[first], paper[second]):
+            for square in EPAPER_BOARD:
+                assert abs(grey_level(color) - grey_level(square)) >= 4
+    assert paper["--accent-1"] == paper["--arrow-1"]
+    assert paper["--accent-2"] == paper["--arrow-2"]
+
+
+def contrast_with_white(hex_color):
+    luminance = sum(
+        w * c for w, c in zip((0.2126, 0.7152, 0.0722), linear_rgb(hex_color), strict=True)
+    )
+    return 1.05 / (luminance + 0.05)
+
+
+# Text on white and white digits on these fills both need the colour dark, in
+# colour (WCAG AA for body text) as well as in grey.
+def test_epaper_text_is_dark():
+    paper = themed("epaper")
+    assert paper["--text"] == "#000000"
+    assert paper["--bg"] == paper["--panel"] == "#ffffff"
+    for name in ("--muted", "--accent-1", "--accent-2", "--good", "--bad", "--danger"):
+        assert contrast_with_white(paper[name]) >= 4.5, name

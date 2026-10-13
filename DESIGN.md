@@ -238,7 +238,13 @@ file.
 The palette lives entirely in `:root`, including the dark, saturated
 arrow variants the light board needs alongside the light ones the dark
 panel needs; `app.js` reads the arrow colours back out of CSS so a brush
-can't drift away from the button it is supposed to match.
+can't drift away from the button it is supposed to match. Dark is the
+default `:root`; light and e-paper are blocks keyed on a `data-theme`
+attribute that `theme.js`, a blocking script in every page's head, sets
+before first paint from a per-device localStorage choice (auto follows the
+OS). A theme change re-reads the brushes and redraws the board, since
+chessground won't recolour an arrow it has already drawn. Why e-paper's
+colours are the ones they are is in its block in `style.css`.
 
 Every arrow carries a numbered disc, drawn by chessground's own shape
 labels in the arrow's colour and repeated as a badge on the control it
@@ -274,8 +280,8 @@ settings) over a single column, with the space under the board swapping
 between the choice buttons and the reveal — verdict and rating delta,
 then replay controls with a primary Next, then the two engine lines as
 tappable cards; secondary detail sits below the fold. Desktop places the
-same panel beside the board. A settings drawer holds replay speed, the
-account controls (sign up / sign in / sign out, reached from the header
+same panel beside the board. A settings drawer holds replay speed, arrow
+numbers, the theme, the account controls (sign up / sign in / sign out, reached from the header
 chip), a "your data" section, the trial and streak counters, and the legal
 links. Download and delete share that section because they name the same
 record, and both are offered to guests; delete is two
