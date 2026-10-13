@@ -180,7 +180,10 @@ redirect URI is read off the request. The state and verifier wait in a short,
 path-scoped cookie rather than a row, so starting a sign-in writes nothing,
 and the state check is the callback's CSRF defence. One button both signs in
 and links: an existing link wins, then the row this browser is on, then a
-fresh row — the order and its reasons are on `auth.sign_in_with_lichess`. A
+fresh row — the order and its reasons are on `auth.sign_in_with_lichess`.
+Linking a row that has a password takes the password first, since the link
+becomes a way in that skips it; the grant is held in memory against the
+flow's state, because the cookie is the caller's to write. A
 row is a guest only while it has neither a password nor a link; without a
 password, deletion takes the cookie alone, for the guest's reason.
 

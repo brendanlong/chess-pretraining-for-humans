@@ -554,7 +554,6 @@ kbd {
 .auth-form button,
 #logout-btn,
 #delete-btn,
-#lichess-unlink,
 .lichess-btn {
   font: inherit;
   font-size: 14px;
@@ -572,15 +571,14 @@ kbd {
 .auth-form button.danger { border-color: var(--danger); color: var(--danger); }
 .auth-form button:disabled,
 #logout-btn:disabled,
-#lichess-unlink:disabled,
 #delete-btn:disabled { opacity: 0.6; cursor: default; }
-#logout-btn, #delete-btn, #delete-cancel, #lichess-unlink { align-self: flex-start; }
+#logout-btn, #delete-btn, #delete-cancel { align-self: flex-start; }
 
-#account-guest, #account-user, #lichess-linked { display: flex; flex-direction: column; gap: 8px; }
+#account-guest, #account-user { display: flex; flex-direction: column; gap: 8px; }
 #account-guest[hidden], #account-user[hidden], #lichess-linked[hidden] { display: none; }
 /* A link, because finishing it means leaving for lichess.org and coming back. */
 .lichess-btn { align-self: flex-start; text-decoration: none; border-color: var(--accent-1); }
-.lichess-btn[hidden], #lichess-unlink[hidden], #lichess-unlink-note[hidden] { display: none; }
+#lichess-unlink-note[hidden] { display: none; }
 
 #auth-error,
 #data-error {

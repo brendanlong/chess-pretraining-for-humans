@@ -135,7 +135,8 @@ reasoning lives where DESIGN.md and CALIBRATION.md point.
   says reaches selection, the user's rating, or the trial, so linking can't
   change what anyone is served. The grant is used once, to learn who signed
   in, and revoked; no Lichess credential is kept, since the ratings are
-  public. Unlinking erases the snapshots taken through the link.
+  public. A link is a way in, so linking an account that has a password
+  takes the password. Unlinking erases the snapshots taken through it.
 - **Explanations are grounded in engine output.** The engine lines are the
   authority; any prose sits next to them, never replaces them.
 - **The record outlives the deployment.** Responses are replicated off the

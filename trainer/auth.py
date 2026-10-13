@@ -65,6 +65,10 @@ class RateLimited(AuthError):
     """Too many signup/login attempts from one address."""
 
 
+class LinkNeedsPassword(AuthError):
+    """A Lichess link to a row with a password, without the password."""
+
+
 class AuthBusy(AuthError):
     """Password hashing is saturated; the client should retry shortly."""
 
@@ -303,6 +307,7 @@ def sign_in_with_lichess(
     lichess_user: dict,
     start_rating: float,
     calib_step: float,
+    password_proven: bool = False,
 ) -> tuple[dict, str]:
     """The row a completed Lichess sign-in lands on, and what happened:
     'signed-in', 'linked' or 'created'.
@@ -312,8 +317,9 @@ def sign_in_with_lichess(
     - A row already linked to this Lichess account is signed into, like a
       password login — a guest left behind stays behind.
     - Otherwise the row this browser is on is linked, if it has no Lichess
-      account yet. For a guest that is what claiming its history means; for a
-      password account it adds the link.
+      account yet. For a guest that is what claiming its history means; a
+      password account needs `password_proven`, since the link becomes a way
+      in that skips the password.
     - Otherwise a fresh row, the Lichess equivalent of signing up before
       answering anything. Also where a browser signed in to a row linked to
       *another* Lichess account ends up, because re-pointing that row's link
@@ -329,6 +335,8 @@ def sign_in_with_lichess(
     if user is None:
         current = get_user(conn, current_id) if current_id is not None else None
         if current is not None and not current["lichess_id"]:
+            if has_password(current) and not password_proven:
+                raise LinkNeedsPassword("Linking Lichess to this account needs its password.")
             conn.execute(
                 """UPDATE users SET lichess_id = ?, lichess_username = ?,
                        lichess_linked_at = datetime('now') WHERE id = ?""",

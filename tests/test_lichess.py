@@ -4,7 +4,7 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 from fastapi.testclient import TestClient
 
-from trainer import lichess, server
+from trainer import account, lichess, server
 
 from .conftest import answer, next_trial
 
@@ -151,13 +151,21 @@ def test_signing_in_again_elsewhere_reaches_the_same_row(client, db, fake):
     assert len(snapshots(db)) == 2  # one per sign-in
 
 
-def test_a_password_account_links_and_can_unlink(client, db, fake):
+def link(client, password=CREDS["password"]) -> str:
+    """The password-checked way into the flow, for an account with one."""
+    r = client.post("/api/lichess/link", json={"password": password})
+    assert r.status_code == 200, r.text
+    return parse_qs(urlparse(r.json()["url"]).query)["state"][0]
+
+
+def test_a_password_account_links_with_its_password_and_can_unlink(client, db, fake):
     client.post("/api/account/signup", json=CREDS)
-    assert sign_in(client) == "linked"
+    assert come_back(client, code="c-alice", state=link(client)) == "linked"
     account = client.get("/api/account").json()
     assert account["username"] == "tester" and account["lichess"] == "Alice"
 
-    r = client.post("/api/lichess/unlink", json={})
+    assert client.post("/api/lichess/unlink", json={"password": "nope"}).status_code == 400
+    r = client.post("/api/lichess/unlink", json={"password": CREDS["password"]})
     assert r.status_code == 200, r.text
     assert r.json()["lichess"] is None
     assert snapshots(db) == []
@@ -167,11 +175,42 @@ def test_a_password_account_links_and_can_unlink(client, db, fake):
     )
 
 
+def test_linking_a_password_account_without_the_password_is_refused(client, db, fake):
+    """Otherwise a stolen or unattended session could link the thief's own
+    Lichess account and keep a way in after the session is gone."""
+    client.post("/api/account/signup", json=CREDS)
+    assert client.post("/api/lichess/link", json={"password": "nope"}).status_code == 400
+    assert sign_in(client) == "password"
+    assert db.execute("SELECT lichess_id FROM users").fetchone()[0] is None
+    assert snapshots(db) == []
+
+
+def test_a_link_grant_is_for_the_account_that_earned_it(client, db, fake):
+    client.post("/api/account/signup", json=CREDS)
+    state = link(client)
+    client.post("/api/account/logout", json={})
+    client.post("/api/account/signup", json={**CREDS, "username": "other"})
+    assert come_back(client, code="c-alice", state=state) == "password"
+
+
 def test_unlinking_takes_a_json_body(client, fake):
     client.post("/api/account/signup", json=CREDS)
-    sign_in(client)
-    r = client.post("/api/lichess/unlink", data={"x": "1"})
+    come_back(client, code="c-alice", state=link(client))
+    r = client.post("/api/lichess/unlink", data={"password": CREDS["password"]})
     assert r.status_code == 422
+
+
+def test_set_password_unlinks_unless_told_otherwise(client, db, fake, monkeypatch):
+    client.post("/api/account/signup", json=CREDS)
+    come_back(client, code="c-alice", state=link(client))
+    monkeypatch.setattr(account.getpass, "getpass", lambda _prompt: "a new password")
+    user = server.auth.find_by_username(db, "tester")
+    assert user is not None
+    assert account.set_password(db, user, None, keep_lichess=True) == 0
+    assert db.execute("SELECT lichess_id FROM users").fetchone()[0] == "alice"
+    assert account.set_password(db, user, None) == 0
+    assert db.execute("SELECT lichess_id FROM users").fetchone()[0] is None
+    assert snapshots(db) == []
 
 
 def test_an_account_made_through_lichess_cannot_unlink(client, db, fake):

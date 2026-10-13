@@ -174,12 +174,12 @@
       </div>
       <div id="account-user" hidden>
         <p class="setting-note">Signed in as <b id="account-name"></b>. Your rating and history follow this account.</p>
-        <div id="lichess-linked" hidden>
-          <p class="setting-note">Linked to Lichess as <b id="lichess-name"></b>.</p>
-          <button id="lichess-unlink" type="button">Unlink Lichess</button>
-          <p id="lichess-unlink-note" class="setting-note">Unlinking also erases the Lichess ratings recorded so far.</p>
-        </div>
-        <a id="lichess-link" class="lichess-btn" href="/api/lichess/login" hidden>Link your Lichess account</a>
+        <p id="lichess-linked" class="setting-note" hidden>Linked to Lichess as <b id="lichess-name"></b>.</p>
+        <form id="lichess-form" class="auth-form" hidden>
+          <input id="lichess-password" type="password" placeholder="Password" aria-label="Password, to confirm" autocomplete="current-password" required>
+          <button id="lichess-submit" type="submit">Link your Lichess account</button>
+          <p id="lichess-unlink-note" class="setting-note" hidden>Unlinking also erases the Lichess ratings recorded so far.</p>
+        </form>
         <p class="setting-note">A linked account's Lichess ratings are recorded for the research — whether practice here carries over to real games. They never decide what you're shown here.</p>
         <button id="logout-btn">Sign out</button>
       </div>

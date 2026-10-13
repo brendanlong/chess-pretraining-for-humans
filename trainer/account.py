@@ -21,7 +21,9 @@ from . import auth
 from .db import DEFAULT_DB, connect
 
 
-def set_password(conn: sqlite3.Connection, user: dict, rename_to: str | None) -> int:
+def set_password(
+    conn: sqlite3.Connection, user: dict, rename_to: str | None, keep_lichess: bool = False
+) -> int:
     try:
         name = auth.check_username(rename_to or user["name"])
         if name.lower() != user["name"].lower() and auth.find_by_username(conn, name):
@@ -37,17 +39,24 @@ def set_password(conn: sqlite3.Connection, user: dict, rename_to: str | None) ->
     # password change and no reset email yet — so it has to assume the reason
     # it's being run is that someone else knows the old password. Rotating the
     # hash while leaving their session live would recover nothing, so the two
-    # go together or not at all.
+    # go together or not at all. A linked Lichess account is the same kind of
+    # way in, and whoever held the session could have linked their own, so it
+    # goes too unless the operator knows it's the owner's.
+    unlink = bool(user["lichess_id"]) and not keep_lichess
     with conn:
         conn.execute(
             "UPDATE users SET name = ?, password_hash = ? WHERE id = ?",
             (name, auth.hash_password(password), user["id"]),
         )
         revoked = auth.revoke_sessions(conn, user["id"])
+        if unlink:
+            auth.unlink_lichess(conn, user["id"])
     print(
         f"{name} can now sign in ({user['attempts']} trials preserved"
         + (f", {revoked} existing session(s) signed out)" if revoked else ")")
     )
+    if unlink:
+        print(f"unlinked Lichess account {user['lichess_username']} (--keep-lichess keeps it)")
     return 0
 
 
@@ -90,6 +99,9 @@ def main(argv: list[str] | None = None) -> int:
     sp = sub.add_parser("set-password", help="give a user a password so they can sign in")
     sp.add_argument("name")
     sp.add_argument("--rename-to", help="also give the row a login-friendly username")
+    sp.add_argument(
+        "--keep-lichess", action="store_true", help="leave a linked Lichess account linked"
+    )
     dp = sub.add_parser("delete", help="erase a user, their sessions, and all their responses")
     dp.add_argument("name")
     dp.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
@@ -98,10 +110,8 @@ def main(argv: list[str] | None = None) -> int:
     conn = connect(args.db)
 
     if args.cmd == "list":
-        for row in conn.execute(
-            "SELECT name, attempts, password_hash, lichess_username FROM users ORDER BY id"
-        ):
-            kind = "account" if row["password_hash"] else "guest"
+        for row in conn.execute("SELECT * FROM users ORDER BY id"):
+            kind = "guest" if auth.is_guest(dict(row)) else "account"
             if row["lichess_username"]:
                 kind += f", lichess {row['lichess_username']}"
             print(f"{row['name']:<40} {row['attempts']:>6} trials  {kind}")
@@ -121,7 +131,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "delete":
         return delete(conn, user, args.yes)
-    return set_password(conn, user, args.rename_to)
+    return set_password(conn, user, args.rename_to, args.keep_lichess)
 
 
 if __name__ == "__main__":

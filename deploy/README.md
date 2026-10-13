@@ -164,7 +164,10 @@ machine stays up while it runs.
 
 An account made through Lichess has an opaque `guest_…` row name; `list`
 shows its Lichess username beside it, and that row name is what `delete`
-takes.
+takes. `set-password` on one needs `--rename-to`, since `guest_` names can't
+sign in. `set-password` also unlinks any linked Lichess account — whoever had
+the session could have linked their own — so pass `--keep-lichess` when the
+owner confirms the link is theirs.
 
 ## Lichess sign-in
 

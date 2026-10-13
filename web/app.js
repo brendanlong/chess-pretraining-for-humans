@@ -582,10 +582,12 @@ function setAccount(a) {
   if (!a.guest) el("account-name").textContent = a.username;
   el("lichess-linked").hidden = !a.lichess;
   el("lichess-name").textContent = a.lichess || "";
-  el("lichess-link").hidden = Boolean(a.lichess);
-  // An account made through Lichess has no other way in, so it can't unlink.
-  el("lichess-unlink").hidden = !a.password;
-  el("lichess-unlink-note").hidden = !a.password;
+  // Linking and unlinking both take the password, so there is nothing to offer
+  // an account made through Lichess: it has no other way in to unlink to.
+  el("lichess-form").hidden = !a.password;
+  el("lichess-submit").textContent = a.lichess ? "Unlink Lichess" : "Link your Lichess account";
+  el("lichess-unlink-note").hidden = !a.lichess;
+  el("lichess-password").value = "";
   // Without a password — a guest, or an account made through Lichess — the
   // field an account confirms with is absent rather than empty. The button
   // names the record it erases, which for a guest isn't an account.
@@ -709,8 +711,33 @@ el("login-form").addEventListener("submit", (e) => {
   });
 });
 
-el("lichess-unlink").addEventListener("click", (e) => {
-  submitAuth(e.currentTarget, async () => setAccount(await api("/api/lichess/unlink", {})));
+// Signing in leaves the page for lichess.org, so a position this tab was sent
+// would otherwise be lost on the way back. Kept in this tab's storage rather
+// than handed to the server, which would make the return address a parameter.
+const LICHESS_RETURN_ITEM = "lichess-return-item";
+
+function rememberItemForLichess() {
+  const item = new URLSearchParams(location.search).get("item");
+  if (item) sessionStorage.setItem(LICHESS_RETURN_ITEM, item);
+  else sessionStorage.removeItem(LICHESS_RETURN_ITEM);
+}
+
+document.querySelectorAll(".lichess-btn").forEach((a) => {
+  a.addEventListener("click", rememberItemForLichess);
+});
+
+el("lichess-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  submitAuth(e.submitter ?? el("lichess-submit"), async () => {
+    const password = el("lichess-password").value;
+    if (account.lichess) {
+      setAccount(await api("/api/lichess/unlink", { password }));
+      return;
+    }
+    const { url } = await api("/api/lichess/link", { password });
+    rememberItemForLichess();
+    location.href = url;
+  });
 });
 
 // Coming back from lichess.org, the server says how it went in `?lichess=`.
@@ -720,18 +747,23 @@ const LICHESS_TROUBLE = {
   denied: "Lichess sign-in was cancelled.",
   expired: "That Lichess sign-in expired or didn't start in this browser. Try again.",
   failed: "Couldn't reach Lichess to finish signing in. Try again in a moment.",
+  password: "Linking Lichess to an account takes its password — use the form below.",
   busy: "Too many Lichess sign-ins from here. Try again in a few minutes.",
 };
 
+// Returns the position to reopen, if signing in interrupted one.
 function takeLichessOutcome() {
   const outcome = new URLSearchParams(location.search).get("lichess");
-  if (outcome === null) return;
-  history.replaceState(null, "", location.pathname);
+  if (outcome === null) return null;
+  const item = sessionStorage.getItem(LICHESS_RETURN_ITEM);
+  sessionStorage.removeItem(LICHESS_RETURN_ITEM);
+  history.replaceState(null, "", item ? `?item=${encodeURIComponent(item)}` : location.pathname);
   const trouble = LICHESS_TROUBLE[outcome];
   if (trouble) {
     openSettings(false);
     showAuthError(trouble);
   }
+  return item;
 }
 
 el("logout-btn").addEventListener("click", (e) => {
@@ -882,12 +914,12 @@ el("prompt").addEventListener("click", () => {
   if (phase === "error") nextTrial();
 });
 
-takeLichessOutcome();
+const lichessReturnItem = takeLichessOutcome();
 
 // What the URL names, if anything: a link somebody sent, or this tab's own
 // last trial coming back on a reload. Every trial after it is named the same
 // way (`nameTrialInUrl`), so this is read once and the rest follows.
-const namedItem = new URLSearchParams(location.search).get("item");
+const namedItem = lichessReturnItem ?? new URLSearchParams(location.search).get("item");
 
 // Nothing at boot writes anything — identity is minted by the first answer —
 // so these are safe to race. /api/stats carries the account for the header;

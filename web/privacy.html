@@ -68,8 +68,9 @@
       how the site knows who you are.</li>
       <li><b>Your Lichess username and ratings</b>, only if you sign in with
       or link a Lichess account, which is always optional: the username, when
-      you linked it, and snapshots of your Lichess ratings — every rating
-      Lichess shows on your profile, with its game count — taken each time you
+      you linked it, and snapshots of your Lichess ratings — every rating and
+      puzzle score on your profile, with the game counts and other details
+      Lichess publishes alongside them — taken each time you
       sign in with Lichess and about weekly otherwise. They are read from
       Lichess's public data; the permission Lichess hands us when you sign in
       is used once to learn your username and then handed straight back, so we
@@ -154,8 +155,10 @@
     nothing about the app depends on it working.</p>
 
     <h2>Cookies</h2>
-    <p>One cookie, the session token described above. No advertising or
-    analytics cookies: there is no advertising, and the page counter sets
+    <p>One cookie, the session token described above — plus, only while you
+    are signing in with Lichess, a second that holds that sign-in's one-time
+    codes for up to ten minutes and is deleted when you come back. No
+    advertising or analytics cookies: there is no advertising, and the page counter sets
     nothing. If you clear it while playing as a guest, that guest record
     becomes unreachable for good — there is no other way to find it, which
     is the same property that keeps anyone else from finding it either. So

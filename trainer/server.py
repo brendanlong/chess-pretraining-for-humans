@@ -12,6 +12,7 @@ import random
 import secrets
 import sqlite3
 import threading
+import time
 from pathlib import Path
 
 import chess
@@ -1233,12 +1234,13 @@ def lichess_redirect_uri(request: Request) -> str:
     return str(request.url_for("lichess_callback"))
 
 
-@app.get("/api/lichess/login")
-def lichess_login(request: Request):
+def lichess_flow(request: Request) -> tuple[str, str, str]:
+    """(state, verifier, the URL to send the browser to)."""
     state, verifier = lichess.new_flow()
-    response = RedirectResponse(
-        lichess.authorize_url(lichess_redirect_uri(request), state, verifier), status_code=303
-    )
+    return state, verifier, lichess.authorize_url(lichess_redirect_uri(request), state, verifier)
+
+
+def set_flow_cookie(request: Request, response: Response, state: str, verifier: str) -> None:
     response.set_cookie(
         LICHESS_COOKIE,
         f"{state}.{verifier}",
@@ -1248,6 +1250,86 @@ def lichess_login(request: Request):
         secure=request.url.scheme == "https",
         path=LICHESS_COOKIE_PATH,
     )
+
+
+# Linking a Lichess account to a row that has a password adds a way into that
+# row which skips the password, so it takes the password, exactly as deletion
+# does: otherwise whoever holds a stolen or unattended session could link their
+# own Lichess account and keep the row after the session is gone. Granted here
+# on proof of the password, and spent by the callback, keyed on the flow's
+# state — a dict rather than anything in the cookie because the cookie is the
+# caller's to write. Per-process, so a restart mid-flow refuses that one link.
+_link_grants: dict[str, tuple[int, float]] = {}
+_link_grants_lock = threading.Lock()
+
+
+def grant_link(state: str, user_id: int) -> None:
+    now = time.monotonic()
+    with _link_grants_lock:
+        for key in [k for k, (_, at) in _link_grants.items() if now - at > LICHESS_FLOW_S]:
+            del _link_grants[key]
+        _link_grants[state] = (user_id, now)
+
+
+def take_link_grant(state: str) -> int | None:
+    with _link_grants_lock:
+        grant = _link_grants.pop(state, None)
+    if grant is None or time.monotonic() - grant[1] > LICHESS_FLOW_S:
+        return None
+    return grant[0]
+
+
+# Each completed sign-in holds a pool thread through up to three requests to
+# lichess.org, and the pool is the one trials are served from — so, as with
+# argon2 (`auth.HASH_CONCURRENCY`), only a few run at once and the rest are told
+# to come back rather than queueing.
+LICHESS_CONCURRENCY = 4
+_lichess_slots = threading.BoundedSemaphore(LICHESS_CONCURRENCY)
+
+
+@app.get("/api/lichess/login")
+def lichess_login(request: Request):
+    """Sign in with Lichess — or, for a guest, claim its history with it."""
+    state, verifier, url = lichess_flow(request)
+    response = RedirectResponse(url, status_code=303)
+    set_flow_cookie(request, response, state, verifier)
+    return response
+
+
+class PasswordProof(BaseModel):
+    # Optional because a row without a password has none to send.
+    password: str | None = None
+
+
+def check_own_password(request: Request, u: dict, password: str | None) -> None:
+    """Metered like login, because it is one. Outside any transaction."""
+    spend(login_ip_limiter, client_key(request))
+    spend(login_limiter, login_key(u["name"]))
+    try:
+        ok = auth.verify_password(auth.credential_for(u), password or "")
+    except auth.AuthError as e:
+        raise auth_error(e) from e
+    if not ok:
+        raise HTTPException(400, "Wrong password.")
+
+
+@app.post("/api/lichess/link")
+def lichess_link(body: PasswordProof, request: Request):
+    """Start linking Lichess to the account this browser is signed in to.
+
+    A POST that answers with the URL to go to, rather than a redirect, because
+    it has to carry the password.
+    """
+    u = auth.session_user(conn, request.cookies.get(auth.COOKIE_NAME))
+    if u is None or not auth.has_password(u):
+        raise HTTPException(400, "Sign in to an account with a password to link Lichess to it.")
+    if u["lichess_id"]:
+        raise HTTPException(400, "This account is already linked to Lichess.")
+    check_own_password(request, u, body.password)
+    state, verifier, url = lichess_flow(request)
+    grant_link(state, u["id"])
+    response = JSONResponse({"url": url})
+    set_flow_cookie(request, response, state, verifier)
     return response
 
 
@@ -1273,11 +1355,14 @@ def lichess_callback(
     expected, _, verifier = request.cookies.get(LICHESS_COOKIE, "").partition(".")
     if not (expected and verifier and state and secrets.compare_digest(state, expected)):
         return back_to_app("expired")
+    link_granted_to = take_link_grant(state)
     if error or not code:
         return back_to_app("denied")
     try:
         lichess_limiter.consume(client_key(request))
     except auth.RateLimited:
+        return back_to_app("busy")
+    if not _lichess_slots.acquire(timeout=0.1):
         return back_to_app("busy")
     try:
         token = lichess.exchange(code, verifier, lichess_redirect_uri(request))
@@ -1292,30 +1377,43 @@ def lichess_callback(
     except lichess.LichessError as e:
         log.warning("lichess sign-in failed: %s", e)
         return back_to_app("failed")
+    finally:
+        _lichess_slots.release()
     with writing() as tx:
         current = auth.session_user(tx, request.cookies.get(auth.COOKIE_NAME))
-        user, outcome = auth.sign_in_with_lichess(
-            tx,
-            current["id"] if current else None,
-            who,
-            rating.USER_START,
-            rating.CALIB_START_STEP,
-        )
+        current_id = current["id"] if current else None
+        try:
+            user, outcome = auth.sign_in_with_lichess(
+                tx,
+                current_id,
+                who,
+                rating.USER_START,
+                rating.CALIB_START_STEP,
+                password_proven=link_granted_to is not None and link_granted_to == current_id,
+            )
+        except auth.LinkNeedsPassword:
+            return back_to_app("password")
         reissue_session(tx, request, user["id"])
     return back_to_app(outcome)
 
 
-class Unlink(BaseModel):
-    """Empty, but required: every write takes a JSON body (see
-    `set_session_cookie`), and this one erases data."""
-
-
 @app.post("/api/lichess/unlink")
-def lichess_unlink(_body: Unlink, request: Request):
+def lichess_unlink(body: PasswordProof, request: Request):
+    """Drop the link and its snapshots. Takes the password, since it erases
+    data and only a row with one can unlink at all."""
+    u = auth.session_user(conn, request.cookies.get(auth.COOKIE_NAME))
+    if u is None or not u["lichess_id"]:
+        raise HTTPException(400, "No Lichess account is linked.")
+    if not auth.has_password(u):
+        raise HTTPException(400, "This account signs in through Lichess, so it can't be unlinked.")
+    check_own_password(request, u, body.password)
     with writing() as tx:
-        u = auth.session_user(tx, request.cookies.get(auth.COOKIE_NAME))
-        if u is None or not u["lichess_id"]:
-            raise HTTPException(400, "No Lichess account is linked.")
+        # Re-checked against the row as authorized, for `delete_account`'s reason.
+        if not tx.execute(
+            "SELECT 1 FROM users WHERE id = ? AND password_hash = ? AND lichess_id = ?",
+            (u["id"], u["password_hash"], u["lichess_id"]),
+        ).fetchone():
+            raise HTTPException(400, "The account changed while this was in flight. Try again.")
         try:
             auth.unlink_lichess(tx, u["id"])
         except auth.AuthError as e:
@@ -1356,7 +1454,12 @@ def refresh_lichess_ratings() -> int:
     taken = 0
     for start in range(0, len(due), lichess.BATCH):
         owners = {row["lichess_id"]: row["id"] for row in due[start : start + lichess.BATCH]}
-        records = lichess.users(list(owners))
+        try:
+            records = lichess.users(list(owners))
+        except lichess.LichessError as e:
+            # The next round picks these up, since due-ness is read off the table.
+            log.warning("lichess rating refresh skipped %d accounts: %s", len(owners), e)
+            continue
         with writing() as tx:
             for record in records:
                 user_id = owners.get(record["id"])
