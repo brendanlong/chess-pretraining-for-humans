@@ -190,10 +190,18 @@ def test_epaper_pairs_stay_levels_apart():
     assert paper["--accent-2"] == paper["--arrow-2"]
 
 
-# Text on white and white digits on these fills both need the colour dark.
+def contrast_with_white(hex_color):
+    luminance = sum(
+        w * c for w, c in zip((0.2126, 0.7152, 0.0722), linear_rgb(hex_color), strict=True)
+    )
+    return 1.05 / (luminance + 0.05)
+
+
+# Text on white and white digits on these fills both need the colour dark, in
+# colour (WCAG AA for body text) as well as in grey.
 def test_epaper_text_is_dark():
     paper = themed("epaper")
     assert paper["--text"] == "#000000"
     assert paper["--bg"] == paper["--panel"] == "#ffffff"
     for name in ("--muted", "--accent-1", "--accent-2", "--good", "--bad", "--danger"):
-        assert grey_level(paper[name]) <= 7, name
+        assert contrast_with_white(paper[name]) >= 4.5, name

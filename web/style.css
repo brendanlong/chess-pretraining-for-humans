@@ -63,10 +63,12 @@
    colour whose grey (Rec. 601 luma, the conversion e-readers and Pillow use)
    lands on one, so colour e-ink keeps the hues and greyscale e-ink still gets
    exact, undithered levels. Pairs that must be told apart sit levels apart
-   (blue 0x22 against orange 0x66, green 0x44 against magenta 0x77), and every
-   colour that carries text or a white digit is 0x77 or darker.
-   tests/test_palette.py holds all of this. Arrows are opaque here, since a
-   translucent one blends into a grey that isn't on the list. */
+   (blue 0x22 against orange 0x66, green 0x33 against rose 0x66), and every
+   colour that carries text or a white digit is dark enough to read on white
+   in colour too, which is what caps them at 0x66. tests/test_palette.py
+   holds all of this. Arrows are opaque here, since a translucent one blends
+   into a grey that isn't on the list; the price is that an arrow hides the
+   strip of piece it crosses. */
 :root[data-theme="epaper"] {
   color-scheme: light;
   --bg: #ffffff;
@@ -76,14 +78,14 @@
   --text: #000000;
   --muted: #555555;
   --accent-1: #0505ff;
-  --accent-2: #f04e00;
+  --accent-2: #c64900;
   --arrow-1: #0505ff;
-  --arrow-2: #f04e00;
-  --good: #007500;
-  --bad: #ff18ff;
-  --arrow-good: #007500;
-  --arrow-bad: #ff18ff;
-  --danger: #ff0e00;
+  --arrow-2: #c64900;
+  --good: #005507;
+  --bad: #cf298a;
+  --arrow-good: #005507;
+  --arrow-bad: #cf298a;
+  --danger: #db1c16;
   --probe: #c8a8ff;
   --on-probe: #000000;
   --on-accent: #ffffff;
@@ -212,7 +214,8 @@ main {
 /* Chessground dims every shape to 0.6, which suits a board users scribble on
    but not one where the two arrows are the trial: composited that far toward
    the board, the two hues wash out and lose the separation the palette buys.
-   The brushes keep enough transparency to see the piece underneath. */
+   The brushes keep enough transparency to see the piece underneath, except
+   in e-paper (see its palette). */
 .cg-wrap .cg-shapes { opacity: 1; }
 
 /* The numbered disc on each arrow (chessground renders shape labels into the
@@ -454,8 +457,11 @@ kbd {
   margin-right: 6px;
 }
 
-/* Fading a control out leaves a grey e-ink can't show. */
-[data-theme="epaper"] :disabled { opacity: 1; border-style: dashed; }
+/* Fading or brightening a control leaves a grey e-ink can't show, and a
+   touch e-reader keeps :hover after a tap. Important because the rules it
+   undoes are spread across selectors that mostly carry an id. */
+[data-theme="epaper"] :disabled { opacity: 1 !important; border-style: dashed; }
+[data-theme="epaper"] :is(.choice, .ctl, #next) { filter: none !important; }
 
 /* --- settings drawer ------------------------------------------------------ */
 

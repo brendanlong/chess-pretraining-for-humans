@@ -767,7 +767,8 @@ el("delete-form").addEventListener("submit", (e) => {
 });
 
 // A settings row where one of the buttons is the current value: mark it,
-// remember the choice, and hand it to whoever cares.
+// remember the choice, and hand it to whoever cares. Returns the marker, for a
+// value that can change from outside the row.
 function segmented(menuId, storageKey, current, onPick) {
   const buttons = [...el(menuId).querySelectorAll("button")];
   const mark = (v) => buttons.forEach((b) => b.classList.toggle("active", b.dataset.value === v));
@@ -779,6 +780,7 @@ function segmented(menuId, storageKey, current, onPick) {
       onPick(b.dataset.value);
     }),
   );
+  return mark;
 }
 
 segmented("speed-menu", "stepMs", String(stepMs), (v) => {
@@ -791,11 +793,14 @@ segmented("numbers-menu", "arrowNumbers", arrowNumbers ? "on" : "off", (v) => {
 });
 
 // theme.js owns applying the theme; this only records the pick and says so.
-segmented("theme-menu", "theme", localStorage.getItem("theme") || "auto", () => {
+const pickedTheme = () => localStorage.getItem("theme") || "auto";
+const markTheme = segmented("theme-menu", "theme", pickedTheme(), () => {
   document.dispatchEvent(new Event("themepick"));
 });
 
+// Also fired by a pick in another tab, which this tab's row has to follow.
 document.addEventListener("themechange", () => {
+  markTheme(pickedTheme());
   loadBrushes();
   redrawBoard();
 });
